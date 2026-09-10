@@ -1,462 +1,369 @@
-# Nowhere 一键部署脚本（Linux VPS）
+# Nowhere 一键部署与综合管理脚本（Linux VPS）
 
-> 两个脚本，同一个目标，不同的信任取舍。**先看第 0 节决定用哪个。**
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+基于 [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) 官方核心协议编写的生产级一键部署与运维管理脚本。
+
+融合了官方 Release 二进制哈希强校验、本地 Rust 源码全程序优化编译（Fat-LTO）、systemd 高强度权限沙箱、Let's Encrypt 证书权限隔离，以及支持中 / 英 / 俄三语的终端彩色交互控制台（TUI）。
+
+---
+
+## 目录
+
+- [0. 下载与运行脚本](#0-下载与运行脚本)
+- [1. 核心特性对比与选型](#1-核心特性对比与选型)
+- [2. 前置环境与准备工作](#2-前置环境与准备工作)
+- [3. 快速开始（一键安装）](#3-快速开始一键安装)
+  - [3.1 交互控制台模式（推荐新手）](#31-交互控制台模式推荐新手)
+  - [3.2 命令行无交互部署（自动化 / 脚本）](#32-命令行无交互部署自动化--脚本)
+- [4. TLS 证书配置与权限安全处理](#4-tls-证书配置与权限安全处理)
+- [5. 防火墙与网络放行](#5-防火墙与网络放行)
+- [6. 客户端连接与导入](#6-客户端连接与导入)
+- [7. 日常运维与服务管理](#7-日常运维与服务管理)
+- [8. 版本升级、无损回滚与卸载](#8-版本升级无损回滚与卸载)
+- [9. 完整 CLI 命令参数速查表](#9-完整-cli-命令参数速查表)
+- [10. 文件结构与安全沙箱布局](#10-文件结构与安全沙箱布局)
+- [11. 常见问题排查（FAQ）](#11-常见问题排查faq)
+
+---
+
+## 0. 下载与运行脚本
+
+### 推荐方式：先下载再验证（最安全）
+
+```bash
+# 下载统一管理脚本
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere.sh
+
+# 赋予执行权限
+chmod +x nowhere.sh
+
+# 以 root 权限运行
+sudo bash nowhere.sh
+```
+
+### 备选方式：一行命令执行（适用于可信来源）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere.sh -o nowhere.sh && chmod +x nowhere.sh && sudo bash nowhere.sh
+```
+
+> **💡 我该用哪个脚本？**
 >
-> 适用环境：systemd Linux、x86_64 或 aarch64、root 或 sudo 权限
-> 默认上游版本：`v1.8.3`
-
-## 0. 两个脚本怎么选
-
-| | `install.sh` | `install-source.sh` |
-|---|---|---|
-| 二进制来源 | 下载官方预编译 Release | **在你这台机器上编译** |
-| 首次安装 | 约 1 分钟 | **20–60 分钟**（1 核 VPS） |
-| 升级 | 约 1 分钟 | **20–60 分钟**（重新编译） |
-| 完整性校验 | 官方 GitHub API 公布的 SHA-256 digest，拿不到就拒绝安装 | 编译产物，无需校验 |
-| 额外依赖 | `curl` `python3` `tar` `sha256sum` | 另需 `git` 和 C 编译器（自动装），Rust 工具链（自动装） |
-| 磁盘 | 几十 MB | 构建期 5 GB 以上 |
-| 需要信任 | ① 上游发布的二进制 ② crates.io ③ rustup 工具链 | ① 上游源码 ② crates.io ③ rustup 工具链 |
-
-**怎么选：**
-
-- **只想快点用上** → `install.sh`。这是绝大多数人的选择，脚本本身仍然是你自己能通读的，只是它下载的是别人编译好的二进制。
-- **就是不想信任别人编译的二进制** → `install-source.sh`。用 20–60 分钟换「产物可追溯到源码」。
-- **拿不准** → 先用 `install.sh` 装上跑通，以后想换随时换（见 §10，两个脚本可以互相接管，配置和服务都不用动）。
-
-### 0.1 信任边界（请如实理解）
-
-无论哪条路，下面这三层都**没有**被解决，这是在一台 VPS 上能做到的合理上限，不是零信任：
-
-| 环节 | install.sh | install-source.sh |
-|---|---|---|
-| 第三方一键脚本本身有后门 | ✅ 解决（脚本可通读，不 `curl \| bash`） | ✅ 解决 |
-| 预编译二进制被植入后门 | ⚠️ 部分（只能靠官方 digest 比对，信任 GitHub 与上游发布流程） | ✅ 解决（不下载任何二进制） |
-| 上游**源码**本身有问题 | ❌ 未解决 | ❌ 未解决（可用 `--commit` 锁到你审过的提交） |
-| 依赖链（crates.io 上的 200+ 个 crate） | ❌ 未解决 | ❌ 未解决（最强做法是 `cargo vendor`，见 §9.3） |
-| Rust 工具链（rustup 下发的官方构建） | ❌ 不涉及 | ⚠️ 部分解决（有 SHA-256 校验，可 `--trust-rustup-sha` 固定） |
-| 传输途中被替换 | ✅ HTTPS + digest 校验 | ✅ git 的提交哈希本身就是内容寻址 |
+> 本仓库包含三个脚本：
+> - **`nowhere.sh`** ← **推荐大多数用户使用**（支持预编译和源码编译两种模式，带 TUI 交互菜单）
+> - `install.sh` ← 用于自动化/CI，仅支持预编译二进制
+> - `install-source.sh` ← 用于自动化/CI，仅支持源码编译
+>
+> **如果不确定，就用 `nowhere.sh`** — 它提供了交互式菜单，让你选择喜欢的安装方式。
 
 ---
 
-## 1. 前置条件
+## 1. 核心特性对比与选型
 
-| 项目 | 要求 |
+脚本支持两种安装模式，配置与服务接口完全统一，可以随时互相平滑接管：
+
+| 评估维度 | 官方预编译二进制版（Release） | 本地源码编译版（Source） |
+|---|---|---|
+| **获取方式** | 下载 GitHub 官方打包发布的静态二进制 | **本机直接克隆 Git 源码实时编译** |
+| **部署耗时** | 约 1 分钟 | 20–60 分钟（1-2 核 VPS 构建较久） |
+| **完整性校验** | 强制查询 GitHub API 比对 SHA-256 Digest，无校验拒绝安装 | 编译产物全部由本机编译器生成，无需额外摘要 |
+| **性能表现** | 官方常规发布级编译优化 | 自动启用 `lto = "fat"` + `codegen-units = 1` 极限优化 |
+| **额外依赖** | `curl` `python3` `tar` `sha256sum` | 自动安装 `git`、C 编译器与 Rust 1.85+ 工具链 |
+| **内存与磁盘** | 内存无要求，磁盘占用几十 MB | 编译期需 ≥5 GB 临时空间，内存不足自动挂载 Swap |
+| **适用场景** | 追求省时、快速上手测试与主力使用 | 追求 100% 审计级别、拒绝使用第三方二进制的极客场景 |
+
+---
+
+## 2. 前置环境与准备工作
+
+| 检查项 | 要求说明 |
 |---|---|
-| 系统 | Linux，systemd 正在运行（`ps -p 1 -o comm=` 输出 `systemd`） |
-| 架构 | `x86_64` 或 `aarch64` |
-| 权限 | root 或 sudo |
-| 端口 | 计划使用的端口 ≥ 1024，且未被占用 |
-| 网络 | 能访问 github.com（编译版还需 crates.io、static.rust-lang.org） |
-
-编译版额外要求：内存 ≥ 1 GB（< 2 GB 时脚本会自动加临时 swap）、`/var/tmp` 所在分区 ≥ 5 GB 空闲。
-
-编译不需要预装 Rust，脚本会自己装；需要 `git`、`curl` 和一个 C 编译器，缺了会自动调用 `apt-get`/`dnf`/`yum`/`apk`/`zypper` 安装（可用 `--no-install-deps` 禁止）。
-
-### 1.1 为什么编译版需要 C 编译器
-
-Nowhere 的加密后端是 `ring`。它是 Rust 生态的库，但内部有汇编/C 代码，需要 C 编译器参与构建。**好消息**：不像 `aws-lc-rs` 那样还需要 `cmake`、`nasm`、`perl`，也不需要系统 OpenSSL——`build-essential` 级别的工具链就够了。
-
-### 1.2 为什么编译这么慢
-
-上游 `Cargo.toml` 里写死了发布配置：
-
-```toml
-[profile.release]
-lto = "fat"          # 全程序链接时优化
-codegen-units = 1    # 禁止并行代码生成
-panic = "abort"
-strip = "symbols"
-```
-
-`lto = "fat"` + `codegen-units = 1` 优化效果最好，也**最慢、最吃内存**——大部分时间花在单线程的 LTO 阶段。1 核机器上 20–60 分钟属于正常，不是卡死了。内存不足 2 GB 时链接阶段容易 OOM，脚本会自动加临时 swap。
-
-### 1.3 关于 libc（仅 `install.sh`）
-
-`install.sh` 会自动判断该用 GNU 还是 musl 构建。如果 VPS 的 glibc 比官方 GNU 构建所要求的还旧，脚本装上的二进制会跑不起来（报 `GLIBC_2.xx not found`），这时改用静态的 musl 版本：
-
-```bash
-sudo bash install.sh install ... --libc musl
-```
+| **操作系统** | 主流 Linux 发行版（Debian 11+、Ubuntu 20.04+、CentOS 8+、Rocky / AlmaLinux、Arch 等） |
+| **初始化系统** | 正在运行的 `systemd`（通过 `ps -p 1 -o comm=` 确认返回 `systemd`） |
+| **系统架构** | `x86_64` (amd64) 或 `aarch64` (arm64) |
+| **执行权限** | `root` 账户或拥有完整的 `sudo` 授权 |
+| **端口要求** | 预备监听端口建议在 `1024-65535` 之间（服务以安全非特权用户运行） |
+| **网络环境** | VPS 需能够正常访问 `github.com`（编译版还需连接 `static.rust-lang.org` 与 `crates.io`） |
 
 ---
 
-## 2. 快速开始
+## 3. 快速开始（一键安装）
 
-### 2.1 把脚本传到 VPS
+### 3.1 交互控制台模式（推荐新手）
 
-在 Mac 上：
+下载脚本后（参见 [§0](#0-下载与运行脚本)），直接运行：
 
 ```bash
-scp ~/nowhere-deploy/install.sh <VPS用户>@<VPS地址>:/tmp/install.sh
+chmod +x nowhere.sh
+sudo bash nowhere.sh
 ```
 
-登录后先做语法检查（不会执行任何安装动作）：
+进入后可选择界面语言（支持中文、英文、俄文），随后在 TUI 菜单中输入对应编号：
+
+* 按 `1`：**安装官方预编译版**（输入端口、密钥与证书路径后，1 分钟内完成部署启动）。
+* 按 `2`：**本地源码编译安装**（自动配置 Rust 工具链与临时 Swap 并开始编译）。
+
+> **提示**：如果在编译模式下，建议在 `tmux` 或 `screen` 会话中运行，避免网络波动导致 SSH 断开终止编译：
+>
+> ```bash
+> tmux new -s nowhere
+> sudo bash nowhere.sh
+> # 可随时使用 Ctrl+B 然后按 D 脱离终端；随时执行 tmux attach -t nowhere 回到现场
+> ```
+
+---
+
+### 3.2 命令行无交互部署（自动化 / 脚本）
+
+#### 场景 A：快速安装与临时测试（TLS 1 临时自签）
+
+无需申请域名与配置证书，快速验证连通性：
 
 ```bash
-ssh <VPS用户>@<VPS地址>
-chmod 700 /tmp/install.sh
-bash -n /tmp/install.sh          # 只检查语法
+sudo bash nowhere.sh install \
+  --method release \
+  --port 2077 \
+  --net mix \
+  --tls 1 \
+  --key 'MyGeneratedKey_12345678'
 ```
 
-### 2.2 用 TLS 2（PEM 证书）时，必须先做这一步
+#### 场景 B：生产环境部署（TLS 2 强校验 PEM 证书）
 
-Let's Encrypt 的私钥默认是 `600 root:root`，且上级目录 `700`，服务用户 `nowhere` 读不到。**不要**放宽原证书的权限，而是复制一份：
-
-```bash
-sudo bash /tmp/install.sh prepare-tls \
-  --cert /etc/letsencrypt/live/<节点域名>/fullchain.pem \
-  --tls-key /etc/letsencrypt/live/<节点域名>/privkey.pem
-```
-
-它会创建 `nowhere` 用户/组，把证书复制到 `/etc/nowhere/tls/`（`640 root:nowhere`），并打印出接下来要用的路径。**每次证书续期后都要重跑一次**，或把它写进 certbot 的 deploy hook。
-
-> 只想先跑通、不折腾证书？把下面命令里的 `--tls 2 --cert ... --tls-key ...` 换成 `--tls 1` 即可，客户端会接受临时自签证书。生产环境不要这么用。
-
-### 2.3 安装
+使用自有的真实域名 PEM 证书（如 Let's Encrypt / acme.sh 颁发）：
 
 ```bash
-sudo bash /tmp/install.sh install \
-  --key '<至少16字符的共享密钥>' \
+# 1. 复制授权证书，生成专用隔离路径
+sudo bash nowhere.sh prepare-tls \
+  --cert /etc/letsencrypt/live/example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/example.com/privkey.pem
+
+# 2. 启动生产部署
+sudo bash nowhere.sh install \
+  --method release \
   --port 2077 \
   --net mix \
   --tls 2 \
   --cert /etc/nowhere/tls/fullchain.pem \
-  --tls-key /etc/nowhere/tls/privkey.pem
+  --tls-key /etc/nowhere/tls/privkey.pem \
+  --key 'MyGeneratedKey_12345678'
 ```
 
-装完脚本会直接打印客户端要用的 `portal://` 链接（含密钥，注意别泄露）。
+---
 
-**编译版的话，把脚本名换成 `install-source.sh`，其余完全一样。** 编译要跑半小时，建议放在 `tmux` 里，免得 SSH 断线白等：
+## 4. TLS 证书配置与权限安全处理
+
+### 4.1 为什么必须运行 `prepare-tls`？
+
+Let's Encrypt 默认的私钥权限为 `600 root:root`，父目录为 `700`，而非特权用户 `nowhere` 在严格的 systemd 沙箱隔离下无权读取。
+
+**强烈不建议**直接将原证书私钥执行 `chmod 644`，这会破坏系统的安全性。运行 `prepare-tls` 会将证书安全同步到 `/etc/nowhere/tls/` 并将其所属组授权给 `nowhere` 系统用户（`640 root:nowhere`）。
+
+### 4.2 证书自动续期与 Hook 配置
+
+如果使用 Certbot 维护证书，在 `/etc/letsencrypt/renewal-hooks/deploy/nowhere.sh` 写入更新钩子：
 
 ```bash
-tmux new -s nowhere
-sudo bash /tmp/install-source.sh install --key '...' --port 2077 --tls 1
-# Ctrl+B 然后按 D 脱离；随时 tmux attach -t nowhere 回来看
+#!/usr/bin/env bash
+bash /path/to/nowhere.sh prepare-tls \
+  --cert "$RENEWED_LINEAGE/fullchain.pem" \
+  --tls-key "$RENEWED_LINEAGE/privkey.pem"
+systemctl restart nowhere
 ```
 
-### 2.4 编译失败会怎样
-
-没有 dry-run 模式。失败时脚本直接退出：**不会**写配置、**不会**创建 systemd 服务、**不会**动 `current` 软链（升级场景还会自动切回旧版本）。
-
-留下的残留只有 `nowhere` 系统用户和 `/var/tmp/nowhere-build` 构建树。用 `install-source.sh clean-build` 清掉，或者加 `--keep-source` 留着——重跑同一版本会复用 cargo 缓存，比第一次快得多。
+赋予权限：`chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere.sh`。每次证书续期后将自动完成授权与服务热重载。
 
 ---
 
-## 3. 参数说明
+## 5. 防火墙与网络放行
 
-### 3.1 两个脚本都有的（服务相关）
+依据你配置的 `--net` 参数类型，在系统防火墙以及云厂商控制台（安全组）放行端口：
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `--key KEY` | 无（首次必填） | Portal 共享密钥，16–255 字符，只能用 `A-Za-z0-9._~-` |
-| `--port PORT` | `2077` | 监听端口，必须 ≥ 1024（服务以非 root 用户运行） |
-| `--net MODE` | `mix` | `mix` / `tcp` / `udp`；`mix` 表示 TCP 与 UDP 共用同一端口 |
-| `--tls MODE` | `2` | `1` 临时自签证书（重启后指纹变化），`2` 使用 PEM 文件 |
-| `--cert PATH` | 无 | `--tls 2` 时必填，证书链（`fullchain.pem`） |
-| `--tls-key PATH` | 无 | `--tls 2` 时必填，私钥（`privkey.pem`） |
-| `--listen-host HOST` | 空 | 绑定地址；留空使用 Nowhere 的通配默认值 |
-| `--purge` | — | 卸载时一并删除 `/etc/nowhere` 与 `/var/lib/nowhere` |
-
-### 3.2 仅 `install.sh`（下载二进制）
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `--version TAG` | `v1.8.3` | 要安装的官方 Release tag |
-| `--libc MODE` | `auto` | `gnu` / `musl` / `auto`；glibc 太旧时用 `musl` |
-
-### 3.3 仅 `install-source.sh`（编译）
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `--version TAG` | `v1.8.3` | 要编译的 git tag |
-| `--commit SHA` | 无 | 锁定到具体提交（完整克隆，更慢但可复现）；与 `--version` 二选一 |
-| `--git-url URL` | 官方仓库 | 换成你自己的 fork 或镜像 |
-| `--jobs N` | cargo 默认 | 限制并行编译任务数，小内存 VPS 上设 `1` |
-| `--swap auto\|off\|MB` | `auto` | `auto`：内存 <2G 建 2G swap，<1G 建 4G；也可指定 MB 数 |
-| `--keep-source` | 关 | 编译成功后保留 `/var/tmp/nowhere-build`（下次升级可增量编译） |
-| `--no-install-deps` | — | 不自动装系统依赖，缺什么直接报错 |
-| `--no-install-rust` | — | 不自动装 Rust，版本不够直接报错 |
-| `--trust-rustup-sha HEX` | 无 | 要求 rustup-init 的 SHA-256 等于该值 |
-
----
-
-## 4. 脚本都做了什么
-
-1. 校验版本号、端口、密钥、证书路径，**在开始下载/编译前**把所有廉价检查做完；
-2. 检查端口是否被占用（仅首次安装）；
-3. 检查证书能否被服务用户读取，读不到就报错并给 `prepare-tls` 的用法；
-4. `install.sh`：向 GitHub API 索取该资产的 SHA-256 digest，下载后比对，不符即中止；`install-source.sh`：校验并（必要时）安装 Rust 工具链、按需加临时 swap、拉源码、打印 commit、编译；
-5. 把二进制装到 `/opt/nowhere/releases/<tag>/nowhere`，写入溯源文件，切换 `/opt/nowhere/current` 软链；
-6. 首次安装写 `/etc/nowhere/nowhere.env`（`600`、root 所有），创建 systemd 服务并启动；
-7. 服务起不来时：首次安装直接报错并打印日志；升级则自动切回旧版本。
-
-### 4.1 安装后的文件布局
-
-```text
-/opt/nowhere/releases/v1.8.3/nowhere        二进制
-/opt/nowhere/releases/v1.8.3/BUILD-INFO     溯源信息（编译版）
-/opt/nowhere/releases/v1.8.3/RELEASE-INFO   溯源信息（二进制版）
-/opt/nowhere/current -> /opt/nowhere/releases/v1.8.3
-/usr/local/bin/nowhere -> /opt/nowhere/current/nowhere
-/etc/nowhere/nowhere.env                    配置（600，含 portal:// 链接与密钥）
-/etc/nowhere/tls/                           prepare-tls 复制的证书（640 root:nowhere）
-/etc/systemd/system/nowhere.service         服务单元（含 systemd 沙箱加固）
-/var/lib/nowhere/                           服务状态目录
-```
-
-溯源文件用来回答「现在跑的到底是哪份东西」，编译版长这样：
-
-```text
-repository:   https://github.com/NodePassProject/Nowhere.git
-tag:          v1.8.3
-commit:       1a2b3c...
-built_at:     2026-09-10T05:12:33Z
-toolchain:    rustc 1.89.0 (29483883e 2025-08-01)
-binary_sha256: 9f8e...
-```
-
-二进制版长这样：
-
-```text
-repository:   https://github.com/NodePassProject/Nowhere
-tag:          v1.8.3
-asset:        nowhere-x86_64-unknown-linux-gnu.tar.gz
-source:       official prebuilt Release (not compiled locally)
-asset_sha256: <GitHub API 公布的 digest>
-binary_sha256: <解包后二进制的实际校验和>
-```
-
-### 4.2 systemd 沙箱
-
-服务以系统用户 `nowhere`（无登录 shell）运行，单元文件里开启了 `NoNewPrivileges`、`ProtectSystem=strict`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`、`CapabilityBoundingSet=`（清空 capabilities）等加固项，并把监听端口限制在 1024 以上，避免服务持有 root 能力。
-
----
-
-## 5. 客户端连接
-
-安装完成后脚本会打印链接，也可以随时再取（两个脚本都有）：
+### UFW（Ubuntu / Debian）
 
 ```bash
-sudo bash /tmp/install.sh link
-```
-
-链接格式（`--tls 2`）：
-
-```text
-portal://<共享密钥>@<域名或IP>:<端口>?tls=2&crt=<已编码的证书路径>&key=<已编码的私钥路径>
-```
-
-`--net` 不是 `mix` 时会多一个 `&net=tcp` 或 `&net=udp`。
-
-把这条链接导入客户端即可。**它等同于密码**：`portal://` 里的共享密钥一旦泄露，任何人都能用你的节点。不要提交到 Git、不要贴到聊天记录里。
-
----
-
-## 6. 放行端口
-
-云厂商安全组和系统防火墙都要放行（`--net mix` 时 TCP 和 UDP 都要）：
-
-```bash
-# UFW
+# 如果使用 --net mix（TCP 和 UDP 均需放行）
 sudo ufw allow 2077/tcp
 sudo ufw allow 2077/udp
+sudo ufw reload
 sudo ufw status numbered
+```
 
-# firewalld
+### Firewalld（CentOS / RHEL / Fedora / Rocky）
+
+```bash
 sudo firewall-cmd --permanent --add-port=2077/tcp
 sudo firewall-cmd --permanent --add-port=2077/udp
 sudo firewall-cmd --reload
 ```
 
-确认监听：
+---
+
+## 6. 客户端连接与导入
+
+部署完成后，脚本将在终端打印专属节点连接：
+
+```text
+portal://<密钥>@<你的域名或公网IP>:<端口>?tls=2&crt=%2Fetc%2Fnowhere%2Ftls%2Ffullchain.pem&key=%2Fetc%2Fnowhere%2Ftls%2Fprivkey.pem
+```
+
+* **mix 模式**：TCP 与 UDP 共用该端口。
+* **安全警告**：`portal://` 链接内含有连接密码，任何人得到该链接均可将你的 VPS 作为出口代理。严禁发送至公共群组或上传至公开仓库！
+
+随时重新获取链接：
 
 ```bash
-sudo ss -lntup | grep ':2077'
-sudo systemctl is-active nowhere
+sudo bash nowhere.sh link
 ```
 
 ---
 
-## 7. 日常运维
+## 7. 日常运维与服务管理
+
+无论在何种安装模式下，都可以使用以下通用快捷指令：
 
 ```bash
-sudo bash /tmp/install.sh status     # 服务状态 + 当前版本目录
-sudo bash /tmp/install.sh logs       # 跟踪日志（Ctrl+C 退出）
-sudo bash /tmp/install.sh restart
-sudo bash /tmp/install.sh link       # 打印客户端链接
+# 打开交互控制菜单
+sudo bash nowhere.sh menu
 
-readlink /opt/nowhere/current                     # 当前跑的是哪个版本
-cat /opt/nowhere/current/BUILD-INFO               # 溯源信息（编译版）
-sudo journalctl -u nowhere -n 100 --no-pager      # 最近日志
-```
+# 查看服务状态与当前跑的发布版本
+sudo bash nowhere.sh status
 
-两个脚本都是**无状态**的：每次都从磁盘上的实际状态判断该做什么，放在 `/tmp` 下丢了也没关系，重新拷一份即可（建议连同文档一起放到 `/root/` 或自己的 Git 仓库里）。
+# 跟踪查看系统实时日志（Ctrl+C 退出）
+sudo bash nowhere.sh logs
 
----
+# 重启 Nowhere 服务
+sudo bash nowhere.sh restart
 
-## 8. 升级、回滚与重新编译
-
-### 8.1 升级
-
-```bash
-# 先看上游最新 tag：https://github.com/NodePassProject/Nowhere/releases
-sudo bash /tmp/install.sh upgrade --version v1.9.0
-```
-
-升级会重新下载（或重新编译）并切换软链、重启服务，**保留 `/etc/nowhere/nowhere.env` 不变**。升级不会改配置：`--port`、`--key`、`--tls`、`--cert` 这些参数在升级时**不生效**。
-
-升级前建议：
-
-```bash
-sudo cp -a /etc/nowhere /etc/nowhere.backup.$(date +%F-%H%M%S)
-readlink /opt/nowhere/current        # 记下旧版本，回滚要用
-```
-
-### 8.2 回滚
-
-```bash
-sudo bash /tmp/install.sh rollback
-```
-
-回滚只是把 `current` 软链指向上一个发布目录并重启，**不重新下载/编译**，秒级完成。前提是旧版本目录还在——脚本从不主动删除旧版本目录。手动删过 `/opt/nowhere/releases/` 里的目录就没法回滚了。
-
-### 8.3 修改配置（端口/证书/密钥）
-
-脚本刻意不允许在 upgrade 时改配置，避免「以为改了其实没改」。要改配置，直接编辑再重启：
-
-```bash
-sudo cp /etc/nowhere/nowhere.env /etc/nowhere/nowhere.env.bak
-sudo vi /etc/nowhere/nowhere.env     # 改 NOWHERE_PORTAL
+# 原生 systemctl 操作
+sudo systemctl status nowhere
 sudo systemctl restart nowhere
-sudo systemctl is-active nowhere
 ```
-
-`NOWHERE_PORTAL` 的值就是那条 `portal://` 链接。改端口后记得同步放行新端口的防火墙规则。
-
-### 8.4 重新编译当前版本（仅编译版）
-
-想验证一次「我本地编译的和现在跑的是一样的」，或怀疑二进制被替换：
-
-```bash
-sudo bash /tmp/install-source.sh upgrade --version v1.8.3 --keep-source
-cat /opt/nowhere/releases/v1.8.3/BUILD-INFO    # 对比 binary_sha256
-```
-
-### 8.5 清理构建缓存（仅编译版）
-
-```bash
-sudo bash /tmp/install-source.sh clean-build     # 删除 /var/tmp/nowhere-build 和遗留的 swapfile
-```
-
-默认编译成功后脚本会自己清掉构建树（约 2–4 GB）；用 `--keep-source` 才会保留，代价是占磁盘、好处是下次升级增量编译快很多。
 
 ---
 
-## 9. 安全说明
+## 8. 版本升级、无损回滚与卸载
 
-### 9.1 安装期
-
-- 两个脚本都以 root 运行，所有下载都走 HTTPS；
-- `install.sh` 在 digests 缺失或校验不符时**拒绝安装**，并且从不解压后再执行任何网络内容；
-- `install-source.sh` 编译在 `/var/tmp/nowhere-build` 进行，源目录权限 700，rustup-init 会校验 SHA-256；
-- 配置文件 `600`、root 所有，服务用户只能通过 systemd 读取其中的环境变量。
-
-### 9.2 运行期
-
-- 服务以 `nowhere` 用户运行，无 shell、无 capabilities、`ProtectSystem=strict`；
-- 二进制放在 `/opt/nowhere`，普通用户不可写；软链由 root 掌控。
-
-### 9.3 想要更强的可复现性
+### 8.1 版本升级
 
 ```bash
-# 1) 锁定到你审计过的提交
-sudo bash /tmp/install-source.sh upgrade --commit <40位SHA>
-
-# 2) 固定 rustup 的指纹（从可信渠道获取后传入）
-sudo bash /tmp/install-source.sh install ... --trust-rustup-sha <rustup-init的SHA256>
+# 升级至指定的官方最新 release tag
+sudo bash nowhere.sh upgrade --version v1.9.0
 ```
 
-`--locked` 只保证**依赖版本**由仓库里的 `Cargo.lock` 决定，依赖包本身仍是从 crates.io 下载的。要做到完全不依赖网络分发，可以在构建机上 `cargo vendor` 后把依赖树一起放进仓库，再改成 `--offline` 构建——这是更强也更重的方案，需要时再来做。
+升级时将保留 `/etc/nowhere/nowhere.env` 配置不变。如果新版本启动检测失败，脚本会自动切回旧版本，防止服务失联。
+
+### 8.2 秒级无损回滚
+
+当新版本出现异常时，直接执行回滚命令：
+
+```bash
+sudo bash nowhere.sh rollback
+```
+
+脚本会将软链指向上一个编译 / 运行成功的目录并重启服务，无需重新下载或编译，秒级生效。
+
+### 8.3 清理与卸载
+
+```bash
+# 清理源码编译残留缓存与临时 Swap
+sudo bash nowhere.sh clean-build
+
+# 卸载程序本体与 systemd 服务（保留 /etc/nowhere 中的配置与密钥）
+sudo bash nowhere.sh uninstall
+
+# 彻底卸载（一并删除所有配置、证书授权与运行状态，不可逆）
+sudo bash nowhere.sh uninstall --purge
+```
 
 ---
 
-## 10. 两个脚本的关系
+## 9. 完整 CLI 命令参数速查表
 
-**它们可以互相接管。** 两个脚本使用完全相同的路径、配置文件和 systemd 服务名：
+| 参数 | 默认值 | 作用说明 |
+| --- | --- | --- |
+| `--method MODE` | `release` | 指定安装模式：`release`（预编译）或 `source`（本地编译） |
+| `--key KEY` | 自动生成 | Portal 共享密钥（16–255 字符，仅限字母数字及 `._~-`） |
+| `--port PORT` | `2077` | 监听端口（必须在 `1024-65535` 范围内） |
+| `--net MODE` | `mix` | 网络协议：`mix`（TCP/UDP 同端口混用）、`tcp`、`udp` |
+| `--tls MODE` | `2` | TLS 模式：`1`（临时自签证书）、`2`（本地 PEM 证书文件） |
+| `--cert PATH` | 无 | 证书全链路径（`fullchain.pem`），TLS 2 必填 |
+| `--tls-key PATH` | 无 | 私钥文件路径（`privkey.pem`），TLS 2 必填 |
+| `--version TAG` | `v1.8.3` | 指定拉取的 GitHub Release 或 Git Tag 版本 |
+| `--libc MODE` | `auto` | C 库兼容选项（预编译模式）：`auto`、`gnu` 或 `musl` |
+| `--commit SHA` | 无 | 锁定源码构建的精确 Git Commit Hash（编译模式） |
+| `--jobs N` | 核心数 | 限制 cargo 编译并行任务数，建议 1 核机器设为 `1` |
+| `--swap MODE` | `auto` | 临时 Swap 控制：`auto`、`off` 或自定义大小（MB） |
+| `--keep-source` | 关 | 编译后保留构建树与缓存，加速下一次增量编译 |
+| `--lang LANG` | `ask` | 界面语言：`zh`（中文）、`en`（英文）、`ru`（俄文） |
+
+---
+
+## 10. 文件结构与安全沙箱布局
+
+安装完成后，系统内的文件分布如下：
 
 ```text
-/opt/nowhere/current          /etc/nowhere/nowhere.env
-/etc/systemd/system/nowhere.service
+/opt/nowhere/
+├── releases/
+│   ├── v1.8.3-prebuilt-xxxxxxxxxxxx/     # 官方预编译二进制发布目录
+│   │   ├── nowhere
+│   │   └── RELEASE-INFO                  # 官方下载与摘要审计凭据
+│   └── v1.8.3-source-yyyy-zzzzzzzzzzzz/  # 本地源码编译发布目录
+│       ├── nowhere
+│       └── BUILD-INFO                    # 源码编译器、Commit Hash 溯源凭据
+└── current -> releases/...               # 原子软链，指向当前激活目录
+
+/usr/local/bin/nowhere -> /opt/nowhere/current/nowhere  # 全局可执行软链
+
+/etc/nowhere/
+├── nowhere.env                           # 运行配置文件（权限 600，仅 root 可读写）
+└── tls/
+    ├── fullchain.pem                     # 授权证书（权限 640，root:nowhere）
+    └── privkey.pem                       # 授权私钥（权限 640，root:nowhere）
+
+/etc/systemd/system/nowhere.service       # systemd 安全隔离沙箱单元
+/var/lib/nowhere/                         # 服务运行专用主目录与状态目录
 ```
 
-所以迁移就是跑一次 `upgrade`，配置和服务都不用动：
+---
+
+## 11. 常见问题排查（FAQ）
+
+### Q1: 运行提示 `GLIBC_2.xx not found`
+
+* **根因**：系统环境自带的 glibc 版本低于官方构建 GNU 库的编译环境。
+* **解决**：使用官方静态编译的 musl 构建重新安装：
 
 ```bash
-# 二进制版 → 编译版（开始自己编译）
-sudo bash /tmp/install-source.sh upgrade --version v1.8.3
-
-# 编译版 → 二进制版（不想再等编译了）
-sudo bash /tmp/install.sh upgrade --version v1.8.3
+sudo bash nowhere.sh install --method release --libc musl [其他参数...]
 ```
 
-注意两点：
+### Q2: 源码编译被中止，报 `signal: 9 Killed`
 
-1. `upgrade` 会**覆盖同一个 tag 的 release 目录**（`/opt/nowhere/releases/<tag>/`），所以迁移后 `BUILD-INFO` 会变成 `RELEASE-INFO`（或反之），不会并存；
-2. 想保留旧的那份，迁移前先 `readlink /opt/nowhere/current` 记下路径，或把旧目录复制一份。
-
----
-
-## 11. 故障排查
-
-| 现象 | 原因 / 处理 |
-|---|---|
-| `Install a C compiler` / 编译中断 | 编译版缺工具链；去掉 `--no-install-deps` 重跑 |
-| `rustc ... is older than 1.85.0` | 编译版：系统 rustc 太旧，脚本会自动装新工具链；用 `--no-install-rust` 时需自己装 |
-| 编译中途 `signal: 9` / `Killed` | 编译版内存不足，LTO 阶段被 OOM Killer 杀掉。用 `--swap 4096` 或 `--jobs 1` 重跑；保留源码树可增量续编 |
-| 编译很久没动静 | `lto="fat"` + `codegen-units=1` 的单线程链接阶段，属正常。看 `top` 确认 rustc/cc 仍在吃 CPU |
-| `GitHub did not publish a SHA-256 digest` | 二进制版：官方没为这个资产公布 digest，脚本拒绝安装。别绕过，改用编译版 |
-| `SHA-256 mismatch` | 二进制版：下载内容与官方 digest 不符。**不要跳过校验**，换网络重试；持续出现要警惕 |
-| `GLIBC_2.xx not found` | 二进制版：官方 GNU 构建要求更新的 glibc。加 `--libc musl` 装静态版本 |
-| `Could not download rustup-init` | 编译版：到 static.rust-lang.org 不通；换网络或手动装好 Rust 后加 `--no-install-rust` |
-| `git clone failed` | 编译版：到 github.com 不通；可用 `--git-url` 指向自己的镜像/fork（注意这会把信任转移到镜像方） |
-| `Need ~...MB free on /` | 编译版磁盘不够，清理后重试，或先 `clean-build` |
-| `Port 2077 is already in use` | 换端口或停掉冲突服务 |
-| `Service user nowhere cannot read certificate` | 私钥权限问题。用 `prepare-tls --cert ... --tls-key ...` 复制一份，**不要** `chmod 644` 私钥 |
-| 服务起不来 | `journalctl -u nowhere -n 100 --no-pager`；常见是证书路径、端口被占、URI 写错 |
-| 外部连不上 | 按顺序查：服务是否 active → `ss -lntup` 是否监听 → 系统防火墙 → 云安全组 → DNS |
-| 证书续期后客户端报错 | 重跑一次 `prepare-tls`，再 `systemctl restart nowhere`；可放进 certbot 的 deploy hook，但先在维护窗口手动验证一次 |
-
----
-
-## 12. 卸载
+* **根因**：全程序链接时优化（Fat-LTO）消耗内存超出物理上限，被系统 OOM Killer 强制终结。
+* **解决**：指定分配更大的临时 Swap，并限制并行进程数重试：
 
 ```bash
-# 只删服务和二进制，保留配置与状态
-sudo bash /tmp/install.sh uninstall
-
-# 连配置和密钥一起删（不可逆，先备份）
-sudo bash /tmp/install.sh uninstall --purge
+sudo bash nowhere.sh install --method source --swap 4096 --jobs 1 [其他参数...]
 ```
 
-两个脚本的卸载行为一致。`--purge` 会删掉 `/etc/nowhere`（含 `portal://` 链接）和 `/var/lib/nowhere`。
+### Q3: 报错 `GitHub did not publish a SHA-256 digest`
 
----
+* **根因**：脚本启用零信任验证，由于官方 Release 构建流程偶尔未落盘对应文件的哈希摘要，脚本主动中止下载。
+* **解决**：改用本地源码编译模式运行：`--method source`。
 
-## 13. 变更记录模板
+### Q4: 提示 `Service user nowhere cannot read certificate`
 
-```text
-日期：
-VPS / 节点域名：
-操作：首次安装 / 升级 / 回滚 / 改配置 / 重新编译 / 换脚本
-使用的脚本与版本：
-目标版本与 commit：
-端口与网络模式：
-TLS 模式与证书路径：
-执行命令：
-编译耗时 / 峰值内存：
-执行前服务状态：
-执行后服务状态：
-binary_sha256：
-遇到的问题与处理：
-下一步：
-```
+* **根因**：TLS 2 模式直接引用了原生 Let's Encrypt 私钥，服务用户无权限读取。
+* **解决**：务必先执行 `sudo bash nowhere.sh prepare-tls --cert ... --tls-key ...`，并使用该命令输出的 `/etc/nowhere/tls/` 路径作为参数。
+
+### Q5: 客户端无法连接或握手超时
+
+* **排查步骤**：
+  1. 检查服务存活：`sudo systemctl status nowhere`；
+  2. 检查本地端口监听：`sudo ss -lntup | grep 2077`；
+  3. 检查系统防火墙（UFW / Firewalld）是否放行了对应端口与协议（TCP/UDP）；
+  4. 检查 VPS 服务商后台（如阿里云、腾讯云、AWS、甲骨文等）的**安全组入站规则**是否放行该端口；
+  5. 确认域名解析是否生效且未开启 CDN 代理（需直连）。

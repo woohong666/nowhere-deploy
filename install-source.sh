@@ -15,7 +15,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly DEFAULT_REPO_URL="https://github.com/NodePassProject/Nowhere.git"
 readonly DEFAULT_VERSION="v1.8.3"
 readonly MIN_RUSTC="1.85.0" # edition 2024 => rustc >= 1.85
@@ -29,6 +29,9 @@ readonly BIN_LINK="/usr/local/bin/nowhere"
 readonly CONFIG_DIR="/etc/nowhere"
 readonly CONFIG_FILE="${CONFIG_DIR}/nowhere.env"
 readonly UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+readonly SCRIPT_NAME="${0##*/}"
+
+LANG_CODE="${NOWHERE_LANG:-auto}"
 
 readonly SRC_DIR="/var/tmp/nowhere-build"
 readonly SWAP_FILE="/swapfile-nowhere"
@@ -62,9 +65,34 @@ SWAP_CREATED=0
 # The loop in cleanup_all skips empty entries, so this sentinel is inert.
 CLEANUP_PATHS=("")
 
+resolve_language() {
+  local requested="${1:-auto}" locale
+  case "$requested" in
+    auto)
+      locale="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+      case "$locale" in
+        zh*|ZH*) LANG_CODE="zh" ;;
+        ru*|RU*) LANG_CODE="ru" ;;
+        *) LANG_CODE="en" ;;
+      esac
+      ;;
+    en|zh|ru) LANG_CODE="$requested" ;;
+    *) printf '\033[1;31m[Error]\033[0m Unsupported language: %s (use auto, en, zh, or ru).\n' "$requested" >&2; exit 1 ;;
+  esac
+}
+
+tr_msg() {
+  local en="$1" zh="$2" ru="$3"
+  case "$LANG_CODE" in
+    zh) printf '%s' "$zh" ;;
+    ru) printf '%s' "$ru" ;;
+    *) printf '%s' "$en" ;;
+  esac
+}
+
 info() { printf '\033[1;34m[Nowhere]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[Warn]\033[0m %s\n' "$*" >&2; }
-die() { printf '\033[1;31m[Error]\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1;33m[%s]\033[0m %s\n' "$(tr_msg Warn 警告 Предупреждение)" "$*" >&2; }
+die() { printf '\033[1;31m[%s]\033[0m %s\n' "$(tr_msg Error 错误 Ошибка)" "$*" >&2; exit 1; }
 
 # Runs on every exit path, including die(), so a failed build never leaves a
 # temporary swapfile or a mktemp directory behind.
@@ -80,6 +108,8 @@ cleanup_all() {
   cleanup_swap
 }
 trap cleanup_all EXIT
+
+resolve_language "$LANG_CODE"
 
 usage() {
   cat <<'EOF'
@@ -188,6 +218,7 @@ validate_config() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --lang) LANG_CODE="${2:?missing value for --lang}"; resolve_language "$LANG_CODE"; shift 2 ;;
       --version) VERSION="${2:?missing value for --version}"; shift 2 ;;
       --commit) COMMIT="${2:?missing value for --commit}"; shift 2 ;;
       --git-url) REPO_URL="${2:?missing value for --git-url}"; shift 2 ;;
@@ -552,14 +583,14 @@ check_port_available() {
 }
 
 stage_release() {
-  local release_dir="${INSTALL_ROOT}/releases/${VERSION}"
+  local rustc_version binary_sha release_dir
+  binary_sha="$(sha256sum "$BUILT_BIN" | awk '{print $1}')"
+  release_dir="${INSTALL_ROOT}/releases/${VERSION}-source-${BUILD_COMMIT:0:8}-${binary_sha:0:12}"
   install -d -m 755 "${INSTALL_ROOT}/releases" "$release_dir"
   install -m 755 "$BUILT_BIN" "${release_dir}/nowhere"
 
-  local rustc_version binary_sha
   rustc_version="$(RUSTUP_HOME="$RUSTUP_HOME_DIR" CARGO_HOME="$CARGO_HOME_DIR" \
     PATH="${CARGO_HOME_DIR}/bin:${PATH}" rustc --version 2>/dev/null || printf 'unknown')"
-  binary_sha="$(sha256sum "${release_dir}/nowhere" | awk '{print $1}')"
 
   cat >"${release_dir}/BUILD-INFO" <<EOF
 repository:   ${REPO_URL}
@@ -582,6 +613,8 @@ EOF
 
 build_portal() {
   local host="${LISTEN_HOST}"
+  # If LISTEN_HOST is empty, use a placeholder that makes the malformed URL obvious
+  [[ -z "$host" ]] && host="<YOUR-SERVER-IP-OR-DOMAIN>"
   local query="tls=${TLS}"
   [[ "$NET" == "mix" ]] || query="${query}&net=${NET}"
   if [[ "$TLS" == "2" ]]; then

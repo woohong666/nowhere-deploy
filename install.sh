@@ -13,7 +13,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly REPO="NodePassProject/Nowhere"
 readonly DEFAULT_VERSION="v1.8.3"
 readonly SERVICE_NAME="nowhere"
@@ -25,6 +25,9 @@ readonly BIN_LINK="/usr/local/bin/nowhere"
 readonly CONFIG_DIR="/etc/nowhere"
 readonly CONFIG_FILE="${CONFIG_DIR}/nowhere.env"
 readonly UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+readonly SCRIPT_NAME="${0##*/}"
+
+LANG_CODE="${NOWHERE_LANG:-auto}"
 
 ACTION="${1:-help}"
 [[ $# -eq 0 ]] || shift
@@ -45,9 +48,34 @@ PURGE=0
 # The loop in cleanup_all skips empty entries, so this sentinel is inert.
 CLEANUP_PATHS=("")
 
+resolve_language() {
+  local requested="${1:-auto}" locale
+  case "$requested" in
+    auto)
+      locale="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+      case "$locale" in
+        zh*|ZH*) LANG_CODE="zh" ;;
+        ru*|RU*) LANG_CODE="ru" ;;
+        *) LANG_CODE="en" ;;
+      esac
+      ;;
+    en|zh|ru) LANG_CODE="$requested" ;;
+    *) printf '\033[1;31m[Error]\033[0m Unsupported language: %s (use auto, en, zh, or ru).\n' "$requested" >&2; exit 1 ;;
+  esac
+}
+
+tr_msg() {
+  local en="$1" zh="$2" ru="$3"
+  case "$LANG_CODE" in
+    zh) printf '%s' "$zh" ;;
+    ru) printf '%s' "$ru" ;;
+    *) printf '%s' "$en" ;;
+  esac
+}
+
 info() { printf '\033[1;34m[Nowhere]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[Warn]\033[0m %s\n' "$*" >&2; }
-die() { printf '\033[1;31m[Error]\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1;33m[%s]\033[0m %s\n' "$(tr_msg Warn 警告 Предупреждение)" "$*" >&2; }
+die() { printf '\033[1;31m[%s]\033[0m %s\n' "$(tr_msg Error 错误 Ошибка)" "$*" >&2; exit 1; }
 
 # Runs on every exit path, including die(), so a failed run never leaves a
 # mktemp directory behind.
@@ -62,6 +90,8 @@ cleanup_all() {
   fi
 }
 trap cleanup_all EXIT
+
+resolve_language "$LANG_CODE"
 
 usage() {
   cat <<'EOF'
@@ -186,6 +216,8 @@ stored_portal() {
 
 build_portal() {
   local host="${LISTEN_HOST}"
+  # If LISTEN_HOST is empty, use a placeholder that makes the malformed URL obvious
+  [[ -z "$host" ]] && host="<YOUR-SERVER-IP-OR-DOMAIN>"
   local query="tls=${TLS}"
   [[ "$NET" == "mix" ]] || query="${query}&net=${NET}"
   if [[ "$TLS" == "2" ]]; then
@@ -264,14 +296,13 @@ install_verified_binary() {
   binary="$(find "$tmpdir/extracted" -type f -name nowhere -perm -u+x -print -quit)"
   [[ -n "$binary" ]] || die "Release archive does not contain an executable named nowhere."
 
-  release_dir="${INSTALL_ROOT}/releases/${VERSION}"
+  local binary_sha
+  binary_sha="$(sha256sum "$binary" | awk '{print $1}')"
+  release_dir="${INSTALL_ROOT}/releases/${VERSION}-prebuilt-${binary_sha:0:12}"
   install -d -m 755 "${INSTALL_ROOT}/releases" "$release_dir"
   install -m 755 "$binary" "${release_dir}/nowhere"
   ln -sfn "$release_dir" "$CURRENT_LINK"
   ln -sfn "${CURRENT_LINK}/nowhere" "$BIN_LINK"
-
-  local binary_sha
-  binary_sha="$(sha256sum "${release_dir}/nowhere" | awk '{print $1}')"
   cat >"${release_dir}/RELEASE-INFO" <<EOF
 repository:   https://github.com/${REPO}
 tag:          ${VERSION}
@@ -515,6 +546,7 @@ uninstall() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --lang) LANG_CODE="${2:?missing value for --lang}"; resolve_language "$LANG_CODE"; shift 2 ;;
       --version) VERSION="${2:?missing value for --version}"; shift 2 ;;
       --libc) LIBC="${2:?missing value for --libc}"; shift 2 ;;
       --key) KEY="${2:?missing value for --key}"; shift 2 ;;
