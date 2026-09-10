@@ -844,15 +844,16 @@ interactive_menu() {
   printf ' [7] %s\n' "$(tr_msg "View live service logs" "跟踪实时服务日志" "Просмотр логов в реальном времени")"
   printf ' [8] %s\n' "$(tr_msg "Restart service" "重启 Nowhere 服务" "Перезапустить службу")"
   printf ' [9] %s\n' "$(tr_msg "Rollback to previous release" "回滚至上一版本" "Откат к предыдущей версии")"
-  printf ' [10] %s\n' "$(tr_msg "Clean compilation build cache" "清理源码构建缓存与 Swap" "Очистить кэш сборки")"
-  printf ' [11] %s\n' "$(tr_msg "Uninstall Nowhere" "卸载 Nowhere" "Удалить Nowhere")"
+  printf ' [10] %s\n' "$(tr_msg "Launch TUI monitor (real-time metrics)" "启动 TUI 监控（实时指标）" "Запустить TUI монитор")"
+  printf ' [11] %s\n' "$(tr_msg "Clean compilation build cache" "清理源码构建缓存与 Swap" "Очистить кэш сборки")"
+  printf ' [12] %s\n' "$(tr_msg "Uninstall Nowhere" "卸载 Nowhere" "Удалить Nowhere")"
   printf '%s\n' "----------------------------------------------------"
-  printf ' [12] %s\n' "$(tr_msg "Switch Language / 切换语言 (Current: $LANG_CODE)" "切换语言 / Switch Language (当前: $LANG_CODE)" "Сменить язык (Current: $LANG_CODE)")"
+  printf ' [13] %s\n' "$(tr_msg "Switch Language / 切换语言 (Current: $LANG_CODE)" "切换语言 / Switch Language (当前: $LANG_CODE)" "Сменить язык (Current: $LANG_CODE)")"
   printf ' [0] %s\n' "$(tr_msg "Exit" "退出" "Выход")"
   printf '\033[1;36m====================================================\033[0m\n'
 
   local choice
-  read -rp "$(tr_msg "Please enter your choice [0-12]: " "请输入选项序号 [0-12]: " "Введите номер действия [0-12]: ")" choice
+  read -rp "$(tr_msg "Please enter your choice [0-13]: " "请输入选项序号 [0-13]: " "Введите номер действия [0-13]: ")" choice
   case "$choice" in
     1|2)
       ACTION="install"
@@ -891,13 +892,21 @@ interactive_menu() {
     7) journalctl -u "$SERVICE_NAME" -f ;;
     8) systemctl restart "$SERVICE_NAME"; info "$(tr_msg "Service restarted." "服务已成功重启。" "Служба перезапущена.")" ;;
     9) rollback ;;
-    10) clean_build ;;
-    11)
+    10)
+      if [[ ! -x "$BIN_LINK" ]]; then
+        warn "$(tr_msg "Nowhere binary not found. Install first." "Nowhere 二进制未安装，请先安装。" "Бинарный файл Nowhere не найден.")"
+      else
+        info "$(tr_msg "Launching TUI monitor..." "正在启动 TUI 监控..." "Запуск TUI монитора...")"
+        "$BIN_LINK" tui
+      fi
+      ;;
+    11) clean_build ;;
+    12)
       read -rp "$(tr_msg "Also delete configuration and keys? [y/N]: " "是否一并删除所有配置和密钥? [y/N]: " "Удалить также конфигурации и ключи? [y/N]: ")" purge_ans
       [[ "$purge_ans" =~ ^[yY]$ ]] && PURGE=1
       uninstall
       ;;
-    12)
+    13)
       choose_initial_language
       interactive_menu
       ;;
