@@ -382,7 +382,7 @@ nowhere-deploy/
 ├── install.sh          # 一键脚本
 ├── README.zh-CN.md     # 中文详细文档（本文件）
 ├── README.md           # 英文简述（可后补；GitHub 仓库首页默认展示它）
-└── LICENSE             # 建议添加
+└── LICENSE             # GPL-3.0
 ```
 
 上传步骤：

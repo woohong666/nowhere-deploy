@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
 # Nowhere compile-from-source installer for systemd Linux.
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 woohong666
 #
 # Design rule: this script never installs a prebuilt Nowhere binary. The only
 # binary it trusts is the one it compiles on this machine from a pinned git tag,
