@@ -42,6 +42,8 @@ TLS="${NOWHERE_TLS:-2}"
 CERT="${NOWHERE_CERT:-}"
 TLS_KEY="${NOWHERE_TLS_KEY:-}"
 LISTEN_HOST="${NOWHERE_LISTEN_HOST:-}"
+CLIENT_LINK_HOST="${NOWHERE_CLIENT_HOST:-}"
+CLIENT_LINK_NAME="${NOWHERE_CLIENT_NAME:-}"
 LIBC="${NOWHERE_LIBC:-auto}"
 JOBS="${NOWHERE_JOBS:-}"
 SWAP_MODE="${NOWHERE_SWAP:-auto}"
@@ -180,14 +182,96 @@ stored_portal() {
 
 build_portal() {
   local host="${LISTEN_HOST}"
-  # If LISTEN_HOST is empty, use a placeholder that makes the malformed URL obvious
-  [[ -z "$host" ]] && host="<YOUR-SERVER-IP-OR-DOMAIN>"
   local query="tls=${TLS}"
   [[ "$NET" == "mix" ]] || query="${query}&net=${NET}"
   if [[ "$TLS" == "2" ]]; then
     query="${query}&crt=$(urlencode "$CERT")&key=$(urlencode "$TLS_KEY")"
   fi
   printf 'portal://%s@%s:%s?%s' "$KEY" "$host" "$PORT" "$query"
+}
+
+parse_query_param() {
+  local query="$1" name="$2"
+  [[ "$query" =~ (^|&)"$name"=([^&]*) ]] && printf '%s' "${BASH_REMATCH[2]}" || true
+}
+
+detect_public_ip() {
+  local ip
+  ip="$(curl -fsSL --max-time 5 --ipv4 https://ifconfig.me 2>/dev/null || true)"
+  [[ -n "$ip" ]] && printf '%s' "$ip" || return 1
+}
+
+is_ip_literal() {
+  local h="$1"
+  [[ "$h" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && return 0
+  [[ "$h" == \[*\] ]] && return 0
+  return 1
+}
+
+# Derive the client-facing nowhere:// share URI from a server portal:// URI.
+# Portal-only parameters (tls/crt/key/net/dial/log) are deliberately dropped;
+# the client only needs key, host, port, carrier strategy and node name.
+build_nowhere_link() {
+  local portal="$1" public_host="${2:-}" node_name="${3:-}"
+
+  local rest="${portal#portal://}"
+  if [[ "$rest" == "$portal" ]]; then
+    warn "$(tr_msg "Not a portal:// URI: ${portal}" "不是 portal:// 格式: ${portal}" "Это не portal:// URI: ${portal}")"
+    return 1
+  fi
+
+  local query=""
+  if [[ "$rest" == *\?* ]]; then
+    query="${rest#*\?}"
+    rest="${rest%%\?*}"
+  fi
+
+  if [[ ! "$rest" =~ ^([^@]+)@(.*):([0-9]+)$ ]]; then
+    warn "$(tr_msg "Cannot parse portal authority: ${rest}" "无法解析 portal 地址: ${rest}" "Не удалось разобрать адрес portal: ${rest}")"
+    return 1
+  fi
+  local key="${BASH_REMATCH[1]}"
+  local conf_host="${BASH_REMATCH[2]}"
+  local port="${BASH_REMATCH[3]}"
+
+  local tls net
+  tls="$(parse_query_param "$query" "tls")"
+  net="$(parse_query_param "$query" "net")"
+  [[ -n "$net" ]] || net="mix"
+
+  # Host precedence: --host > host baked into the config > detected public IP.
+  local host="$public_host"
+  if [[ -z "$host" ]]; then
+    host="$conf_host"
+  fi
+  if [[ -z "$host" ]]; then
+    host="$(detect_public_ip)" || {
+      warn "$(tr_msg "Could not detect public IP; pass --host <ip-or-domain>." "无法检测公网 IP，请用 --host <IP或域名> 指定。" "Не удалось определить публичный IP; укажите --host <ip-или-домен>.")"
+      return 1
+    }
+  fi
+
+  local up down mux_param=""
+  case "$net" in
+    tcp) up="tcp"; down="tcp"; mux_param="&mux=1" ;;
+    udp) up="udp"; down="udp" ;;
+    *)   up="mix"; down="mix" ;;
+  esac
+
+  # SNI only matters when a real certificate is served for a domain name.
+  local sni=""
+  if [[ "$tls" == "2" ]] && ! is_ip_literal "$host"; then
+    sni="&sni=${host}"
+  fi
+
+  [[ -n "$node_name" ]] || node_name="Nowhere-${host}"
+
+  printf 'nowhere://%s@%s:%s?up=%s&down=%s%s%s#%s\n' \
+    "$key" "$host" "$port" "$up" "$down" "$mux_param" "$sni" "$(urlencode "$node_name")"
+
+  if [[ "$tls" == "1" ]]; then
+    warn "$(tr_msg "TLS mode 1 uses a self-signed certificate; the client must trust or pin its fingerprint." "TLS 模式 1 使用自签名证书，客户端需信任或固定其指纹。" "Режим TLS 1 использует самоподписанный сертификат; клиент должен доверять отпечатку.")"
+  fi
 }
 
 version_ge() {
@@ -685,7 +769,21 @@ show_link() {
   [[ -f "$CONFIG_FILE" ]] || die "$(tr_msg "No config found at ${CONFIG_FILE}." "未找到配置文件: ${CONFIG_FILE}" "Конфигурационный файл не найден.")"
   local portal; portal="$(stored_portal)"
   [[ -n "$portal" ]] || die "$(tr_msg "NOWHERE_PORTAL missing." "配置中缺少 NOWHERE_PORTAL。" "В файле конфигурации отсутствует NOWHERE_PORTAL.")"
+  info "$(tr_msg "Server configuration (internal use, not for client import):" "服务端配置（内部使用，不用于客户端导入）:" "Конфигурация сервера (внутреннее использование):")"
   printf '%s\n' "$portal"
+}
+
+show_client_link() {
+  require_root
+  [[ -f "$CONFIG_FILE" ]] || die "$(tr_msg "No config found at ${CONFIG_FILE}." "未找到配置文件: ${CONFIG_FILE}" "Конфигурационный файл не найден.")"
+  local portal; portal="$(stored_portal)"
+  [[ -n "$portal" ]] || die "$(tr_msg "NOWHERE_PORTAL missing." "配置中缺少 NOWHERE_PORTAL。" "В файле конфигурации отсутствует NOWHERE_PORTAL.")"
+
+  local public_host="${CLIENT_LINK_HOST:-}"
+  local node_name="${CLIENT_LINK_NAME:-}"
+
+  info "$(tr_msg "Client share link (for Anywhere 2.0):" "客户端分享链接（用于 Anywhere 2.0）:" "Клиентская ссылка (для Anywhere 2.0):")"
+  build_nowhere_link "$portal" "$public_host" "$node_name"
 }
 
 uninstall() {
@@ -741,19 +839,20 @@ interactive_menu() {
   printf ' [3] %s\n' "$(tr_msg "Prepare TLS certificates (Let's Encrypt / PEM)" "配置/复制 TLS 证书 (Let's Encrypt / PEM)" "Подготовка TLS сертификатов (PEM)")"
   printf '%s\n' "----------------------------------------------------"
   printf ' [4] %s\n' "$(tr_msg "View service status" "查看服务运行状态" "Проверить статус службы")"
-  printf ' [5] %s\n' "$(tr_msg "Show client connection link" "查看客户端连接链接 (portal://)" "Показать ссылку подключения")"
-  printf ' [6] %s\n' "$(tr_msg "View live service logs" "跟踪实时服务日志" "Просмотр логов в реальном времени")"
-  printf ' [7] %s\n' "$(tr_msg "Restart service" "重启 Nowhere 服务" "Перезапустить службу")"
-  printf ' [8] %s\n' "$(tr_msg "Rollback to previous release" "回滚至上一版本" "Откат к предыдущей версии")"
-  printf ' [9] %s\n' "$(tr_msg "Clean compilation build cache" "清理源码构建缓存与 Swap" "Очистить кэш сборки")"
-  printf ' [10] %s\n' "$(tr_msg "Uninstall Nowhere" "卸载 Nowhere" "Удалить Nowhere")"
+  printf ' [5] %s\n' "$(tr_msg "Show server portal:// link" "查看服务端配置链接 (portal://)" "Показать portal:// сервера")"
+  printf ' [6] %s\n' "$(tr_msg "Generate client nowhere:// link" "生成客户端连接链接 (nowhere://)" "Сгенерировать клиентскую ссылку")"
+  printf ' [7] %s\n' "$(tr_msg "View live service logs" "跟踪实时服务日志" "Просмотр логов в реальном времени")"
+  printf ' [8] %s\n' "$(tr_msg "Restart service" "重启 Nowhere 服务" "Перезапустить службу")"
+  printf ' [9] %s\n' "$(tr_msg "Rollback to previous release" "回滚至上一版本" "Откат к предыдущей версии")"
+  printf ' [10] %s\n' "$(tr_msg "Clean compilation build cache" "清理源码构建缓存与 Swap" "Очистить кэш сборки")"
+  printf ' [11] %s\n' "$(tr_msg "Uninstall Nowhere" "卸载 Nowhere" "Удалить Nowhere")"
   printf '%s\n' "----------------------------------------------------"
-  printf ' [11] %s\n' "$(tr_msg "Switch Language / 切换语言 (Current: $LANG_CODE)" "切换语言 / Switch Language (当前: $LANG_CODE)" "Сменить язык (Current: $LANG_CODE)")"
+  printf ' [12] %s\n' "$(tr_msg "Switch Language / 切换语言 (Current: $LANG_CODE)" "切换语言 / Switch Language (当前: $LANG_CODE)" "Сменить язык (Current: $LANG_CODE)")"
   printf ' [0] %s\n' "$(tr_msg "Exit" "退出" "Выход")"
   printf '\033[1;36m====================================================\033[0m\n'
 
   local choice
-  read -rp "$(tr_msg "Please enter your choice [0-11]: " "请输入选项序号 [0-11]: " "Введите номер действия [0-11]: ")" choice
+  read -rp "$(tr_msg "Please enter your choice [0-12]: " "请输入选项序号 [0-12]: " "Введите номер действия [0-12]: ")" choice
   case "$choice" in
     1|2)
       ACTION="install"
@@ -788,16 +887,17 @@ interactive_menu() {
       ;;
     4) show_status ;;
     5) show_link ;;
-    6) journalctl -u "$SERVICE_NAME" -f ;;
-    7) systemctl restart "$SERVICE_NAME"; info "$(tr_msg "Service restarted." "服务已成功重启。" "Служба перезапущена.")" ;;
-    8) rollback ;;
-    9) clean_build ;;
-    10)
+    6) show_client_link ;;
+    7) journalctl -u "$SERVICE_NAME" -f ;;
+    8) systemctl restart "$SERVICE_NAME"; info "$(tr_msg "Service restarted." "服务已成功重启。" "Служба перезапущена.")" ;;
+    9) rollback ;;
+    10) clean_build ;;
+    11)
       read -rp "$(tr_msg "Also delete configuration and keys? [y/N]: " "是否一并删除所有配置和密钥? [y/N]: " "Удалить также конфигурации и ключи? [y/N]: ")" purge_ans
       [[ "$purge_ans" =~ ^[yY]$ ]] && PURGE=1
       uninstall
       ;;
-    11)
+    12)
       choose_initial_language
       interactive_menu
       ;;
@@ -817,8 +917,14 @@ Usage:
   sudo bash nowhere.sh upgrade [--method release|source] [--version v1.8.3]
   sudo bash nowhere.sh rollback
   sudo bash nowhere.sh status | link | logs | restart
+  sudo bash nowhere.sh client-link [--host IP] [--name NAME]
   sudo bash nowhere.sh prepare-tls --cert /path/to/crt --tls-key /path/to/key
   sudo bash nowhere.sh uninstall [--purge]
+
+Link formats:
+  link                Server-side portal:// URI from the config (NOT importable)
+  client-link         Client-side nowhere:// link, built from stored portal config.
+                      Use this one for Anywhere 2.0.
 
 Options:
   --method MODE       release (prebuilt binary) or source (compile); default: release
@@ -828,6 +934,8 @@ Options:
   --tls MODE          1 (self-signed) or 2 (PEM certificate, default: 2)
   --cert PATH         Certificate chain path (required for TLS 2)
   --tls-key PATH      Private key path (required for TLS 2)
+  --host IP_OR_DOMAIN Public IP / domain for client-link (auto-detected if omitted)
+  --name NAME         Node display name in nowhere:// link (default: Nowhere-<host>)
   --version TAG       Upstream git tag (default: ${DEFAULT_VERSION})
   --libc MODE         gnu, musl, or auto (for release mode; default: auto)
   --swap MODE         auto, off, or size in MB (for source compile; default: auto)
@@ -851,6 +959,8 @@ parse_args() {
       --cert|--crt) CERT="${2:?}"; shift 2 ;;
       --tls-key) TLS_KEY="${2:?}"; shift 2 ;;
       --listen-host) LISTEN_HOST="${2:?}"; shift 2 ;;
+      --host) CLIENT_LINK_HOST="${2:?}"; shift 2 ;;
+      --name) CLIENT_LINK_NAME="${2:?}"; shift 2 ;;
       --commit) COMMIT="${2:?}"; shift 2 ;;
       --git-url) REPO_URL="${2:?}"; shift 2 ;;
       --jobs) JOBS="${2:?}"; shift 2 ;;
@@ -884,6 +994,7 @@ case "$ACTION" in
   rollback) rollback ;;
   status) show_status ;;
   link) show_link ;;
+  client-link) show_client_link ;;
   prepare-tls) prepare_tls ;;
   logs) require_root; journalctl -u "$SERVICE_NAME" -f ;;
   restart) require_root; require_systemd; systemctl restart "$SERVICE_NAME" ;;

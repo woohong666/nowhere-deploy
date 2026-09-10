@@ -202,20 +202,59 @@ sudo firewall-cmd --reload
 
 ## 6. Client Connection & Import
 
-Once deployment completes, the script prints your dedicated node connection link in the terminal:
+### 6.1 Understanding Link Formats
 
-```text
-portal://<key>@<your-domain-or-ip>:<port>?tls=2&crt=%2Fetc%2Fnowhere%2Ftls%2Ffullchain.pem&key=%2Fetc%2Fnowhere%2Ftls%2Fprivkey.pem
+**Nowhere uses two different URI formats:**
+
+1. **`portal://`** - Server-side configuration (internal use only)
+   - Used by the Nowhere service to start the server
+   - Stored in `/etc/nowhere/nowhere.env`
+   - **NOT for client import!**
+
+2. **`nowhere://`** - Client-side connection link (for Anywhere 2.0)
+   - Format: `nowhere://shared-key@relay.example:2077?up=udp&down=udp#Nowhere%20VPS`
+   - This is what you import into Anywhere client
+   - Parameters `up`/`down` specify upstream/downstream carrier strategy: `tcp`, `udp`, or `mix`
+   - TCP mode automatically enables multiplexing (`mux=1`)
+   - TLS 2 + domain name automatically adds SNI parameter
+
+### 6.2 Get Client Connection Link
+
+After deployment, use the management script to generate the client-importable `nowhere://` link:
+
+```bash
+# Auto-detect public IP and generate link
+sudo bash nowhere.sh client-link
+
+# Manually specify server domain or IP (overrides config)
+sudo bash nowhere.sh client-link --host relay.example.com
+
+# Customize node display name
+sudo bash nowhere.sh client-link --name "US-NYC-01"
 ```
 
-* **mix mode**: TCP and UDP share the same port.
-* **Security warning**: the `portal://` link embeds your connection password. Anyone who obtains this link can use your VPS as an outbound proxy. Never post it in public groups or public repositories!
+**Note:**
+- Early versions of the Nowhere binary don't provide a `client-link` subcommand; the script builds the `nowhere://` link directly from the stored `portal://` config
+- TLS mode 1 (self-signed certificate) requires clients to trust or pin the certificate fingerprint to connect
+- `--host` priority: command-line flag > `LISTEN_HOST` in config file > auto-detected public IP
 
-Retrieve the link again at any time:
+
+> **Note**: The exact command syntax depends on your Nowhere version. If the above commands don't work, check the official [Nowhere documentation](https://github.com/NodePassProject/Nowhere) for the correct syntax.
+
+### 6.3 Security Warning
+
+* **mix mode**: TCP and UDP share the same port.
+* **Keep your link secret**: The connection link embeds your shared key. Anyone who obtains it can use your VPS as an outbound proxy. Never post it in public groups or repositories!
+
+### 6.4 View Server Configuration (Advanced)
+
+To view the internal server configuration (not for client use):
 
 ```bash
 sudo bash nowhere.sh link
 ```
+
+This shows the `portal://` URI used by the systemd service.
 
 ---
 

@@ -202,20 +202,59 @@ sudo firewall-cmd --reload
 
 ## 6. 客户端连接与导入
 
-部署完成后，脚本将在终端打印专属节点连接：
+### 6.1 理解链接格式
 
-```text
-portal://<密钥>@<你的域名或公网IP>:<端口>?tls=2&crt=%2Fetc%2Fnowhere%2Ftls%2Ffullchain.pem&key=%2Fetc%2Fnowhere%2Ftls%2Fprivkey.pem
+**Nowhere 使用两种不同的 URI 格式：**
+
+1. **`portal://`** - 服务端配置格式（内部使用）
+   - 用于 Nowhere 服务启动服务器
+   - 存储在 `/etc/nowhere/nowhere.env`
+   - **不能用于客户端导入！**
+
+2. **`nowhere://`** - 客户端连接链接（用于 Anywhere 2.0）
+   - 格式：`nowhere://shared-key@relay.example:2077?up=udp&down=udp#Nowhere%20VPS`
+   - 这才是导入到 Anywhere 客户端的正确格式
+   - 参数 `up`/`down` 指定上行/下行载波策略：`tcp`、`udp` 或 `mix`
+   - TCP 模式会自动启用多路复用 (`mux=1`)
+   - TLS 2 + 域名时自动添加 SNI 参数
+
+### 6.2 获取客户端连接链接
+
+部署完成后，使用管理脚本生成客户端可导入的 `nowhere://` 链接：
+
+```bash
+# 自动检测公网 IP 并生成链接
+sudo bash nowhere.sh client-link
+
+# 手动指定服务器域名或 IP（优先级高于配置）
+sudo bash nowhere.sh client-link --host relay.example.com
+
+# 自定义节点显示名称
+sudo bash nowhere.sh client-link --name "US-NYC-01"
 ```
 
-* **mix 模式**：TCP 与 UDP 共用该端口。
-* **安全警告**：`portal://` 链接内含有连接密码，任何人得到该链接均可将你的 VPS 作为出口代理。严禁发送至公共群组或上传至公开仓库！
+**注意：**
+- 早期版本的 Nowhere 二进制不提供 `client-link` 子命令，脚本会根据存储的 `portal://` 配置自行构建 `nowhere://` 链接
+- TLS 模式 1（自签名证书）需要客户端信任或固定证书指纹才能连接
+- `--host` 优先级：命令行参数 > 配置文件中的 `LISTEN_HOST` > 自动检测的公网 IP
 
-随时重新获取链接：
+
+> **注意**：具体命令语法取决于你的 Nowhere 版本。如果上述命令不工作，请查看官方 [Nowhere 文档](https://github.com/NodePassProject/Nowhere) 了解正确语法。
+
+### 6.3 安全警告
+
+* **mix 模式**：TCP 与 UDP 共用该端口。
+* **保管好你的链接**：连接链接包含了共享密钥。任何人获得该链接都可以将你的 VPS 作为出口代理。严禁发送至公共群组或上传至公开仓库！
+
+### 6.4 查看服务端配置（高级）
+
+查看内部服务端配置（不用于客户端）：
 
 ```bash
 sudo bash nowhere.sh link
 ```
+
+这会显示 systemd 服务使用的 `portal://` URI。
 
 ---
 

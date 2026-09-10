@@ -613,8 +613,6 @@ EOF
 
 build_portal() {
   local host="${LISTEN_HOST}"
-  # If LISTEN_HOST is empty, use a placeholder that makes the malformed URL obvious
-  [[ -z "$host" ]] && host="<YOUR-SERVER-IP-OR-DOMAIN>"
   local query="tls=${TLS}"
   [[ "$NET" == "mix" ]] || query="${query}&net=${NET}"
   if [[ "$TLS" == "2" ]]; then
