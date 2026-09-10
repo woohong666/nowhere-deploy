@@ -116,6 +116,12 @@ After launch, choose the interface language (Chinese, English, or Russian), then
 
 ### 3.2 Non-Interactive CLI Deployment (Automation / Scripting)
 
+> **⚠️ Important: TLS Default Changed in v2.5.2**
+>
+> Starting from v2.5.2, the script defaults to **TLS 1 (self-signed certificate)** for quick testing.
+> 
+> **For production deployments, you MUST explicitly specify `--tls 2` with valid certificates**, otherwise clients will encounter certificate verification errors or require fingerprint pinning.
+
 #### Scenario A: Quick install for temporary testing (TLS 1, self-signed)
 
 No domain or certificate setup required — verify connectivity quickly:
@@ -129,7 +135,11 @@ sudo bash nowhere.sh install \
   --key 'MyGeneratedKey_12345678'
 ```
 
-#### Scenario B: Production deployment (TLS 2, strictly verified PEM certificate)
+> **Note**: TLS 1 uses a self-signed certificate. Clients must either:
+> - Trust the certificate manually, or
+> - Pin the certificate fingerprint using `sudo bash nowhere.sh show-fingerprint`
+
+#### Scenario B: Production deployment (TLS 2, strictly verified PEM certificate) ⭐ Recommended
 
 Use your own real-domain PEM certificate (e.g. issued by Let's Encrypt / acme.sh):
 
