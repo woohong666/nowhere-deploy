@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.1.0
+# Nowhere V2 Unified Manager v1.1.3
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,9 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.1.1"
+readonly SCRIPT_VERSION="1.1.3"
 readonly SCRIPT_CHANNEL="v2"
-# v1.1.1: upstream first-wins query parity, explicit upgrade state, family-aware doctor, backup hardening.
+# v1.1.3: fix interactive tls=2 certificate copy flow; unreadable PEM can be copied into the managed TLS directory.
 readonly CORE_MAJOR="2"
 readonly DEFAULT_CORE_VERSION="v2.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -45,7 +45,7 @@ readonly DEFAULT_LOG="info"
 readonly DEFAULT_KEEP_RELEASES="3"
 readonly DEFAULT_MEMORY_PROFILE="throughput"
 
-LANG_CODE="${NOWHERE_V2_LANG:-ask}"
+LANG_CODE="${NOWHERE_V2_LANG:-zh}"
 ACTION="menu"
 ASSUME_YES=0
 INSTALL_METHOD="release"
@@ -628,7 +628,7 @@ prompt_key() {
   while true; do
     read -r -p "$(tr_msg "Shared key" "共享密钥") [$d]: " v </dev/tty || v=""; v="${v:-$d}"
     if [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]]; then KEY="$v"; return 0; fi
-    warn "Key must be 16-255 safe URL characters."
+    warn "$(tr_msg "Key must be 16-255 safe URL characters." "密钥必须为 16-255 位安全 URL 字符。")"
   done
 }
 
@@ -636,15 +636,15 @@ choose_endpoint_portal() {
   local mode p1 p2 custom
   printf '\n%s\n' "$(tr_msg "V2 Portal endpoint preset:" "V2 Portal 监听端点预设：")"
   printf '  1) %s\n' "$(tr_msg "TCP + UDP, shared port (recommended)" "TCP + UDP 共用端口（推荐）")"
-  printf '  2) TCP only\n  3) UDP only\n  4) TCP + UDP split ports\n  5) %s\n' "$(tr_msg "Manual V2 endpoint" "手动输入 V2 endpoint")"
+  printf '  2) %s\n  3) %s\n  4) %s\n  5) %s\n' "$(tr_msg "TCP only" "仅 TCP")" "$(tr_msg "UDP only" "仅 UDP")" "$(tr_msg "TCP + UDP split ports" "TCP + UDP 分开端口")" "$(tr_msg "Manual V2 endpoint" "手动输入 V2 endpoint")"
   mode="$(prompt_choice "$(tr_msg "Choice" "选择")" 1 1 2 3 4 5)"
   p1="$(prompt "$(tr_msg "Primary port" "主端口")" "$DEFAULT_PORT")"; validate_port "$p1"
   case "$mode" in
     1) ENDPOINT="*:${p1}" ;;
     2) ENDPOINT="*/tcp:${p1}" ;;
     3) ENDPOINT="*/udp:${p1}" ;;
-    4) p2="$(prompt "UDP port" "$((10#$p1+1))")"; validate_port "$p2"; ENDPOINT="*/tcp:${p1}/udp:${p2}" ;;
-    5) custom="$(prompt "Endpoint (e.g. */tcp4:2006/udp6:2017)" "*:${p1}")"; ENDPOINT="$custom" ;;
+    4) p2="$(prompt "$(tr_msg "UDP port" "UDP 端口")" "$((10#$p1+1))")"; validate_port "$p2"; ENDPOINT="*/tcp:${p1}/udp:${p2}" ;;
+    5) custom="$(prompt "$(tr_msg "Endpoint (e.g. */tcp4:2006/udp6:2017)" "Endpoint（例如 */tcp4:2006/udp6:2017）")" "*:${p1}")"; ENDPOINT="$custom" ;;
   esac
   ENDPOINT="$(endpoint_canonical portal "$ENDPOINT")"
 }
@@ -653,14 +653,14 @@ choose_endpoint_vector() {
   local host mode p1 p2 custom
   host="$(prompt "$(tr_msg "Portal host/domain" "Portal 地址/域名")" "127.0.0.1")"
   printf '\n%s\n' "$(tr_msg "Remote carrier preset:" "远端载波预设：")"
-  printf '  1) TCP + UDP shared port\n  2) TCP only\n  3) UDP only\n  4) TCP + UDP split ports\n  5) Manual V2 endpoint\n'
+  printf '  1) %s\n  2) %s\n  3) %s\n  4) %s\n  5) %s\n' "$(tr_msg "TCP + UDP shared port" "TCP + UDP 共用端口")" "$(tr_msg "TCP only" "仅 TCP")" "$(tr_msg "UDP only" "仅 UDP")" "$(tr_msg "TCP + UDP split ports" "TCP + UDP 分开端口")" "$(tr_msg "Manual V2 endpoint" "手动输入 V2 endpoint")"
   mode="$(prompt_choice "$(tr_msg "Choice" "选择")" 1 1 2 3 4 5)"
-  p1="$(prompt "Portal port" "$DEFAULT_PORT")"; validate_port "$p1"
+  p1="$(prompt "$(tr_msg "Portal port" "Portal 端口")" "$DEFAULT_PORT")"; validate_port "$p1"
   case "$mode" in
     1) ENDPOINT="${host}:${p1}" ;;
     2) ENDPOINT="${host}/tcp:${p1}" ;;
     3) ENDPOINT="${host}/udp:${p1}" ;;
-    4) p2="$(prompt "UDP port" "$((10#$p1+1))")"; validate_port "$p2"; ENDPOINT="${host}/tcp:${p1}/udp:${p2}" ;;
+    4) p2="$(prompt "$(tr_msg "UDP port" "UDP 端口")" "$((10#$p1+1))")"; validate_port "$p2"; ENDPOINT="${host}/tcp:${p1}/udp:${p2}" ;;
     5) custom="$(prompt "Endpoint" "${host}:${p1}")"; ENDPOINT="$custom" ;;
   esac
   ENDPOINT="$(endpoint_canonical vector "$ENDPOINT")"
@@ -669,7 +669,7 @@ choose_endpoint_vector() {
 choose_policy() {
   local ep="$1" role="$2" p
   if [[ "$(endpoint_has_tcp "$role" "$ep")" == 1 && "$(endpoint_has_udp "$role" "$ep")" == 1 ]]; then
-    printf '\n1) tcp/tcp (V2 default)\n2) udp/udp\n3) mix/mix\n4) udp/tcp\n5) tcp/udp\n'
+    printf '\n1) %s\n2) udp/udp\n3) mix/mix\n4) udp/tcp\n5) tcp/udp\n' "$(tr_msg "tcp/tcp (V2 default)" "tcp/tcp（V2 默认）")"
     p="$(prompt_choice "$(tr_msg "Traffic policy" "流量策略")" 1 1 2 3 4 5)"
     case "$p" in 1) UP=tcp; DOWN=tcp ;; 2) UP=udp; DOWN=udp ;; 3) UP=mix; DOWN=mix ;; 4) UP=udp; DOWN=tcp ;; 5) UP=tcp; DOWN=udp ;; esac
   elif [[ "$(endpoint_has_tcp "$role" "$ep")" == 1 ]]; then UP=tcp; DOWN=tcp
@@ -682,45 +682,51 @@ quick_wizard() {
   prompt_key
   if [[ "$ROLE" == portal ]]; then
     choose_endpoint_portal
-    TLS="$(prompt_choice "TLS mode 1=self-signed, 2=PEM" "${TLS:-1}" 1 2)"
+    TLS="$(prompt_choice "$(tr_msg "TLS mode 1=self-signed, 2=PEM" "TLS 模式 1=自签名，2=PEM 证书")" "${TLS:-1}" 1 2)"
     if [[ "$TLS" == 2 ]]; then
-      CERT="$(prompt "Certificate PEM" "$CERT")"; TLS_KEY="$(prompt "Private key PEM" "$TLS_KEY")"
+      CERT="$(prompt "$(tr_msg "Certificate PEM" "证书 PEM 文件")" "$CERT")"
+      TLS_KEY="$(prompt "$(tr_msg "Private key PEM" "私钥 PEM 文件")" "$TLS_KEY")"
+      if prompt_yes "$(tr_msg         "Copy cert/key into the V2-managed TLS directory so the service user can read them (recommended)"         "是否将证书/私钥复制到 V2 专用 TLS 目录，确保服务账户可读取（推荐）")"; then
+        COPY_CERT=1
+      else
+        COPY_CERT=0
+      fi
     fi
-    MORPH="$(prompt_choice "Morph wire masking 0=off,1=on" "${MORPH:-0}" 0 1)"
+    MORPH="$(prompt_choice "$(tr_msg "Morph wire masking 0=off,1=on" "Morph 线路伪装 0=关闭，1=开启")" "${MORPH:-0}" 0 1)"
     PUBLIC_HOST="$(prompt "$(tr_msg "Public host for client link (optional)" "用于生成客户端链接的公网域名/IP（可留空）")" "$PUBLIC_HOST")"
     choose_policy "$ENDPOINT" portal
     CLIENT_UP="$UP"; CLIENT_DOWN="$DOWN"; CLIENT_MUX=0
   else
     choose_endpoint_vector
-    VECTOR_SOCKS="$(prompt "Local SOCKS5 listen" "$VECTOR_SOCKS")"; validate_socks_endpoint "$VECTOR_SOCKS"
+    VECTOR_SOCKS="$(prompt "$(tr_msg "Local SOCKS5 listen" "本地 SOCKS5 监听地址")" "$VECTOR_SOCKS")"; validate_socks_endpoint "$VECTOR_SOCKS"
     choose_policy "$ENDPOINT" vector
-    if [[ "$UP" != udp || "$DOWN" != udp ]]; then MUX="$(prompt_choice "TLS Mux 0/1" "${MUX:-0}" 0 1)"; else MUX=0; fi
-    MORPH="$(prompt_choice "Morph 0/1 (must match Portal)" "${MORPH:-0}" 0 1)"
-    SNI="$(prompt "SNI (none or DNS name)" "$SNI")"
-    PIN="$(prompt "Certificate SHA-256 pin (none or 64 hex)" "$PIN")"
+    if [[ "$UP" != udp || "$DOWN" != udp ]]; then MUX="$(prompt_choice "$(tr_msg "TLS Mux 0/1" "TLS Mux 复用 0/1")" "${MUX:-0}" 0 1)"; else MUX=0; fi
+    MORPH="$(prompt_choice "$(tr_msg "Morph 0/1 (must match Portal)" "Morph 0/1（必须与 Portal 一致）")" "${MORPH:-0}" 0 1)"
+    SNI="$(prompt "$(tr_msg "SNI (none or DNS name)" "SNI（none 或 DNS 域名）")" "$SNI")"
+    PIN="$(prompt "$(tr_msg "Certificate SHA-256 pin (none or 64 hex)" "证书 SHA-256 pin（none 或 64 位十六进制）")" "$PIN")"
   fi
 }
 
 advanced_wizard() {
   quick_wizard
-  RATE="$(prompt "Rate Mbps, 0=unlimited" "$RATE")"
-  ETAR="$(prompt "Reverse rate Mbps, 0=unlimited" "$ETAR")"
-  LOG_LEVEL="$(prompt_choice "Log level" "$LOG_LEVEL" none debug info warn error event)"
-  MEMORY_PROFILE="$(prompt_choice "Transport memory profile" "$MEMORY_PROFILE" memory balanced throughput)"
+  RATE="$(prompt "$(tr_msg "Rate Mbps, 0=unlimited" "正向速率 Mbps，0=不限速")" "$RATE")"
+  ETAR="$(prompt "$(tr_msg "Reverse rate Mbps, 0=unlimited" "反向速率 Mbps，0=不限速")" "$ETAR")"
+  LOG_LEVEL="$(prompt_choice "$(tr_msg "Log level" "日志等级")" "$LOG_LEVEL" none debug info warn error event)"
+  MEMORY_PROFILE="$(prompt_choice "$(tr_msg "Transport memory profile" "传输内存模式")" "$MEMORY_PROFILE" memory balanced throughput)"
   if [[ "$ROLE" == portal ]]; then
-    DIAL="$(prompt "Source dial IP or auto" "$DIAL")"
+    DIAL="$(prompt "$(tr_msg "Source dial IP or auto" "出站源 IP 或 auto")" "$DIAL")"
     local mode
-    printf '\n1) Direct outbound\n2) SOCKS5 outbound\n3) Native V2 next Portal\n'
-    mode="$(prompt_choice "Outbound" 1 1 2 3)"
+    printf '\n1) %s\n2) %s\n3) %s\n' "$(tr_msg "Direct outbound" "直接出站")" "$(tr_msg "SOCKS5 outbound" "通过 SOCKS5 出站")" "$(tr_msg "Native V2 next Portal" "原生 V2 next Portal")"
+    mode="$(prompt_choice "$(tr_msg "Outbound" "出站方式")" 1 1 2 3)"
     case "$mode" in
       1) OUT_SOCKS=none; NEXT=none ;;
-      2) OUT_SOCKS="$(prompt "SOCKS5 upstream" "127.0.0.1:1080")"; NEXT=none ;;
+      2) OUT_SOCKS="$(prompt "$(tr_msg "SOCKS5 upstream" "上游 SOCKS5")" "127.0.0.1:1080")"; NEXT=none ;;
       3)
-        NEXT="$(prompt "next= KEY@HOST/CARRIER:PORT" "$NEXT")"; OUT_SOCKS=none
+        NEXT="$(prompt "$(tr_msg "next= KEY@HOST/CARRIER:PORT" "next= KEY@HOST/CARRIER:PORT")" "$NEXT")"; OUT_SOCKS=none
         validate_next_endpoint "$NEXT"
         choose_policy "${NEXT##*@}" vector
-        [[ "$UP" == udp && "$DOWN" == udp ]] && MUX=0 || MUX="$(prompt_choice "Next-hop TLS Mux 0/1" "$MUX" 0 1)"
-        SNI="$(prompt "Next-hop SNI" "$SNI")"; PIN="$(prompt "Next-hop pin" "$PIN")"
+        [[ "$UP" == udp && "$DOWN" == udp ]] && MUX=0 || MUX="$(prompt_choice "$(tr_msg "Next-hop TLS Mux 0/1" "下一跳 TLS Mux 0/1")" "$MUX" 0 1)"
+        SNI="$(prompt "$(tr_msg "Next-hop SNI" "下一跳 SNI")" "$SNI")"; PIN="$(prompt "$(tr_msg "Next-hop pin" "下一跳 pin")" "$PIN")"
         ;;
     esac
   fi
@@ -868,20 +874,59 @@ EOF2
   systemctl daemon-reload
 }
 
+tls_files_readable_by_service() {
+  runuser -u "$RUN_USER" -- test -r "$CERT" 2>/dev/null &&
+    runuser -u "$RUN_USER" -- test -r "$TLS_KEY" 2>/dev/null
+}
+
+copy_tls_files_to_managed_dir() {
+  local dc="$TLS_DIR/cert.pem" dk="$TLS_DIR/key.pem"
+  install -d -m 750 -o root -g "$RUN_GROUP" "$TLS_DIR" ||
+    die "$(tr_msg "Failed to prepare managed TLS directory." "无法创建 V2 专用 TLS 目录。")"
+
+  if [[ "$(readlink -f "$CERT")" != "$(readlink -f "$dc" 2>/dev/null || true)" ]]; then
+    install -m 640 -o root -g "$RUN_GROUP" "$CERT" "$dc" ||
+      die "$(tr_msg "Failed to copy certificate into managed TLS directory." "复制证书到 V2 专用 TLS 目录失败。")"
+  fi
+  if [[ "$(readlink -f "$TLS_KEY")" != "$(readlink -f "$dk" 2>/dev/null || true)" ]]; then
+    install -m 640 -o root -g "$RUN_GROUP" "$TLS_KEY" "$dk" ||
+      die "$(tr_msg "Failed to copy private key into managed TLS directory." "复制私钥到 V2 专用 TLS 目录失败。")"
+  fi
+
+  CERT="$dc"
+  TLS_KEY="$dk"
+  COPY_CERT=1
+
+  tls_files_readable_by_service ||
+    die "$(tr_msg "Managed TLS files are still unreadable by the V2 service user." "复制后的 TLS 文件仍无法被 V2 服务账户读取。")"
+  ok "$(tr_msg "TLS certificate/key copied to the V2-managed directory." "TLS 证书/私钥已复制到 V2 专用目录。")"
+}
+
 prepare_tls_files() {
   [[ "$TLS" == 2 ]] || return 0
-  [[ -f "$CERT" && -f "$TLS_KEY" ]] || die "tls=2 cert/key not found"
+  [[ -f "$CERT" && -f "$TLS_KEY" ]] ||
+    die "$(tr_msg "tls=2 certificate/private-key file not found." "tls=2 的证书或私钥文件不存在。")"
+
   if [[ "$COPY_CERT" -eq 1 ]]; then
-    local dc="$TLS_DIR/cert.pem" dk="$TLS_DIR/key.pem"
-    install -d -m 750 -o root -g "$RUN_GROUP" "$TLS_DIR"
-    if [[ "$(readlink -f "$CERT")" != "$(readlink -f "$dc" 2>/dev/null || true)" ]]; then install -m 640 -o root -g "$RUN_GROUP" "$CERT" "$dc"; fi
-    if [[ "$(readlink -f "$TLS_KEY")" != "$(readlink -f "$dk" 2>/dev/null || true)" ]]; then install -m 640 -o root -g "$RUN_GROUP" "$TLS_KEY" "$dk"; fi
-    CERT="$dc"; TLS_KEY="$dk"
-  else
-    if ! runuser -u "$RUN_USER" -- test -r "$CERT" 2>/dev/null || ! runuser -u "$RUN_USER" -- test -r "$TLS_KEY" 2>/dev/null; then
-      die "$(tr_msg "V2 service user cannot read TLS files. Re-run with --copy-cert." "V2 服务用户无法读取 TLS 文件，请使用 --copy-cert。")"
+    copy_tls_files_to_managed_dir
+    return 0
+  fi
+
+  # Direct paths are fine when the dedicated service account can already read them.
+  tls_files_readable_by_service && return 0
+
+  # Interactive menu/configure flow should never dead-end on a root-only PEM file.
+  # Offer the safe managed-copy path here as a second line of defense, including
+  # imported tls=2 URLs and any wizard path that did not set COPY_CERT earlier.
+  if [[ "$ASSUME_YES" -eq 0 && -r /dev/tty ]]; then
+    warn "$(tr_msg       "The V2 service user cannot read the selected TLS certificate/private key."       "V2 服务账户无法读取所选 TLS 证书/私钥（通常是 root:root 600 权限）。")"
+    if prompt_yes "$(tr_msg       "Copy them to ${TLS_DIR} with secure service-readable permissions now"       "现在自动复制到 ${TLS_DIR} 并设置为服务账户可安全读取的权限")"; then
+      copy_tls_files_to_managed_dir
+      return 0
     fi
   fi
+
+  die "$(tr_msg     "V2 service user cannot read TLS files. Use --copy-cert or make the files readable by ${RUN_USER}."     "V2 服务账户无法读取 TLS 文件。请选择自动复制，或使用 --copy-cert，或自行授予 ${RUN_USER} 只读权限。")"
 }
 
 write_config_url() {
@@ -1000,7 +1045,7 @@ install_release() {
   [[ "$digest" =~ ^sha256:[0-9A-Fa-f]{64}$ ]] || die "GitHub release does not expose a SHA-256 digest for ${name}; refusing binary install"
   expected="${digest#sha256:}"
   tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp"); archive="$tmp/$name"
-  info "Downloading verified ${VERSION} / ${name}"
+  info "$(tr_msg "Downloading verified ${VERSION} / ${name}" "正在下载并校验 ${VERSION} / ${name}")"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 10 -o "$archive" "$url"
   actual="$(sha256sum "$archive" | awk '{print $1}')"
   [[ "${actual,,}" == "${expected,,}" ]] || die "Release SHA-256 mismatch"
@@ -1019,7 +1064,7 @@ installed_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 manager_channel: v2
 EOF2
   NEW_TARGET="$release_dir"; ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
-  ok "Installed Nowhere ${VERSION} (${bsha:0:12})"
+  ok "$(tr_msg "Installed Nowhere ${VERSION} (${bsha:0:12})" "已安装 Nowhere ${VERSION} (${bsha:0:12})")"
 }
 
 ensure_rust() {
@@ -1069,13 +1114,13 @@ manager_channel: v2
 EOF2
   NEW_TARGET="$release_dir"; ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
   cleanup_swap || true; release_build_lock
-  ok "Built and installed Nowhere ${VERSION}"
+  ok "$(tr_msg "Built and installed Nowhere ${VERSION}" "已编译并安装 Nowhere ${VERSION}")"
 }
 
 cleanup_old_releases() {
   require_root; validate_keep_releases "$KEEP_RELEASES"
   local quiet="${1:-0}" current previous d kept=0 removed=0
-  [[ "$KEEP_RELEASES" -gt 0 ]] || { [[ "$quiet" == 1 ]] || info "Release pruning disabled"; return 0; }
+  [[ "$KEEP_RELEASES" -gt 0 ]] || { [[ "$quiet" == 1 ]] || info "$(tr_msg "Release pruning disabled" "旧版本自动清理已关闭")"; return 0; }
   [[ -d "$RELEASES_DIR" ]] || return 0
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"; previous="$OLD_TARGET"
   [[ -n "$current" && -d "$current" ]] && kept=1
@@ -1084,7 +1129,7 @@ cleanup_old_releases() {
     [[ -d "$d" ]] || continue; [[ "$d" == "$current" || "$d" == "$previous" ]] && continue
     if ((kept<KEEP_RELEASES)); then kept=$((kept+1)); else rm -rf -- "$d"; removed=$((removed+1)); fi
   done < <(ls -1dt "$RELEASES_DIR"/* 2>/dev/null || true)
-  ((removed>0)) && ok "Removed ${removed} old V2 release(s)" || [[ "$quiet" == 1 ]] || info "No old V2 releases need cleanup"
+  ((removed>0)) && ok "$(tr_msg "Removed ${removed} old V2 release(s)" "已清理 ${removed} 个旧 V2 Release")" || [[ "$quiet" == 1 ]] || info "$(tr_msg "No old V2 releases need cleanup" "没有需要清理的旧 V2 Release")"
 }
 
 rollback_binary() {
@@ -1100,7 +1145,7 @@ install_action() {
   local had_config=0
   [[ -s "$URL_FILE" ]] && had_config=1
   if [[ "$UPGRADE_MODE" -eq 1 && "$had_config" -eq 0 ]]; then
-    die "upgrade requires an existing V2 configuration; use 'install' for a fresh deployment"
+    die "$(tr_msg "upgrade requires an existing V2 configuration; use 'install' for a fresh deployment" "upgrade 需要已有 V2 配置；首次部署请使用 install")"
   fi
 
   # Reinstall/upgrade is binary-only by default when a V2 config already exists.
@@ -1123,14 +1168,14 @@ install_action() {
   else
     systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
     if ! systemctl restart "$SERVICE_NAME" || ! wait_service 12; then
-      warn "New V2 release failed to start; attempting binary rollback"
+      warn "$(tr_msg "New V2 release failed to start; attempting binary rollback" "新版 V2 启动失败，正在尝试回滚二进制文件")"
       journalctl -u "$SERVICE_NAME" -n 40 --no-pager 2>/dev/null || true
-      if rollback_binary "$OLD_TARGET"; then warn "Rolled back to previous V2 binary"; else die "New release failed and rollback did not recover service"; fi
+      if rollback_binary "$OLD_TARGET"; then warn "$(tr_msg "Rolled back to previous V2 binary" "已回滚到上一版 V2 二进制文件")"; else die "$(tr_msg "New release failed and rollback did not recover service" "新版启动失败且自动回滚未能恢复服务")"; fi
       return 1
     fi
   fi
   cleanup_old_releases 1
-  ok "Nowhere V2 ${VERSION} is active"
+  ok "$(tr_msg "Nowhere V2 ${VERSION} is active" "Nowhere V2 ${VERSION} 已正常运行")"
   show_links || true
 }
 
@@ -1176,12 +1221,12 @@ PY
   validate_imported_url "$u"; write_config_url "$u"; write_meta; write_launcher; write_unit
   systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
   if ! systemctl restart "$SERVICE_NAME" || ! wait_service 12; then
-    warn "V2 configuration failed; restoring previous V2 configuration"
+    warn "$(tr_msg "V2 configuration failed; restoring previous V2 configuration" "V2 配置应用失败，正在恢复之前的配置")"
     journalctl -u "$SERVICE_NAME" -n 50 --no-pager 2>/dev/null || true
-    restore_config_state || warn "Automatic config restore was incomplete; inspect ${CONFIG_DIR}"
+    restore_config_state || warn "$(tr_msg "Automatic config restore was incomplete; inspect ${CONFIG_DIR}" "自动恢复配置不完整，请检查 ${CONFIG_DIR}")"
     return 1
   fi
-  ok "V2 configuration applied"
+  ok "$(tr_msg "V2 configuration applied" "V2 配置已应用")"
   print_firewall_hint
   [[ "$from_install" == 1 ]] || show_links
 }
@@ -1192,21 +1237,21 @@ print_firewall_hint() {
   IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"
   [[ "$role" == portal ]] || return 0
   ep="$(url_endpoint "$u")"
-  if [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]]; then p="$(endpoint_tcp_port portal "$ep")"; info "Firewall: allow TCP ${p}"; fi
-  if [[ "$(endpoint_has_udp portal "$ep")" == 1 ]]; then p="$(endpoint_udp_port portal "$ep")"; info "Firewall: allow UDP ${p}"; fi
+  if [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]]; then p="$(endpoint_tcp_port portal "$ep")"; info "$(tr_msg "Firewall: allow TCP ${p}" "防火墙请放行 TCP ${p}")"; fi
+  if [[ "$(endpoint_has_udp portal "$ep")" == 1 ]]; then p="$(endpoint_udp_port portal "$ep")"; info "$(tr_msg "Firewall: allow UDP ${p}" "防火墙请放行 UDP ${p}")"; fi
 }
 
 show_status() {
   require_root; require_systemd
-  printf '%bNowhere V2 Manager%b %s | Core target %s\n' "$C_CYAN" "$C_NC" "$SCRIPT_VERSION" "$VERSION"
-  printf 'Service: '; systemctl is-active "$SERVICE_NAME" 2>/dev/null || true
-  printf 'Enabled: '; systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true
-  printf 'Current release: %s\n' "$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo none)"
-  [[ -x "$BIN_LINK" ]] && { printf 'Binary: '; "$BIN_LINK" --version 2>/dev/null || echo "$BIN_LINK"; }
+  printf '%b%s%b %s | %s %s\n' "$C_CYAN" "$(tr_msg "Nowhere V2 Manager" "Nowhere V2 管理器")" "$C_NC" "$SCRIPT_VERSION" "$(tr_msg "Core target" "Core 目标版本")" "$VERSION"
+  printf '%s: ' "$(tr_msg 'Service' '服务状态')"; systemctl is-active "$SERVICE_NAME" 2>/dev/null || true
+  printf '%s: ' "$(tr_msg 'Enabled' '开机启动')"; systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true
+  printf '%s: %s\n' "$(tr_msg 'Current release' '当前 Release')" "$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo none)"
+  [[ -x "$BIN_LINK" ]] && { printf '%s: ' "$(tr_msg 'Binary' '二进制版本')"; "$BIN_LINK" --version 2>/dev/null || echo "$BIN_LINK"; }
   if [[ -s "$URL_FILE" ]]; then
     local u role ep
     IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"; ep="$(url_endpoint "$u")"
-    printf 'Role: %s\nEndpoint: %s\nMorph: %s\n' "$role" "$ep" "$(query_get "$u" morph)"
+    printf '%s: %s\nEndpoint: %s\nMorph: %s\n' "$(tr_msg 'Role' '角色')" "$role" "$ep" "$(query_get "$u" morph)"
   fi
 }
 
@@ -1237,12 +1282,12 @@ build_native_vector_link_from_portal() {
 }
 
 show_links() {
-  [[ -s "$URL_FILE" ]] || die "No V2 config"
+  [[ -s "$URL_FILE" ]] || die "$(tr_msg "No V2 config" "没有 V2 配置")"
   install_runtime_deps
   local u role vlink generic name q
   IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"
   if [[ "$role" == vector ]]; then printf '%s\n' "$u"; return 0; fi
-  if ! vlink="$(build_native_vector_link_from_portal "$u")"; then warn "Set --public-host or PUBLIC_HOST to generate client links"; return 1; fi
+  if ! vlink="$(build_native_vector_link_from_portal "$u")"; then warn "$(tr_msg "Set --public-host or PUBLIC_HOST to generate client links" "请设置 --public-host 或 PUBLIC_HOST 以生成客户端链接")"; return 1; fi
   printf '\n%s\n%s\n' "$(tr_msg "Native V2 Vector URL:" "原生 V2 Vector URL：")" "$vlink"
   # Generic nowhere:// URI: only for alternate clients explicitly confirmed to speak Nowhere V2.
   generic="${vlink/vector:\/\//nowhere://}"; generic="$(python3 - "$generic" <<'PY'
@@ -1256,15 +1301,15 @@ PY
 }
 
 fingerprint() {
-  require_root; install_runtime_deps; [[ -s "$URL_FILE" ]] || die "No config"
+  require_root; install_runtime_deps; [[ -s "$URL_FILE" ]] || die "$(tr_msg "No config" "没有配置")"
   local u role tls cert ep port host fp
-  IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"; [[ "$role" == portal ]] || die "Fingerprint is a Portal operation"
+  IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"; [[ "$role" == portal ]] || die "$(tr_msg "Fingerprint is a Portal operation" "仅 Portal 支持获取指纹")"
   tls="$(query_get "$u" tls)"; tls="${tls:-1}"
   if [[ "$tls" == 2 ]]; then cert="$(query_get "$u" crt)"; openssl x509 -in "$cert" -noout -fingerprint -sha256 | sed 's/^.*=//'; return; fi
-  ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || die "Portal has no TCP carrier; no TLS certificate to probe"
+  ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || die "$(tr_msg "Portal has no TCP carrier; no TLS certificate to probe" "Portal 没有 TCP carrier，无法探测 TLS 证书")"
   port="$(endpoint_tcp_port portal "$ep")"; host="$(endpoint_host portal "$ep")"; [[ "$host" == '*' ]] && host=127.0.0.1
   fp="$(timeout 8 openssl s_client -alpn nw2 -connect "${host}:${port}" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)"
-  [[ -n "$fp" ]] || die "Cannot read V2 TLS fingerprint"
+  [[ -n "$fp" ]] || die "$(tr_msg "Cannot read V2 TLS fingerprint" "无法读取 V2 TLS 指纹")"
   printf '%s\n' "$fp"
 }
 
@@ -1284,20 +1329,20 @@ port_listening() {
 doctor_action() {
   require_root; require_systemd; install_runtime_deps
   local fail=0 warnc=0 u role ep p fam tls f
-  printf '\n%bNowhere V2 Doctor%b\n' "$C_CYAN" "$C_NC"
-  if [[ -x "$CURRENT_LINK/nowhere" ]]; then ok "V2 binary exists"; else warn "V2 binary missing"; fail=$((fail+1)); fi
+  printf '\n%b%s%b\n' "$C_CYAN" "$(tr_msg 'Nowhere V2 Doctor' 'Nowhere V2 健康检查')" "$C_NC"
+  if [[ -x "$CURRENT_LINK/nowhere" ]]; then ok "$(tr_msg "V2 binary exists" "V2 二进制文件存在")"; else warn "$(tr_msg "V2 binary missing" "V2 二进制文件缺失")"; fail=$((fail+1)); fi
   if [[ -L "$BIN_LINK" && -x "$BIN_LINK" ]]; then
-    ok "V2 binary link is valid"
+    ok "$(tr_msg "V2 binary link is valid" "V2 二进制软链接正常")"
     local bv=""; bv="$("$BIN_LINK" --version 2>/dev/null || true)"
-    if [[ -n "$bv" && ! "$bv" =~ (^|[^0-9])v?2\.[0-9]+\.[0-9]+ ]]; then warn "Installed binary version does not look like V2: $bv"; fail=$((fail+1)); fi
-  else warn "V2 binary link missing/broken"; fail=$((fail+1)); fi
+    if [[ -n "$bv" && ! "$bv" =~ (^|[^0-9])v?2\.[0-9]+\.[0-9]+ ]]; then warn "$(tr_msg "Installed binary version does not look like V2: $bv" "已安装的二进制版本看起来不是 V2: $bv")"; fail=$((fail+1)); fi
+  else warn "$(tr_msg "V2 binary link missing/broken" "V2 二进制软链接缺失或损坏")"; fail=$((fail+1)); fi
   if [[ -s "$URL_FILE" ]]; then
     IFS= read -r u <"$URL_FILE"
-    if validate_imported_url "$u" >/dev/null 2>&1; then ok "V2 config URL validates"; else warn "V2 config URL is invalid"; fail=$((fail+1)); u=""; fi
-  else warn "V2 config missing"; fail=$((fail+1)); u=""; fi
-  if id "$RUN_USER" >/dev/null 2>&1; then ok "Dedicated user exists"; else warn "Dedicated V2 user missing"; fail=$((fail+1)); fi
-  systemctl is-enabled --quiet "$SERVICE_NAME" && ok "Service enabled" || { warn "Service not enabled"; warnc=$((warnc+1)); }
-  systemctl is-active --quiet "$SERVICE_NAME" && ok "Service active" || { warn "Service not active"; fail=$((fail+1)); }
+    if validate_imported_url "$u" >/dev/null 2>&1; then ok "$(tr_msg "V2 config URL validates" "V2 配置 URL 校验通过")"; else warn "$(tr_msg "V2 config URL is invalid" "V2 配置 URL 无效")"; fail=$((fail+1)); u=""; fi
+  else warn "$(tr_msg "V2 config missing" "V2 配置缺失")"; fail=$((fail+1)); u=""; fi
+  if id "$RUN_USER" >/dev/null 2>&1; then ok "$(tr_msg "Dedicated user exists" "V2 专用用户存在")"; else warn "$(tr_msg "Dedicated V2 user missing" "V2 专用用户缺失")"; fail=$((fail+1)); fi
+  systemctl is-enabled --quiet "$SERVICE_NAME" && ok "$(tr_msg "Service enabled" "服务已设置开机启动")" || { warn "$(tr_msg "Service not enabled" "服务未设置开机启动")"; warnc=$((warnc+1)); }
+  systemctl is-active --quiet "$SERVICE_NAME" && ok "$(tr_msg "Service active" "服务正在运行")" || { warn "$(tr_msg "Service not active" "服务未运行")"; fail=$((fail+1)); }
   if [[ -n "$u" ]]; then
     role="$(url_role "$u")"; ep="$(url_endpoint "$u")"
     if [[ "$role" == portal ]]; then
@@ -1312,25 +1357,25 @@ doctor_action() {
     [[ "$(query_get "$u" morph)" == 1 ]] && { warn "Morph enabled: peer must also use morph=1 and UDP path should carry >=1212-byte payloads"; warnc=$((warnc+1)); }
   fi
   if systemctl list-unit-files --no-legend nowhere.service 2>/dev/null | grep -q '^nowhere\.service'; then
-    warn "V1 service definition detected. V2 files are isolated, but network ports must not collide."
+    warn "$(tr_msg "V1 service definition detected. V2 files are isolated, but network ports must not collide." "检测到 V1 服务。V1/V2 文件已隔离，但监听端口不能冲突。")"
     warnc=$((warnc+1))
   fi
   if [[ "$DOCTOR_FIX" -eq 1 ]]; then
     info "$(tr_msg "doctor --fix may rewrite V2 management files and restart ${SERVICE_NAME}." "doctor --fix 可能重写 V2 管理文件并重启 ${SERVICE_NAME}。")"
-    info "Applying safe V2 management repairs..."
+    info "$(tr_msg "Applying safe V2 management repairs..." "正在应用安全的 V2 管理修复...")"
     ensure_user; [[ -x "$CURRENT_LINK/nowhere" ]] && ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
     write_launcher; write_unit
     [[ -s "$URL_FILE" ]] && { chmod 640 "$URL_FILE"; chown root:"$RUN_GROUP" "$URL_FILE"; }
     systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
     [[ -s "$URL_FILE" && -x "$CURRENT_LINK/nowhere" ]] && systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
-    wait_service 8 && ok "Doctor --fix restarted V2 service" || true
+    wait_service 8 && ok "$(tr_msg "Doctor --fix restarted V2 service" "Doctor --fix 已重启 V2 服务")" || true
   fi
   if ((fail>0)); then
     printf '\n'; journalctl -u "$SERVICE_NAME" -n 30 --no-pager 2>/dev/null || true
-    warn "Doctor: ${fail} critical issue(s), ${warnc} warning(s)"
+    warn "$(tr_msg "Doctor: ${fail} critical issue(s), ${warnc} warning(s)" "Doctor：${fail} 个严重问题，${warnc} 个警告")"
     return 1
   fi
-  ok "Doctor passed (${warnc} warning(s))"
+  ok "$(tr_msg "Doctor passed (${warnc} warning(s))" "Doctor 检查通过（${warnc} 个警告）")"
 }
 
 rollback_action() {
@@ -1338,27 +1383,27 @@ rollback_action() {
   local current d target=""
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   while IFS= read -r d; do [[ "$d" != "$current" && -x "$d/nowhere" ]] && { target="$d"; break; }; done < <(ls -1dt "$RELEASES_DIR"/* 2>/dev/null || true)
-  [[ -n "$target" ]] || die "No previous valid V2 release found"
-  info "Rolling back V2 binary to $target"
-  if rollback_binary "$target"; then ok "Rollback succeeded"; else [[ -n "$current" ]] && rollback_binary "$current" || true; die "Rollback target failed; original restored when possible"; fi
+  [[ -n "$target" ]] || die "$(tr_msg "No previous valid V2 release found" "没有找到可回滚的旧 V2 Release")"
+  info "$(tr_msg "Rolling back V2 binary to $target" "正在回滚 V2 二进制到 $target")"
+  if rollback_binary "$target"; then ok "$(tr_msg "Rollback succeeded" "回滚成功")"; else [[ -n "$current" ]] && rollback_binary "$current" || true; die "$(tr_msg "Rollback target failed; original restored when possible" "目标版本回滚失败，已尽可能恢复原版本")"; fi
 }
 
 backup_action() {
   require_root
   local out="${1:-/root/nowhere-v2-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
-  [[ -d "$CONFIG_DIR" ]] || { warn "No V2 configuration directory found: ${CONFIG_DIR}"; return 1; }
+  [[ -d "$CONFIG_DIR" ]] || { warn "$(tr_msg "No V2 configuration directory found: ${CONFIG_DIR}" "未找到 V2 配置目录: ${CONFIG_DIR}")"; return 1; }
   if ! tar -czf "$out" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"; then
     rm -f -- "$out" 2>/dev/null || true
-    die "Backup failed"
+    die "$(tr_msg "Backup failed" "备份失败")"
   fi
-  chmod 600 "$out" || die "Backup created but chmod 600 failed: $out"
-  ok "Config/TLS backup: $out"
+  chmod 600 "$out" || die "$(tr_msg "Backup created but chmod 600 failed: $out" "备份已创建，但设置 600 权限失败: $out")"
+  ok "$(tr_msg "Config/TLS backup: $out" "配置/TLS 备份已创建: $out")"
 }
 
 clean_build() {
   require_root; acquire_build_lock; cleanup_stale_swap
   rm -rf /var/tmp/nowhere-v2-build.* 2>/dev/null || true
-  cleanup_swap || true; release_build_lock; ok "V2 build leftovers cleaned"
+  cleanup_swap || true; release_build_lock; ok "$(tr_msg "V2 build leftovers cleaned" "V2 编译残留已清理")"
 }
 
 uninstall_action() {
@@ -1366,7 +1411,7 @@ uninstall_action() {
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   rm -f -- "$UNIT_FILE" "$LAUNCHER" "$BIN_LINK"; rm -rf -- "$INSTALL_ROOT"; systemctl daemon-reload
   if [[ "$PURGE" -eq 1 ]]; then rm -rf -- "$CONFIG_DIR"; userdel "$RUN_USER" 2>/dev/null || true; groupdel "$RUN_GROUP" 2>/dev/null || true; fi
-  ok "Nowhere V2 removed. V1 installation was not touched."
+  ok "$(tr_msg "Nowhere V2 removed. V1 installation was not touched." "Nowhere V2 已卸载，V1 安装未被修改。")"
 }
 
 check_updates() {
@@ -1392,33 +1437,100 @@ self_update() {
 }
 
 show_v1_migration_note() {
-  cat <<'EOF2'
+  if [[ "$LANG_CODE" == zh ]]; then
+    cat <<'EOF2'
+Nowhere V2 与 V1 的线协议不兼容。
+不要让 V1 Portal / Vector / native-next / 其它 V1 客户端直接连接此 V2 服务。
+同一条流量路径上的所有节点都需要一起升级到 V2。V2 使用固定 ALPN nw2 和新的 endpoint carrier 语法。
+本 V2 管理器不会修改 /etc/nowhere、/opt/nowhere、/usr/local/bin/nowhere 或 nowhere.service。
+EOF2
+  else
+    cat <<'EOF2'
 Nowhere V2 is wire-incompatible with V1.
 Do not point a V1 Portal/Vector/native-next/alternate V1 client at this V2 service.
 Upgrade every peer on a traffic path together. V2 uses fixed ALPN nw2 and endpoint carrier paths.
 This V2 manager never edits /etc/nowhere, /opt/nowhere, /usr/local/bin/nowhere, or nowhere.service.
 EOF2
+  fi
 }
 
 interactive_menu() {
-  require_root; require_systemd; [[ "$LANG_CODE" == ask ]] && { printf '1) 中文\n2) English\n'; local l; read -r -p 'Language [1]: ' l </dev/tty || l=""; [[ "$l" == 2 ]] && LANG_CODE=en || LANG_CODE=zh; }
+  require_root
+  require_systemd
+  if [[ "$LANG_CODE" == ask ]]; then
+    printf '1) 中文\n2) English\n'
+    local l
+    read -r -p '请选择语言 / Language [1]: ' l </dev/tty || l=""
+    [[ "$l" == 2 ]] && LANG_CODE=en || LANG_CODE=zh
+  fi
+
   while true; do
     clear
     printf '\033[1;36m====================================================\033[0m\n'
-    printf '\033[1;32m        Nowhere V2 Manager v%s\033[0m\n' "$SCRIPT_VERSION"
+    if [[ "$LANG_CODE" == zh ]]; then
+      printf '\033[1;32m        Nowhere V2 管理器 v%s\033[0m\n' "$SCRIPT_VERSION"
+    else
+      printf '\033[1;32m        Nowhere V2 Manager v%s\033[0m\n' "$SCRIPT_VERSION"
+    fi
     printf '\033[1;36m====================================================\033[0m\n'
-    printf ' [1] Install/Reinstall official V2 release\n [2] Build/install V2 from source\n [3] Configure / Import V2 URL\n [4] Status\n [5] Show V2 links\n [6] Live logs\n [7] Restart V2 service\n [8] Open V2 TUI\n [9] TLS SHA-256 fingerprint\n [10] Rollback V2 binary\n [11] Doctor\n [12] Doctor --fix\n [13] Clean old V2 releases\n [14] Clean V2 build cache\n [15] Check latest stable V2\n [16] V1 -> V2 compatibility note\n [17] Uninstall V2 only\n [18] Self-update V2 manager\n [0] Exit\n'
+
+    if [[ "$LANG_CODE" == zh ]]; then
+      cat <<'EOF2'
+ [1] 安装/重装官方 V2 预编译版
+ [2] 从源码编译安装 V2
+ [3] 修改 / 导入 V2 配置
+ [4] 查看运行状态
+ [5] 显示 V2 连接链接
+ [6] 查看实时日志
+ [7] 重启 V2 服务
+ [8] 打开 V2 TUI 监控
+ [9] 查看 TLS SHA-256 指纹
+ [10] 回滚 V2 二进制版本
+ [11] 健康检查 / Doctor
+ [12] 健康检查并自动修复 / Doctor --fix
+ [13] 清理旧的 V2 Release
+ [14] 清理 V2 编译缓存
+ [15] 检查最新稳定 V2 版本
+ [16] 查看 V1 -> V2 兼容性说明
+ [17] 仅卸载 V2
+ [18] 更新 V2 管理脚本
+ [0] 退出
+EOF2
+    else
+      cat <<'EOF2'
+ [1] Install/Reinstall official V2 release
+ [2] Build/install V2 from source
+ [3] Configure / Import V2 URL
+ [4] Status
+ [5] Show V2 links
+ [6] Live logs
+ [7] Restart V2 service
+ [8] Open V2 TUI
+ [9] TLS SHA-256 fingerprint
+ [10] Rollback V2 binary
+ [11] Doctor
+ [12] Doctor --fix
+ [13] Clean old V2 releases
+ [14] Clean V2 build cache
+ [15] Check latest stable V2
+ [16] V1 -> V2 compatibility note
+ [17] Uninstall V2 only
+ [18] Self-update V2 manager
+ [0] Exit
+EOF2
+    fi
+
     local c
-    read -r -p 'Choice [0-18]: ' c </dev/tty || exit 0
+    read -r -p "$(tr_msg 'Choice [0-18]: ' '请输入选项 [0-18]: ')" c </dev/tty || exit 0
     case "$c" in
       1) ACTION=install; INSTALL_METHOD=release; install_action ;;
       2) ACTION=install; INSTALL_METHOD=source; install_action ;;
       3) configure_action ;;
       4) show_status ;;
       5) show_links ;;
-      6) journalctl -u "$SERVICE_NAME" -f || true ;;
-      7) systemctl restart "$SERVICE_NAME" && ok "Restarted" || warn "Restart failed" ;;
-      8) [[ -x "$BIN_LINK" ]] && "$BIN_LINK" tui || warn "V2 binary not installed" ;;
+      6) info "$(tr_msg 'Press Ctrl+C to stop viewing logs.' '按 Ctrl+C 退出实时日志。')"; journalctl -u "$SERVICE_NAME" -f || true ;;
+      7) systemctl restart "$SERVICE_NAME" && ok "$(tr_msg 'Restarted.' 'V2 服务已重启。')" || warn "$(tr_msg 'Restart failed.' 'V2 服务重启失败。')" ;;
+      8) [[ -x "$BIN_LINK" ]] && "$BIN_LINK" tui || warn "$(tr_msg 'V2 binary not installed.' '尚未安装 V2 二进制文件。')" ;;
       9) fingerprint ;;
       10) rollback_action ;;
       11) DOCTOR_FIX=0; doctor_action || true ;;
@@ -1427,17 +1539,69 @@ interactive_menu() {
       14) clean_build ;;
       15) check_updates ;;
       16) show_v1_migration_note ;;
-      17) prompt_confirm "Purge V2 config too?" && PURGE=1 || PURGE=0; uninstall_action ;;
+      17) prompt_confirm "$(tr_msg 'Purge V2 config too?' '是否同时删除 V2 配置和密钥？')" && PURGE=1 || PURGE=0; uninstall_action ;;
       18) self_update || true ;;
       0) exit 0 ;;
-      *) warn "Invalid choice" ;;
+      *) warn "$(tr_msg 'Invalid choice.' '无效选项。')" ;;
     esac
-    printf '\n'; read -r -p 'Press Enter to return...' _ </dev/tty || true
+    printf '\n'
+    read -r -p "$(tr_msg 'Press Enter to return...' '按回车键返回菜单...')" _ </dev/tty || true
   done
 }
 
 usage() {
-  cat <<EOF2
+  if [[ "$LANG_CODE" == zh ]]; then
+    cat <<EOF2
+Nowhere V2 管理器 v${SCRIPT_VERSION}（通道：${SCRIPT_CHANNEL}）
+仅用于 Nowhere v2.x；不会修改 V1 的文件或服务。
+
+用法：
+  sudo bash nowhere-v2.sh
+  sudo bash nowhere-v2.sh install [选项]
+  sudo bash nowhere-v2.sh upgrade [--version latest-v2|v2.x.y]  （需要已有 V2 配置）
+  sudo bash nowhere-v2.sh configure [选项]
+  sudo bash nowhere-v2.sh doctor [--fix]
+  sudo bash nowhere-v2.sh status | links | logs | restart | tui | fingerprint
+  sudo bash nowhere-v2.sh rollback | clean-releases | clean-build | check-updates
+  sudo bash nowhere-v2.sh backup [路径]                   （仅备份配置/TLS）
+  sudo bash nowhere-v2.sh uninstall [--purge]
+
+Core 版本策略：
+  默认：${DEFAULT_CORE_VERSION}
+  允许：指定稳定版 v2.x.y，或 latest-v2
+  拒绝：V1、普通 latest、预发布版本、未来主版本
+
+主要 V2 参数：
+  -y, --yes                    非交互模式
+  --method release|source      预编译版 / 源码编译
+  --force-reconfigure          install/upgrade 时明确重新应用配置参数
+  --version v2.x.y|latest-v2   Core 版本
+  --type portal|vector         节点角色
+  --url 'portal://...' | 'vector://...'
+  --key KEY                    共享密钥
+  --endpoint 'HOST:PORT' | 'HOST/tcp:PORT/udp:PORT'
+  --public-host HOST           公网 IP / 域名
+  --tls 1|2 --cert FILE --tls-key FILE --copy-cert
+  --morph 0|1                  Morph 线路伪装
+  --up auto|tcp|udp|mix --down auto|tcp|udp|mix --mux 0|1
+  --sni NAME|none --pin SHA256|none
+  --vector-socks HOST:PORT
+  --out-socks HOST:PORT|none --next KEY@ENDPOINT|none
+  --rate Mbps --etar Mbps --dial auto|IP --log LEVEL
+  --memory-profile memory|balanced|throughput
+  --config-mode ask|quick|advanced | --quick | --advanced
+  --keep-releases N            保留旧 Release 数量（0-20）
+  --libc auto|gnu|musl --swap auto|off|MB --keep-source
+  --github-token TOKEN
+
+V1/V2 隔离：
+  服务：${SERVICE_NAME}
+  配置：${CONFIG_DIR}
+  安装目录：${INSTALL_ROOT}
+  二进制：${BIN_LINK}
+EOF2
+  else
+    cat <<EOF2
 Nowhere V2 Manager v${SCRIPT_VERSION} (channel: ${SCRIPT_CHANNEL})
 Dedicated to Nowhere v2.x; V1 files/services are never modified.
 
@@ -1486,6 +1650,7 @@ Isolation:
   Root:    ${INSTALL_ROOT}
   Binary:  ${BIN_LINK}
 EOF2
+  fi
 }
 
 set_cli() { CLI_SET["$1"]=1; CLI_VAL["$1"]="$2"; printf -v "$1" '%s' "$2"; }
