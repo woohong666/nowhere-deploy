@@ -34,7 +34,7 @@ readonly SCRIPT_NAME="${0##*/}"
 LANG_CODE="${NOWHERE_LANG:-auto}"
 
 readonly SRC_DIR="/var/tmp/nowhere-build"
-readonly SWAP_FILE="/swapfile-nowhere"
+readonly SWAP_FILE="/var/tmp/nowhere-build-swap"
 readonly RUSTUP_HOME_DIR="/usr/local/rustup"
 readonly CARGO_HOME_DIR="/usr/local/cargo"
 
@@ -133,13 +133,13 @@ TLS helper:
                       (Let's Encrypt private keys are root-only by default).
 
 Build options:
-  --version TAG       Git tag to build; default: v1.8.3
+  --version TAG       Git tag to build, or 'latest'; default: v1.8.3
   --commit SHA        Pin an exact commit instead of a tag (full clone, slower)
   --git-url URL       Clone from this URL instead of the upstream repository
   --jobs N            Limit parallel rustc jobs (use 1 on a tiny VPS)
   --swap auto|off|MB  Temporary swap for the build; default: auto
   --keep-source       Keep the build tree and its cargo cache after success
-                      ("install.sh clean-build" removes it later)
+                      ("install-source.sh clean-build" removes it later)
   --no-install-deps   Never run the package manager; fail instead
   --no-install-rust   Never install Rust; fail if the toolchain is too old
   --trust-rustup-sha HEX
@@ -178,8 +178,47 @@ require_systemd() {
 # ---------------------------------------------------------------- validation
 
 validate_version() {
+  [[ "$1" == "latest" ]] && return 0
   [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] ||
     die "Invalid version tag: $1"
+}
+
+# Supported upstream range: >= v1.8.3 and < v2.0.0. Nowhere v2.0.0 (2026-09-11)
+# is wire-incompatible with the v1 portal URL this script writes.
+version_supported() {
+  local v="${1#v}" major minor patch
+  v="${v%%-*}"; IFS=. read -r major minor patch <<< "$v"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] || return 1
+  (( major == 1 && (minor > 8 || (minor == 8 && 10#${patch:-0} >= 3)) ))
+}
+
+die_v2_unsupported() {
+  die "$(tr_msg "Nowhere v2.x is not supported by this script yet.
+Use v1.8.3 or upgrade the management script to v2.6." \
+               "此脚本暂不支持 Nowhere v2.x：请改用 v1.8.3，或升级管理脚本至 v2.6。" \
+               "Nowhere v2.x пока не поддерживается этим скриптом. Используйте v1.8.3 или обновите скрипт управления до v2.6.")"
+}
+
+# Resolve --version latest to the highest v1 tag via git version sort
+# (no python3 needed). The default stays pinned so builds are reproducible.
+# A v2.x result is refused: the v1 URL config would not work.
+resolve_version() {
+  if [[ "$VERSION" != "latest" ]]; then
+    if [[ "$VERSION" == v2.* ]]; then die_v2_unsupported; fi
+    version_supported "$VERSION" ||
+      die "Only Nowhere v1.8.3+ is supported by this script."
+    return 0
+  fi
+  [[ -z "$COMMIT" ]] && return 0
+  local tag
+  tag="$(git ls-remote --tags --sort=-v:refname "$REPO_URL" 'v[0-9]*' 2>/dev/null | \
+    awk '$2 !~ /\^\{\}$/ {sub(/^refs\/tags\//, "", $2); print $2; exit}')" || true
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] ||
+    die "Could not resolve the latest tag from ${REPO_URL} (pass --version vX.Y.Z or --commit SHA)."
+  if [[ "$tag" == v2.* ]]; then die_v2_unsupported; fi
+  version_supported "$tag" || die "Latest ${tag} is not supported by this script."
+  info "Resolved --version latest to ${tag}."
+  VERSION="$tag"
 }
 
 validate_port() {
@@ -442,18 +481,20 @@ ensure_swap() {
   fi
 
   local avail
-  avail="$(free_disk_mb /)"
+  avail="$(free_disk_mb "${SWAP_FILE%/*}")"
   (( avail > want_mb + 1024 )) ||
-    die "Need ~$((want_mb + 1024))MB free on / to create a ${want_mb}MB swapfile; only ${avail}MB available."
+    die "Need ~$((want_mb + 1024))MB free on ${SWAP_FILE%/*} to create a ${want_mb}MB swapfile; only ${avail}MB available."
 
   info "Creating a temporary ${want_mb}MB swapfile for the build (RAM: ${mem}MB)..."
   fallocate -l "${want_mb}M" "$SWAP_FILE" 2>/dev/null ||
     dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$want_mb" status=none ||
     die "Could not create ${SWAP_FILE}."
   chmod 600 "$SWAP_FILE"
+  # Mark as created before mkswap/swapon so the EXIT trap removes the file even
+  # if either step fails.
+  SWAP_CREATED=1
   mkswap "$SWAP_FILE" >/dev/null
   swapon "$SWAP_FILE" || die "Could not enable swap on ${SWAP_FILE}."
-  SWAP_CREATED=1
   info "Swap enabled; it is removed automatically when this run finishes."
 }
 
@@ -461,6 +502,7 @@ ensure_swap() {
 
 fetch_source() {
   command -v git >/dev/null 2>&1 || die "git is required to fetch the source."
+  resolve_version
 
   local ref="${COMMIT:-$VERSION}"
 
@@ -665,6 +707,7 @@ ExecStart=${CURRENT_LINK}/nowhere \${NOWHERE_PORTAL}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
+UMask=0077
 CapabilityBoundingSet=
 AmbientCapabilities=
 NoNewPrivileges=true
@@ -704,6 +747,9 @@ install_or_upgrade() {
 
   # Validate every cheap thing before spending an hour on a build.
   validate_version "$VERSION"
+  if [[ "$VERSION" == v2.* ]]; then die_v2_unsupported; fi
+  [[ "$VERSION" == "latest" ]] || version_supported "$VERSION" ||
+    die "Only Nowhere v1.8.3+ is supported by this script."
   if [[ -n "$COMMIT" && ! "$COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
     die "--commit must be a git object name (7-40 hex characters)."
   fi
@@ -827,10 +873,26 @@ uninstall() {
 
 clean_build() {
   require_root
-  [[ -d "$SRC_DIR" ]] || { info "No build tree at ${SRC_DIR}."; return 0; }
-  rm -rf "$SRC_DIR"
-  rm -f "$SWAP_FILE"
-  info "Removed ${SRC_DIR} and any leftover build swapfile."
+  if [[ -d "$SRC_DIR" ]]; then
+    rm -rf "$SRC_DIR"
+    info "Removed ${SRC_DIR}."
+  else
+    info "No build tree at ${SRC_DIR}."
+  fi
+  # Never rm an in-use swapfile: deactivate first, and keep the file if
+  # swapoff fails so the kernel never references a deleted device.
+  if [[ -e "$SWAP_FILE" ]]; then
+    if awk -v p="$SWAP_FILE" 'NR>1 && $1==p {found=1} END{exit !found}' /proc/swaps 2>/dev/null; then
+      if swapoff "$SWAP_FILE" 2>/dev/null; then
+        info "Deactivated stale swap ${SWAP_FILE}."
+      else
+        warn "Could not deactivate ${SWAP_FILE}; leaving it in place."
+        return 0
+      fi
+    fi
+    rm -f "$SWAP_FILE"
+    info "Removed swapfile ${SWAP_FILE}."
+  fi
 }
 
 parse_args "$@"

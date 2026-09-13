@@ -4,6 +4,8 @@
 
 A production-grade one-click deployment and operations script built on the official [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) core protocol.
 
+> **V1 stable channel:** the unified management script is named `nowhere-v1.sh` and is pinned to Nowhere `v1.8.3`. It does not follow GitHub `latest` and does not install Nowhere V2.
+
 It combines strict SHA-256 hash verification of official release binaries, fully-optimized local Rust source compilation (Fat-LTO), a hardened systemd permission sandbox, Let's Encrypt certificate permission isolation, and a color terminal interactive console (TUI) available in Chinese / English / Russian.
 
 ---
@@ -14,6 +16,7 @@ It combines strict SHA-256 hash verification of official release binaries, fully
 - [1. Feature Comparison & Mode Selection](#1-feature-comparison--mode-selection)
 - [2. Prerequisites](#2-prerequisites)
 - [3. Quick Start (One-Click Install)](#3-quick-start-one-click-install)
+  - [3.0 Download, Verify Syntax, and Run](#30-download-verify-syntax-and-run)
   - [3.1 Interactive Console Mode (Recommended for Beginners)](#31-interactive-console-mode-recommended-for-beginners)
   - [3.2 Non-Interactive CLI Deployment (Automation / Scripting)](#32-non-interactive-cli-deployment-automation--scripting)
 - [4. TLS Certificate Configuration & Permission Handling](#4-tls-certificate-configuration--permission-handling)
@@ -33,29 +36,29 @@ It combines strict SHA-256 hash verification of official release binaries, fully
 
 ```bash
 # Download the unified management script
-wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere.sh
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh
 
 # Make it executable
-chmod +x nowhere.sh
+chmod 700 nowhere-v1.sh
 
 # Run with root privileges
-sudo bash nowhere.sh
+sudo bash nowhere-v1.sh
 ```
 
 ### Alternative: One-Line Command (For Trusted Sources)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere.sh -o nowhere.sh && chmod +x nowhere.sh && sudo bash nowhere.sh
+curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh -o nowhere-v1.sh && chmod 700 nowhere-v1.sh && sudo bash nowhere-v1.sh
 ```
 
 > **💡 Which script should I use?**
 >
 > This repository contains three scripts:
-> - **`nowhere.sh`** ← **Recommended for most users** (supports both prebuilt and source compilation via TUI menu)
+> - **`nowhere-v1.sh`** ← **Recommended for most users** (supports both prebuilt and source compilation via TUI menu)
 > - `install.sh` ← For automation/CI, prebuilt binary only
 > - `install-source.sh` ← For automation/CI, source compilation only
 >
-> **If you're not sure, just use `nowhere.sh`** — it provides an interactive menu where you can choose your preferred installation method.
+> **If you're not sure, just use `nowhere-v1.sh`** — it provides an interactive menu where you can choose your preferred installation method.
 
 ---
 
@@ -90,13 +93,25 @@ The script supports two installation modes. Configuration and the service interf
 
 ## 3. Quick Start (One-Click Install)
 
+### 3.0 Download, verify syntax, and run
+
+```bash
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh -O nowhere-v1.sh
+chmod 700 nowhere-v1.sh
+bash -n nowhere-v1.sh
+sudo bash nowhere-v1.sh
+```
+
+The deployment entry point is consistently named `nowhere-v1.sh`. The old names `nowhere.sh` and `nowhere-v1-stable.sh` are no longer deployment entry points.
+
+
 ### 3.1 Interactive Console Mode (Recommended for Beginners)
 
 After downloading the script (see [§0](#0-download--run-the-script)), run it directly:
 
 ```bash
-chmod +x nowhere.sh
-sudo bash nowhere.sh
+chmod 700 nowhere-v1.sh
+sudo bash nowhere-v1.sh
 ```
 
 After launch, choose the interface language (Chinese, English, or Russian), then select the corresponding number in the TUI menu:
@@ -108,7 +123,7 @@ After launch, choose the interface language (Chinese, English, or Russian), then
 >
 > ```bash
 > tmux new -s nowhere
-> sudo bash nowhere.sh
+> sudo bash nowhere-v1.sh
 > # Detach anytime with Ctrl+B then D; reattach anytime with tmux attach -t nowhere
 > ```
 
@@ -127,7 +142,7 @@ After launch, choose the interface language (Chinese, English, or Russian), then
 No domain or certificate setup required — verify connectivity quickly:
 
 ```bash
-sudo bash nowhere.sh install \
+sudo bash nowhere-v1.sh install \
   --method release \
   --port 2077 \
   --net mix \
@@ -137,7 +152,7 @@ sudo bash nowhere.sh install \
 
 > **Note**: TLS 1 uses a self-signed certificate. Clients must either:
 > - Trust the certificate manually, or
-> - Pin the certificate fingerprint using `sudo bash nowhere.sh show-fingerprint`
+> - Pin the certificate fingerprint using `sudo bash nowhere-v1.sh fingerprint`
 
 #### Scenario B: Production deployment (TLS 2, strictly verified PEM certificate) ⭐ Recommended
 
@@ -145,12 +160,12 @@ Use your own real-domain PEM certificate (e.g. issued by Let's Encrypt / acme.sh
 
 ```bash
 # 1. Copy the authorized certificate into a dedicated, isolated path
-sudo bash nowhere.sh prepare-tls \
+sudo bash nowhere-v1.sh prepare-tls \
   --cert /etc/letsencrypt/live/example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/example.com/privkey.pem
 
 # 2. Start the production deployment
-sudo bash nowhere.sh install \
+sudo bash nowhere-v1.sh install \
   --method release \
   --port 2077 \
   --net mix \
@@ -172,17 +187,17 @@ Let's Encrypt's default private key permissions are `600 root:root`, with the pa
 
 ### 4.2 Automatic Renewal & Hook Configuration
 
-If you use Certbot to manage certificates, add a renewal hook at `/etc/letsencrypt/renewal-hooks/deploy/nowhere.sh`:
+If you use Certbot to manage certificates, add a renewal hook at `/etc/letsencrypt/renewal-hooks/deploy/nowhere-v1.sh`:
 
 ```bash
 #!/usr/bin/env bash
-bash /path/to/nowhere.sh prepare-tls \
+bash /path/to/nowhere-v1.sh prepare-tls \
   --cert "$RENEWED_LINEAGE/fullchain.pem" \
   --tls-key "$RENEWED_LINEAGE/privkey.pem"
 systemctl restart nowhere
 ```
 
-Make it executable: `chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere.sh`. From then on, every certificate renewal automatically re-authorizes the files and hot-reloads the service.
+Make it executable: `chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere-v1.sh`. From then on, every certificate renewal automatically re-authorizes the files and hot-reloads the service.
 
 ---
 
@@ -218,7 +233,7 @@ sudo firewall-cmd --reload
 
 1. **`portal://`** - Server-side configuration (internal use only)
    - Used by the Nowhere service to start the server
-   - Stored in `/etc/nowhere/nowhere.env`
+   - Stored in `/etc/nowhere/url.conf`
    - **NOT for client import!**
 
 2. **`nowhere://`** - Client-side connection link (for Anywhere 2.0)
@@ -234,13 +249,13 @@ After deployment, use the management script to generate the client-importable `n
 
 ```bash
 # Auto-detect public IP and generate link
-sudo bash nowhere.sh client-link
+sudo bash nowhere-v1.sh client-link
 
 # Manually specify server domain or IP (overrides config)
-sudo bash nowhere.sh client-link --host relay.example.com
+sudo bash nowhere-v1.sh client-link --host relay.example.com
 
 # Customize node display name
-sudo bash nowhere.sh client-link --name "US-NYC-01"
+sudo bash nowhere-v1.sh client-link --name "US-NYC-01"
 ```
 
 **Note:**
@@ -261,7 +276,7 @@ sudo bash nowhere.sh client-link --name "US-NYC-01"
 To view the internal server configuration (not for client use):
 
 ```bash
-sudo bash nowhere.sh link
+sudo bash nowhere-v1.sh link
 ```
 
 This shows the `portal://` URI used by the systemd service.
@@ -274,16 +289,16 @@ Regardless of which installation mode you used, the following commands are avail
 
 ```bash
 # Open the interactive control menu
-sudo bash nowhere.sh menu
+sudo bash nowhere-v1.sh menu
 
 # Check service status and the currently running release version
-sudo bash nowhere.sh status
+sudo bash nowhere-v1.sh status
 
 # Tail live system logs (Ctrl+C to exit)
-sudo bash nowhere.sh logs
+sudo bash nowhere-v1.sh logs
 
 # Restart the Nowhere service
-sudo bash nowhere.sh restart
+sudo bash nowhere-v1.sh restart
 
 # Native systemctl operations
 sudo systemctl status nowhere
@@ -297,18 +312,18 @@ sudo systemctl restart nowhere
 ### 8.1 Upgrading
 
 ```bash
-# Upgrade to a specific official release tag
-sudo bash nowhere.sh upgrade --version v1.9.0
+# Re-deploy the pinned V1 stable release
+sudo bash nowhere-v1.sh upgrade --version v1.8.3
 ```
 
-The `/etc/nowhere/nowhere.env` configuration is preserved during an upgrade. If the new version fails its startup check, the script automatically reverts to the previous version to prevent service loss.
+The `/etc/nowhere/url.conf` configuration is preserved during an upgrade. If the new version fails its startup check, the script automatically reverts to the previous version to prevent service loss.
 
 ### 8.2 Instant, Lossless Rollback
 
 If a new version misbehaves, roll back immediately:
 
 ```bash
-sudo bash nowhere.sh rollback
+sudo bash nowhere-v1.sh rollback
 ```
 
 The script repoints the symlink to the last successfully built/running release and restarts the service — instant, with no re-download or rebuild required.
@@ -317,18 +332,20 @@ The script repoints the symlink to the last successfully built/running release a
 
 ```bash
 # Clean up leftover source-build cache and temporary swap
-sudo bash nowhere.sh clean-build
+sudo bash nowhere-v1.sh clean-build
 
 # Uninstall the binary and systemd service (keeps /etc/nowhere config and keys)
-sudo bash nowhere.sh uninstall
+sudo bash nowhere-v1.sh uninstall
 
 # Full uninstall (also removes all config, certificate grants, and runtime state — irreversible)
-sudo bash nowhere.sh uninstall --purge
+sudo bash nowhere-v1.sh uninstall --purge
 ```
 
 ---
 
 ## 9. Full CLI Parameter Reference
+
+Parameters of `nowhere-v1.sh` (the automation-only `install.sh` / `install-source.sh` accept a subset: `--version` `--libc` `--key` `--port` `--net` `--tls` `--cert` `--tls-key` `--listen-host`; `install-source.sh` additionally accepts `--commit` `--jobs` `--swap` `--keep-source` `--git-url`):
 
 | Parameter | Default | Description |
 | --- | --- | --- |
@@ -336,16 +353,15 @@ sudo bash nowhere.sh uninstall --purge
 | `--key KEY` | auto-generated | Portal shared key (16–255 chars; letters, digits, and `._~-` only) |
 | `--port PORT` | `2077` | Listening port (must be within `1024-65535`) |
 | `--net MODE` | `mix` | Network protocol: `mix` (TCP/UDP on the same port), `tcp`, or `udp` |
-| `--tls MODE` | `2` | TLS mode: `1` (temporary self-signed cert), `2` (local PEM certificate file) |
+| `--tls MODE` | `1` | TLS mode: `1` (temporary self-signed cert), `2` (local PEM certificate file). **Production must use `2`** |
 | `--cert PATH` | none | Full-chain certificate path (`fullchain.pem`); required for TLS 2 |
 | `--tls-key PATH` | none | Private key file path (`privkey.pem`); required for TLS 2 |
-| `--version TAG` | `v1.8.3` | GitHub Release or Git tag version to pull |
+| `--version TAG` | `v1.8.3` | V1 stable channel is pinned to `v1.8.3`; `latest`, V2, and other versions are rejected |
 | `--libc MODE` | `auto` | C library compatibility (prebuilt mode only): `auto`, `gnu`, or `musl` |
-| `--commit SHA` | none | Pin an exact Git commit hash for the source build |
-| `--jobs N` | number of cores | Limit parallel cargo build jobs; use `1` on single-core machines |
 | `--swap MODE` | `auto` | Temporary swap control: `auto`, `off`, or a custom size in MB |
 | `--keep-source` | off | Keep the build tree and cache after compiling to speed up the next incremental build |
-| `--lang LANG` | `ask` | Interface language: `zh` (Chinese), `en` (English), `ru` (Russian) |
+
+Interface language is selected interactively on first run, or set via the `NOWHERE_LANG` environment variable (`zh` / `en` / `ru`).
 
 ---
 
@@ -365,9 +381,11 @@ After installation, files are laid out as follows:
 └── current -> releases/...               # Atomic symlink pointing to the active release
 
 /usr/local/bin/nowhere -> /opt/nowhere/current/nowhere  # Global executable symlink
+/usr/local/libexec/nowhere-launch                      # Root-owned launcher (reads url.conf)
 
 /etc/nowhere/
-├── nowhere.env                           # Runtime config file (mode 600, root read/write only)
+├── url.conf                              # Run URL (mode 640, root:nowhere)
+├── manager.conf                          # Manager metadata (mode 600, root only)
 └── tls/
     ├── fullchain.pem                     # Authorized certificate (mode 640, root:nowhere)
     └── privkey.pem                       # Authorized private key (mode 640, root:nowhere)
@@ -386,7 +404,7 @@ After installation, files are laid out as follows:
 * **Fix**: Reinstall using the official static musl build:
 
 ```bash
-sudo bash nowhere.sh install --method release --libc musl [other args...]
+sudo bash nowhere-v1.sh install --method release --libc musl [other args...]
 ```
 
 ### Q2: Source build is killed with `signal: 9 Killed`
@@ -395,7 +413,7 @@ sudo bash nowhere.sh install --method release --libc musl [other args...]
 * **Fix**: Allocate more temporary swap and limit parallel jobs, then retry:
 
 ```bash
-sudo bash nowhere.sh install --method source --swap 4096 --jobs 1 [other args...]
+sudo bash nowhere-v1.sh install --method source --swap 4096 --jobs 1 [other args...]
 ```
 
 ### Q3: `GitHub did not publish a SHA-256 digest`
@@ -406,7 +424,7 @@ sudo bash nowhere.sh install --method source --swap 4096 --jobs 1 [other args...
 ### Q4: `Service user nowhere cannot read certificate`
 
 * **Cause**: TLS 2 mode referenced the raw Let's Encrypt private key directly, which the service user has no permission to read.
-* **Fix**: Always run `sudo bash nowhere.sh prepare-tls --cert ... --tls-key ...` first, and use the `/etc/nowhere/tls/` paths it outputs as your install parameters.
+* **Fix**: Always run `sudo bash nowhere-v1.sh prepare-tls --cert ... --tls-key ...` first, and use the `/etc/nowhere/tls/` paths it outputs as your install parameters.
 
 ### Q5: Client can't connect, or the handshake times out
 

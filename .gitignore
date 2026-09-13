@@ -11,3 +11,6 @@ Thumbs.db
 # Test files
 test/
 *.test.sh
+
+# Legacy script backups
+*.backup

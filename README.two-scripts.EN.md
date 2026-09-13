@@ -3,7 +3,8 @@
 > Two scripts, one goal, different trust trade-offs. **Read §0 first to decide which one to use.**
 >
 > Environment: systemd Linux, x86_64 or aarch64, root or sudo privileges
-> Default upstream version: `v1.8.3`
+> Default upstream version: `v1.8.3` (pass `--version latest` to track the newest release)
+> This document covers the two automation installers. For the unified V1 stable management entry point, use `nowhere-v1.sh` as documented in the main README.
 
 ## 0. Which script should you use?
 
@@ -161,14 +162,14 @@ The only leftovers are the `nowhere` system user and the `/var/tmp/nowhere-build
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--version TAG` | `v1.8.3` | The official Release tag to install |
+| `--version TAG` | `v1.8.3` | The official Release tag to install, or `latest` (resolved via the GitHub API) |
 | `--libc MODE` | `auto` | `gnu` / `musl` / `auto`; use `musl` when glibc is too old |
 
 ### 3.3 `install-source.sh` only (compiles)
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--version TAG` | `v1.8.3` | The git tag to build |
+| `--version TAG` | `v1.8.3` | The git tag to build, or `latest` (highest tag by version sort) |
 | `--commit SHA` | none | Pin to a specific commit (full clone, slower but reproducible); mutually exclusive with `--version` |
 | `--git-url URL` | official repo | Point to your own fork or mirror |
 | `--jobs N` | cargo default | Limit parallel build jobs; set to `1` on low-memory VPS |

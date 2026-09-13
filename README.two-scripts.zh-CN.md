@@ -3,7 +3,8 @@
 > 两个脚本，同一个目标，不同的信任取舍。**先看第 0 节决定用哪个。**
 >
 > 适用环境：systemd Linux、x86_64 或 aarch64、root 或 sudo 权限
-> 默认上游版本：`v1.8.3`
+> 默认上游版本：`v1.8.3`（传 `--version latest` 可跟踪最新版）
+> 本文档只说明两个自动化安装脚本。统一的 V1 稳定管理入口请使用 `nowhere-v1.sh`，部署步骤以主 README 为准。
 
 ## 0. 两个脚本怎么选
 
@@ -161,14 +162,14 @@ sudo bash /tmp/install-source.sh install --key '...' --port 2077 --tls 1
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--version TAG` | `v1.8.3` | 要安装的官方 Release tag |
+| `--version TAG` | `v1.8.3` | 要安装的官方 Release tag，或 `latest`（通过 GitHub API 自动解析最新版） |
 | `--libc MODE` | `auto` | `gnu` / `musl` / `auto`；glibc 太旧时用 `musl` |
 
 ### 3.3 仅 `install-source.sh`（编译）
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--version TAG` | `v1.8.3` | 要编译的 git tag |
+| `--version TAG` | `v1.8.3` | 要编译的 git tag，或 `latest`（取版本号最高的 tag） |
 | `--commit SHA` | 无 | 锁定到具体提交（完整克隆，更慢但可复现）；与 `--version` 二选一 |
 | `--git-url URL` | 官方仓库 | 换成你自己的 fork 或镜像 |
 | `--jobs N` | cargo 默认 | 限制并行编译任务数，小内存 VPS 上设 `1` |

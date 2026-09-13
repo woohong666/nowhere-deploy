@@ -114,7 +114,7 @@ TLS helper:
                       (Let's Encrypt private keys are root-only by default).
 
 Options:
-  --version TAG       Exact official Release tag; default: v1.8.3
+  --version TAG       Official Release tag, or 'latest'; default: v1.8.3 (v2.x rejected)
   --libc MODE         gnu, musl, or auto (detect); default: auto
   --key KEY           Portal shared key; required for first install
   --port PORT         Listen port; must be >= 1024 (the service runs unprivileged)
@@ -152,8 +152,50 @@ require_command() {
 }
 
 validate_version() {
+  [[ "$1" == "latest" ]] && return 0
   [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] ||
     die "Invalid version tag: $1"
+}
+
+# Supported upstream range: >= v1.8.3 and < v2.0.0. Nowhere v2.0.0 (2026-09-11)
+# is wire-incompatible with the v1 portal URL this script writes.
+version_supported() {
+  local v="${1#v}" major minor patch
+  v="${v%%-*}"; IFS=. read -r major minor patch <<< "$v"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] || return 1
+  (( major == 1 && (minor > 8 || (minor == 8 && 10#${patch:-0} >= 3)) ))
+}
+
+die_v2_unsupported() {
+  die "$(tr_msg "Nowhere v2.x is not supported by this script yet.
+Use v1.8.3 or upgrade the management script to v2.6." \
+               "此脚本暂不支持 Nowhere v2.x：请改用 v1.8.3，或升级管理脚本至 v2.6。" \
+               "Nowhere v2.x пока не поддерживается этим скриптом. Используйте v1.8.3 или обновите скрипт управления до v2.6.")"
+}
+
+# Resolve --version latest to the newest non-draft GitHub Release tag. The
+# default stays pinned to an exact tag so CI installs are reproducible.
+# Resolving to a v2.x tag is refused: the v1 URL config would not work.
+resolve_version() {
+  if [[ "$VERSION" != "latest" ]]; then
+    if [[ "$VERSION" == v2.* ]]; then die_v2_unsupported; fi
+    version_supported "$VERSION" ||
+      die "Only Nowhere v1.8.3+ is supported by this script."
+    return 0
+  fi
+  local tag
+  tag="$(curl --fail --silent --show-error --location --proto '=https' \
+    --tlsv1.2 --retry 3 --connect-timeout 10 \
+    -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/${REPO}/releases/latest" | \
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name",""))')" ||
+    die "Could not resolve the latest release tag from the GitHub API."
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] ||
+    die "GitHub returned an unexpected latest tag: ${tag}"
+  if [[ "$tag" == v2.* ]]; then die_v2_unsupported; fi
+  version_supported "$tag" || die "Latest ${tag} is not supported by this script."
+  info "Resolved --version latest to ${tag}."
+  VERSION="$tag"
 }
 
 validate_port() {
@@ -267,7 +309,10 @@ for asset in data.get("assets", []):
 }
 
 download_verified_release() {
-  local asset="$1" expected="$2" tmpdir="$3" archive="$tmpdir/$asset" actual
+  local asset="$1" expected="$2" tmpdir="$3"
+  # Separate `local` statement: within a single one, $tmpdir/$asset would
+  # expand before the assignments above take effect (SC2318).
+  local archive="$tmpdir/$asset" actual
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     --retry 3 --connect-timeout 10 \
     -o "$archive" \
@@ -389,6 +434,7 @@ ExecStart=${CURRENT_LINK}/nowhere \${NOWHERE_PORTAL}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
+UMask=0077
 CapabilityBoundingSet=
 AmbientCapabilities=
 NoNewPrivileges=true
@@ -442,6 +488,7 @@ install_or_upgrade() {
   require_command sha256sum
   require_command tar
   require_command systemctl
+  resolve_version
 
   local fresh=0
   [[ -f "$CONFIG_FILE" ]] || fresh=1

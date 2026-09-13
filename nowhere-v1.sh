@@ -12,12 +12,14 @@ umask 077
 # ============================================================
 # 常量
 # ============================================================
-readonly SCRIPT_VERSION="2.5.2"
+readonly SCRIPT_VERSION="2.5.3"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly DEFAULT_REPO_URL="https://github.com/NodePassProject/Nowhere.git"
-readonly DEFAULT_VERSION="latest"
+readonly SCRIPT_CHANNEL="v1-stable"
+readonly PINNED_NOWHERE_VERSION="v1.8.3"
+readonly DEFAULT_VERSION="$PINNED_NOWHERE_VERSION"
 readonly MIN_RUSTC="1.85.0"
-readonly SELF_UPDATE_URL="${NOWHERE_SELF_URL:-https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere.sh}"
+readonly SELF_UPDATE_URL="${NOWHERE_SELF_URL:-https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh}"
 
 readonly SERVICE_NAME="nowhere"
 readonly RUN_USER="nowhere"
@@ -262,8 +264,10 @@ has_cmd() { command -v "$1" >/dev/null 2>&1; }
 # 验证器
 # ============================================================
 validate_version() {
-  [[ "$1" == "latest" || "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] ||
-    die "$(tr_msg "Invalid version: $1" "版本格式不合法: $1" "Неверная версия: $1")"
+  [[ "$1" == "$PINNED_NOWHERE_VERSION" ]] ||
+    die "$(tr_msg "This stable script is pinned to Nowhere ${PINNED_NOWHERE_VERSION}; requested: $1" \
+                   "此稳定脚本已固定使用 Nowhere ${PINNED_NOWHERE_VERSION}；拒绝版本: $1" \
+                   "Этот стабильный скрипт закреплён на Nowhere ${PINNED_NOWHERE_VERSION}; запрошено: $1")"
 }
 validate_port() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )) || die "$(tr_msg "Port must be 1-65535." "端口必须 1-65535。" "Порт 1-65535.")"
@@ -359,10 +363,10 @@ extract_endpoint_port() {
 prompt() {
   local p="$1" d="${2:-}" v
   if [[ -n "$d" ]]; then
-    read -r -p "$p [$d]: " v </dev/tty
+    read -r -p "$p [$d]: " v </dev/tty || v=""
     printf '%s' "${v:-$d}"
   else
-    read -r -p "$p: " v </dev/tty
+    read -r -p "$p: " v </dev/tty || v=""
     printf '%s' "$v"
   fi
 }
@@ -370,14 +374,14 @@ prompt() {
 prompt_yes() {
   local p="$1" a
   [[ "$ASSUME_YES" -eq 1 ]] && return 0
-  read -r -p "$p [Y/n]: " a </dev/tty
+  read -r -p "$p [Y/n]: " a </dev/tty || a=""
   [[ -z "$a" || "$a" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
 prompt_confirm() {
   local p="$1" a
   [[ "$ASSUME_YES" -eq 1 ]] && return 0
-  read -r -p "$p [y/N]: " a </dev/tty
+  read -r -p "$p [y/N]: " a </dev/tty || a=""
   [[ "$a" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
@@ -387,7 +391,7 @@ prompt_port() {
   while true; do
     read -rp "$(tr_msg "Listen port [1-65535] (Default: ${default}): " \
                      "监听端口 [1-65535] (默认 ${default}): " \
-                     "Порт [1-65535] (по умолчанию ${default}): ")" input </dev/tty
+                     "Порт [1-65535] (по умолчанию ${default}): ")" input </dev/tty || input=""
     input="${input:-$default}"
     if [[ "$input" =~ ^[0-9]+$ ]] && (( 10#$input >= 1 && 10#$input <= 65535 )); then
       PORT="$input"; return 0
@@ -403,7 +407,7 @@ prompt_key() {
   while true; do
     read -rp "$(tr_msg "Shared key (Default: ${default}): " \
                      "共享密钥 (回车保留: ${default}): " \
-                     "Ключ (по умолчанию: ${default}): ")" input </dev/tty
+                     "Ключ (по умолчанию: ${default}): ")" input </dev/tty || input=""
     input="${input:-$default}"
     if [[ "$input" =~ ^[A-Za-z0-9._~-]{16,255}$ ]]; then
       KEY="$input"; return 0
@@ -418,7 +422,7 @@ prompt_choice() {
   local prompt="$1" default="$2"; shift 2
   local input v
   while true; do
-    read -rp "${prompt} (Default: ${default}): " input </dev/tty
+    read -rp "${prompt} (Default: ${default}): " input </dev/tty || input=""
     input="${input:-$default}"
     for v in "$@"; do
       if [[ "$input" == "$v" ]]; then printf '%s' "$input"; return 0; fi
@@ -678,114 +682,24 @@ version_number_ge() {
 }
 
 version_supported() {
-  local v="${1#v}" major minor patch
-  v="${v%%-*}"; v="${v%%+*}"
-  IFS=. read -r major minor patch <<< "$v"
-  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] || return 1
-  (( major > 1 || (major == 1 && minor > 8) || (major == 1 && minor == 8 && patch >= 3) ))
+  [[ "${1:-}" == "$PINNED_NOWHERE_VERSION" ]]
 }
 
-fetch_release_tags() {
-  has_cmd python3 || return 1
-  local header_file body_file
-  header_file="$(mktemp)"; body_file="$(mktemp)"
-  CLEANUP_PATHS+=("$header_file" "$body_file")
-  local -a curl_args=(
-    -sfL --max-time 10
-    -H 'Accept: application/vnd.github+json'
-    -D "$header_file"
-    -o "$body_file"
-  )
-  [[ -n "$GITHUB_TOKEN" ]] && curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  if ! curl "${curl_args[@]}" \
-      "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=30" 2>/dev/null; then
-    local remaining
-    remaining="$(awk 'tolower($1)=="x-ratelimit-remaining:" {print $2}' "$header_file" 2>/dev/null | tr -d '\r' | tail -1)"
-    if [[ "$remaining" == "0" ]]; then
-      warn "$(tr_msg "GitHub API rate limit reached. Retry later or set GITHUB_TOKEN." \
-                     "GitHub API 已触发限流，请稍后再试，或设置 GITHUB_TOKEN。" \
-                     "Лимит GitHub API исчерпан. Задайте GITHUB_TOKEN.")"
-    fi
-    rm -f "$header_file" "$body_file"
-    return 1
-  fi
-  python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-if not isinstance(data, list):
-    sys.exit(1)
-for r in data:
-    if r.get("prerelease") or r.get("draft"):
-        continue
-    tag = r.get("tag_name")
-    if tag:
-        print(tag)
-' < "$body_file" 2>/dev/null
-  rm -f "$header_file" "$body_file"
-}
-
+# Stable V1 channel: deliberately no remote version picker.
+# Nowhere v2.0.0 is wire-incompatible with v1.x and must use a separate manager.
 choose_version_interactive() {
-  local current="${1:-$DEFAULT_VERSION}"
-  local sel tags
-  read -rp "$(tr_msg "Version (Enter=${current}, 'l' to list): " \
-                   "版本 (回车=${current}，输入 l 列出可选): " \
-                   "Версия (Enter=${current}, 'l' = список): ")" sel </dev/tty
-  [[ -z "$sel" ]] && { printf '%s' "$current"; return 0; }
-  if [[ "$sel" != "l" && "$sel" != "L" ]]; then printf '%s' "$sel"; return 0; fi
-  if ! tags="$(fetch_release_tags)" || [[ -z "$tags" ]]; then
-    warn "$(tr_msg "Failed to fetch release list; using default." "获取版本列表失败，使用默认版本。" "Не удалось получить список версий.")"
-    printf '%s' "$current"; return 0
-  fi
-  local -a options=()
-  local t
-  while IFS= read -r t; do
-    [[ -n "$t" ]] && options+=("$t")
-    (( ${#options[@]} >= 10 )) && break
-  done <<< "$tags"
-  local found=0
-  for t in "${options[@]}"; do [[ "$t" == "$current" ]] && { found=1; break; }; done
-  [[ $found -eq 1 ]] || options=("$current" "${options[@]}")
-  printf '\n\033[1;36m%s\033[0m\n' "$(tr_msg "Available versions:" "可用版本列表:" "Доступные версии:")" >&2
-  local i=1
-  for t in "${options[@]}"; do
-    if [[ "$t" == "$current" ]]; then
-      printf '  [%d] %s  \033[1;33m%s\033[0m\n' "$i" "$t" "$(tr_msg "(default)" "(默认)" "(по умолчанию)")" >&2
-    else
-      printf '  [%d] %s\n' "$i" "$t" >&2
-    fi
-    ((i++))
-  done
-  read -rp "$(tr_msg "Select version [1-${#options[@]}] (Default: 1): " \
-                   "选择版本 [1-${#options[@]}] (默认 1): " \
-                   "Выберите [1-${#options[@]}] (по умолчанию 1): ")" sel </dev/tty
-  sel="${sel:-1}"
-  if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#options[@]} )); then
-    printf '%s' "${options[$((sel-1))]}"
-  else
-    printf '%s' "${options[0]}"
-  fi
+  printf '%s\n' "$(tr_msg \
+    "Stable channel pinned to Nowhere ${PINNED_NOWHERE_VERSION} (V2 is intentionally unsupported here)." \
+    "稳定通道固定为 Nowhere ${PINNED_NOWHERE_VERSION}（此脚本明确不支持 V2）。" \
+    "Стабильный канал закреплён на Nowhere ${PINNED_NOWHERE_VERSION} (V2 здесь намеренно не поддерживается).")" >&2
+  printf '%s' "$PINNED_NOWHERE_VERSION"
 }
 
 resolve_version() {
   validate_version "$VERSION"
-  if [[ "$VERSION" != latest ]]; then
-    version_supported "$VERSION" || die "$(tr_msg "Only Nowhere v1.8.3+ is supported by this script." "此脚本仅支持 Nowhere v1.8.3+。" "Поддерживается только Nowhere v1.8.3+.")"
-    return 0
-  fi
-  install_runtime_deps
-  local -a curl_args=(
-    --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3
-    -H 'Accept: application/vnd.github+json'
-  )
-  [[ -n "$GITHUB_TOKEN" ]] && curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  VERSION="$(curl "${curl_args[@]}" "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | \
-    python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name", ""))')"
-  [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || die "$(tr_msg "Cannot resolve latest version." "无法解析 GitHub 最新版本。" "Не удалось определить последнюю версию.")"
-  version_supported "$VERSION" || die "$(tr_msg "Latest ${VERSION} is unsupported." "最新版 ${VERSION} 不受支持。" "Версия ${VERSION} не поддерживается.")"
+  VERSION="$PINNED_NOWHERE_VERSION"
 }
+
 
 # ============================================================
 # 依赖安装
@@ -1607,6 +1521,7 @@ current_version() {
 
 show_status() {
   require_root; require_systemd
+  import_legacy_config
   local svc_state svc_pid svc_uptime svc_mem target version port port_state portal
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     svc_state="${C_GREEN}● running${C_NC}"
@@ -1659,6 +1574,7 @@ show_links() {
   require_root; import_legacy_config
   [[ -s "$URL_FILE" ]] || die "$(tr_msg "No config." "没有配置。" "Нет конфигурации.")"
   load_meta
+  apply_cli_overrides  # after load_meta so CLI flags (--host/--name/--client-*) win
   local u share
   IFS= read -r u <"$URL_FILE"
   u="$(migrate_url "$u")"
@@ -1677,13 +1593,17 @@ show_links() {
 
 fingerprint() {
   require_root; require_systemd
+  import_legacy_config
   [[ -s "$URL_FILE" ]] || die "$(tr_msg "No config." "没有配置。" "Нет конфигурации.")"
   local u tls fp line host port
   IFS= read -r u <"$URL_FILE"
   tls="$(query_get "$u" tls)"; tls="${tls:-1}"
   [[ "$tls" == 1 ]] || { info "$(tr_msg "Not tls=1; use CA/SNI or pin." "当前不是 tls=1；tls=2 使用 CA/SNI 或 pin。" "Не tls=1; используйте CA/SNI или pin.")"; return; }
   line="$(journalctl -u "$SERVICE_NAME" -n 400 --no-pager 2>/dev/null | grep -Eai 'CERT_SHA256\||fingerprint|sha-?256' | tail -n1 || true)"
-  fp="$(printf '%s\n' "$line" | grep -Eaio '([A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}|[A-Fa-f0-9]{64}' | tail -n1 || true)"
+  # Prefer the colon-separated form (the Nowhere log format) before falling
+  # back to a bare hex string, which may match an unrelated hash in the line.
+  fp="$(printf '%s\n' "$line" | grep -Eaio '([A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}' | tail -n1 || true)"
+  [[ -n "$fp" ]] || fp="$(printf '%s\n' "$line" | grep -Eao '[A-Fa-f0-9]{64}' | tail -n1 || true)"
   if [[ -n "$fp" ]]; then
     echo "$fp"
     warn "$(tr_msg "tls=1 fingerprint changes on restart." "tls=1 证书通常重启后会变化。" "Отпечаток tls=1 меняется при перезапуске.")"
@@ -1733,6 +1653,7 @@ cleanup_old_releases() {
 
 doctor_action() {
   require_root; require_systemd
+  import_legacy_config
   local pass=0 warning=0 fail=0 u="" r="" port="" net="" socks="" tls="" crt="" keyf="" perm=""
   local D_OK D_WARN D_FAIL
   D_OK="$(tr_msg 'PASS' '通过' 'OK')"; D_WARN="$(tr_msg 'WARN' '警告' 'WARN')"; D_FAIL="$(tr_msg 'FAIL' '失败' 'FAIL')"
@@ -1875,7 +1796,7 @@ choose_initial_language() {
   printf ' [3] Русский (Russian)\n'
   printf '%s\n' "----------------------------------------------------"
   local ch
-  read -rp "Please select language / 请选择语言 / Выберите язык [1-3] (Default: 2): " ch </dev/tty
+  read -rp "Please select language / 请选择语言 / Выберите язык [1-3] (Default: 2): " ch </dev/tty || ch=""
   case "${ch:-2}" in
     1) LANG_CODE="en" ;;
     3) LANG_CODE="ru" ;;
@@ -1885,7 +1806,7 @@ choose_initial_language() {
 
 self_update() {
   require_command curl
-  local tmp remote_version self backup
+  local tmp remote_version self backup staging
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
   info "$(tr_msg "Checking for script updates..." "正在检查脚本更新..." "Проверка обновлений...")"
   if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --max-time 15 -o "$tmp" "$SELF_UPDATE_URL"; then
@@ -1899,6 +1820,8 @@ self_update() {
   remote_version="$(grep -oE '^readonly SCRIPT_VERSION="[^"]+"' "$tmp" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
   [[ "$remote_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] || { warn "$(tr_msg "Downloaded script has no valid SCRIPT_VERSION; refusing update." "下载脚本缺少有效 SCRIPT_VERSION，拒绝更新。" "В загруженном скрипте нет корректного SCRIPT_VERSION.")"; return 1; }
   grep -q 'NodePassProject/Nowhere' "$tmp" || { warn "$(tr_msg "Downloaded script does not target NodePassProject/Nowhere; refusing update." "下载脚本目标不是 NodePassProject/Nowhere，拒绝更新。" "Скрипт не предназначен для NodePassProject/Nowhere.")"; return 1; }
+  grep -q '^readonly SCRIPT_CHANNEL="v1-stable"$' "$tmp" || { warn "$(tr_msg "Downloaded script is not the V1 stable channel; refusing cross-generation self-update." "下载脚本不是 V1 稳定通道，拒绝跨代自更新。" "Загруженный скрипт не относится к стабильному каналу V1; межпоколенное обновление отклонено.")"; return 1; }
+  grep -q '^readonly PINNED_NOWHERE_VERSION="v1.8.3"$' "$tmp" || { warn "$(tr_msg "Downloaded script does not pin Nowhere v1.8.3; refusing update." "下载脚本未固定 Nowhere v1.8.3，拒绝更新。" "Загруженный скрипт не закрепляет Nowhere v1.8.3; обновление отклонено.")"; return 1; }
   if [[ "$remote_version" == "$SCRIPT_VERSION" ]]; then
     info "$(tr_msg "Already up to date (v${SCRIPT_VERSION})." "已是最新版本 (v${SCRIPT_VERSION})。" "Уже последняя версия (v${SCRIPT_VERSION}).")"
     return 0
@@ -1909,7 +1832,12 @@ self_update() {
   prompt_confirm "$(tr_msg "Apply update?" "是否应用更新?" "Применить обновление?")" || { info "$(tr_msg "Cancelled." "已取消。" "Отменено.")"; return 0; }
   backup="${self}.bak.$(date +%s)"
   cp "$self" "$backup"
-  if ! install -m 755 "$tmp" "$self"; then
+  # Stage beside the target and rename into place: writing in place (install
+  # truncates the same inode) can corrupt the copy of this script that bash is
+  # still executing before it reaches `exit 0`.
+  staging="${self}.upgrade.$$"
+  if ! { cp "$tmp" "$staging" && chmod 755 "$staging" && mv -f "$staging" "$self"; }; then
+    rm -f "$staging"
     warn "$(tr_msg "Failed to install updated script; original kept. Backup: ${backup}" "安装更新脚本失败，原脚本保留。备份: ${backup}" "Ошибка установки. Резерв: ${backup}")"
     return 1
   fi
@@ -1950,7 +1878,7 @@ interactive_menu() {
     printf ' [0] %s\n' "$(tr_msg "Exit" "退出" "Выход")"
     printf '\033[1;36m====================================================\033[0m\n'
     local choice
-    read -rp "$(tr_msg "Choice [0-16]: " "请输入选项序号 [0-16]: " "Выбор [0-16]: ")" choice </dev/tty
+    read -rp "$(tr_msg "Choice [0-16]: " "请输入选项序号 [0-16]: " "Выбор [0-16]: ")" choice </dev/tty || exit 0
     case "$choice" in
       1|2)
         ACTION="install"
@@ -1963,7 +1891,13 @@ interactive_menu() {
       4) show_status ;;
       5) show_links ;;
       6) info "$(tr_msg 'Press Ctrl+C to stop.' '按 Ctrl+C 退出。' 'Ctrl+C для выхода.')"; journalctl -u "$SERVICE_NAME" -f || true ;;
-      7) systemctl restart "$SERVICE_NAME" && ok "$(tr_msg "Restarted." "已重启。" "Перезапущено.")" ;;
+      7)
+        if systemctl restart "$SERVICE_NAME"; then
+          ok "$(tr_msg "Restarted." "已重启。" "Перезапущено.")"
+        else
+          warn "$(tr_msg "Restart failed; check journalctl -u nowhere -n 50." "重启失败；请查看 journalctl -u nowhere -n 50。" "Перезапуск не удался: journalctl -u nowhere -n 50.")"
+        fi
+        ;;
       8)
         if [[ ! -x "$BIN_LINK" ]]; then
           warn "$(tr_msg "Nowhere not installed." "未安装 Nowhere。" "Nowhere не установлен.")"
@@ -1993,26 +1927,29 @@ interactive_menu() {
 usage() {
   cat <<EOF2
 Nowhere Unified Management Script v${SCRIPT_VERSION}
+Channel: ${SCRIPT_CHANNEL}
+Pinned Nowhere core: ${PINNED_NOWHERE_VERSION}
+NOTE: Nowhere v2.x is wire-incompatible with v1.x and is intentionally unsupported by this script.
 
 Usage:
-  sudo bash nowhere.sh                                  (Interactive menu)
-  sudo bash nowhere.sh install [options]                (Install + configure)
-  sudo bash nowhere.sh upgrade [options]                (Upgrade binary, keep config)
-  sudo bash nowhere.sh configure [options]              (Modify / import URL)
-  sudo bash nowhere.sh status | link | logs | restart
-  sudo bash nowhere.sh fingerprint                      (tls=1 SHA-256)
-  sudo bash nowhere.sh tui
-  sudo bash nowhere.sh rollback
-  sudo bash nowhere.sh doctor                            (Health diagnostics)
-  sudo bash nowhere.sh clean-releases [--keep-releases N]
-  sudo bash nowhere.sh prepare-tls --cert FILE --tls-key FILE
-  sudo bash nowhere.sh uninstall [--purge]
-  sudo bash nowhere.sh self-update
+  sudo bash nowhere-v1.sh                                  (Interactive menu)
+  sudo bash nowhere-v1.sh install [options]                (Install + configure)
+  sudo bash nowhere-v1.sh upgrade [options]                (Upgrade binary, keep config)
+  sudo bash nowhere-v1.sh configure [options]              (Modify / import URL)
+  sudo bash nowhere-v1.sh status | link | logs | restart
+  sudo bash nowhere-v1.sh fingerprint                      (tls=1 SHA-256)
+  sudo bash nowhere-v1.sh tui
+  sudo bash nowhere-v1.sh rollback
+  sudo bash nowhere-v1.sh doctor                            (Health diagnostics)
+  sudo bash nowhere-v1.sh clean-releases [--keep-releases N]
+  sudo bash nowhere-v1.sh prepare-tls --cert FILE --tls-key FILE
+  sudo bash nowhere-v1.sh uninstall [--purge]
+  sudo bash nowhere-v1.sh self-update
 
 Options:
   -y, --yes                    Non-interactive
   --method release|source      Default: release
-  --version latest|vX.Y.Z      Default: latest
+  --version v1.8.3              Pinned stable core; all other versions rejected
   --libc auto|gnu|musl         Release libc
   --type portal|vector         Service role, default: portal
   --url URI                    Import portal:// / vector:// / nowhere://
@@ -2079,7 +2016,7 @@ parse_args() {
     case "$1" in
       -y|--yes) ASSUME_YES=1; shift ;;
       --method) INSTALL_METHOD="${2:?missing --method}"; shift 2 ;;
-      --version) VERSION="${2:?missing --version}"; shift 2 ;;
+      --version) VERSION="${2:?missing --version}"; validate_version "$VERSION"; shift 2 ;;
       --libc) LIBC="${2:?missing --libc}"; shift 2 ;;
       --type) set_cli ROLE "${2:?missing --type}"; shift 2 ;;
       --url) IMPORT_URL="${2:?missing --url}"; shift 2 ;;

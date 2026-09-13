@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 🐛 Fixed
+
+- **Critical**: `install.sh` download always failed — `archive="$tmpdir/$asset"` was declared in a single `local` statement, so `$tmpdir`/`$asset` expanded before the assignments took effect and `curl -o` received `/`. Verified against HEAD: `archive=[/]`. Now split into two `local` statements.
+- `nowhere-v1.sh client-link --host/--name/--client-*` were silently overridden by values stored in `manager.conf`; `show_links` now re-applies CLI overrides after `load_meta`, so command-line flags win as documented.
+- `nowhere-v1.sh status` / `fingerprint` / `doctor` failed with "No config" on systems installed by `install.sh` / `install-source.sh` (legacy `nowhere.env`); they now run `import_legacy_config` first.
+- `install-source.sh`: build swapfile moved from `/swapfile-nowhere` (root filesystem) to `/var/tmp/nowhere-build-swap`, matching the unified script; `clean-build` now deactivates an in-use swapfile before removal, keeps the file if `swapoff` fails, and cleans the swapfile even when no build tree exists.
+- `nowhere-v1.sh self-update` replaced the running script in place (truncate + write on the same inode), which can corrupt the executing copy; it now stages the update and renames it atomically.
+- Interactive menu restart ([7]) reported nothing on failure; it now warns with a follow-up command.
+- Interactive prompts (`prompt`, `prompt_yes`, `prompt_confirm`, `prompt_port`, `prompt_key`, `prompt_choice`, menu, version picker) survive EOF / Ctrl+D / dropped SSH sessions instead of aborting the whole script via `set -e`.
+- `fingerprint` prefers the colon-separated certificate fingerprint from logs before falling back to a bare hex string, so unrelated 64-char hashes are no longer matched.
+- systemd unit hardening parity: `UMask=0077` added to the units written by `install.sh` and `install-source.sh`.
+- `install-source.sh` usage text referenced `install.sh clean-build` instead of `install-source.sh clean-build`.
+
+### 📚 Documentation
+
+- README (EN/zh-CN): corrected TLS default (`1`), version default (`latest`), `url.conf`/`manager.conf` file layout, `fingerprint` command name (was `show-fingerprint`), removed non-existent `--lang`/`--commit`/`--jobs` rows from the unified-script table.
+- Unified V1 entry point renamed to `nowhere-v1.sh`; updated the self-update URL, built-in help, English/Chinese deployment steps, and the V1 stable guide.
+- Two-scripts README (EN/zh-CN): documented `--version latest` support.
+- Removed legacy `nowhere.sh.v2.1.0.backup` from version control; added `*.backup` to `.gitignore`.
+
+### ✨ Changed
+
+- `install.sh` / `install-source.sh` now accept `--version latest` (default stays pinned to `v1.8.3` for reproducible CI installs): `install.sh` resolves via the GitHub API, `install-source.sh` via `git ls-remote --sort=-v:refname` (no python3 dependency).
+
 ## [2.5.2] - 2026-09-10
 
 ### 🎉 Major Release - Feature Complete
