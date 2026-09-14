@@ -5,6 +5,8 @@
 A production-grade one-click deployment and operations script built on the official [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) core protocol.
 
 > **V1 stable channel:** the unified management script is named `nowhere-v1.sh` and is pinned to Nowhere `v1.8.3`. It does not follow GitHub `latest` and does not install Nowhere V2.
+>
+> **V2 channel:** the isolated V2 manager is named `nowhere-v2.sh` and targets Nowhere `v2.x` (default `v2.0.0`). It uses its own paths and service (`/opt/nowhere-v2`, `/etc/nowhere-v2`, `nowhere-v2.service`) and never touches a V1 install. See [§1.1](#11-v1-vs-v2-which-channel).
 
 It combines strict SHA-256 hash verification of official release binaries, fully-optimized local Rust source compilation (Fat-LTO), a hardened systemd permission sandbox, Let's Encrypt certificate permission isolation, and a color terminal interactive console (TUI) available in Chinese / English / Russian.
 
@@ -14,6 +16,7 @@ It combines strict SHA-256 hash verification of official release binaries, fully
 
 - [0. Download & Run the Script](#0-download--run-the-script)
 - [1. Feature Comparison & Mode Selection](#1-feature-comparison--mode-selection)
+  - [1.1 V1 vs V2: Which Channel?](#11-v1-vs-v2-which-channel)
 - [2. Prerequisites](#2-prerequisites)
 - [3. Quick Start (One-Click Install)](#3-quick-start-one-click-install)
   - [3.0 Download, Verify Syntax, and Run](#30-download-verify-syntax-and-run)
@@ -53,12 +56,13 @@ curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowh
 
 > **💡 Which script should I use?**
 >
-> This repository contains three scripts:
-> - **`nowhere-v1.sh`** ← **Recommended for most users** (supports both prebuilt and source compilation via TUI menu)
-> - `install.sh` ← For automation/CI, prebuilt binary only
-> - `install-source.sh` ← For automation/CI, source compilation only
+> This repository contains four scripts:
+> - **`nowhere-v1.sh`** ← **V1 stable channel** (Nowhere v1.x, pinned to `v1.8.3`; TUI menu with prebuilt + source build)
+> - **`nowhere-v2.sh`** ← **V2 channel** (Nowhere v2.x; isolated from V1, its own paths and service)
+> - `install.sh` ← For automation/CI, V1 prebuilt binary only
+> - `install-source.sh` ← For automation/CI, V1 source compilation only
 >
-> **If you're not sure, just use `nowhere-v1.sh`** — it provides an interactive menu where you can choose your preferred installation method.
+> **If you're not sure which channel you need, read [§1.1 V1 vs V2](#11-v1-vs-v2-which-channel) first.** For a single V1 deployment, `nowhere-v1.sh` is still the recommended menu entry point.
 
 ---
 
@@ -75,6 +79,31 @@ The script supports two installation modes. Configuration and the service interf
 | **Extra dependencies** | `curl` `python3` `tar` `sha256sum` | Automatically installs `git`, a C compiler, and the Rust 1.85+ toolchain |
 | **Memory & disk** | No memory requirement; disk usage in the tens of MB | Requires ≥5 GB of temporary space during compilation; auto-mounts swap if memory is insufficient |
 | **Best for** | Time-saving quick setup and primary/production use | Full audit-level scenarios and users who refuse third-party binaries |
+
+### 1.1 V1 vs V2: Which Channel?
+
+This repository ships **two independent management scripts**, one per Nowhere major protocol. They are deliberately isolated and can coexist on the same VPS.
+
+| | **V1 channel** (`nowhere-v1.sh`) | **V2 channel** (`nowhere-v2.sh`) |
+|---|---|---|
+| **Core protocol** | Nowhere v1.x, pinned to `v1.8.3` | Nowhere v2.x, default `v2.0.0` (`--version v2.x.y` or `latest-v2`) |
+| **Service name** | `nowhere` | `nowhere-v2` |
+| **Install root** | `/opt/nowhere` | `/opt/nowhere-v2` |
+| **Config dir** | `/etc/nowhere` | `/etc/nowhere-v2` |
+| **Global binary** | `/usr/local/bin/nowhere` | `/usr/local/bin/nowhere-v2` |
+| **Wire protocol** | V1 | V2 — **not compatible with V1** (fixed ALPN `nw2`, new endpoint carrier syntax) |
+| **Interface language** | 中文 / English / Русский | 中文 / English |
+| **Node role** | portal (server) / vector (client) | portal / vector, plus native V2 `next` chaining |
+| **Extra options** | rate / etar / dial / socks / next / up / down / mux / sni / pin | same, plus `morph`, transport memory profile, native `next` Portal, `backup`, `doctor --fix` |
+| **Coexistence** | Safe alongside V2 as long as listening ports differ | Safe alongside V1 as long as listening ports differ |
+
+> **⚠️ Wire compatibility:** V1 and V2 nodes cannot talk to each other. Every peer on the same traffic path must run the same major version. Never point a V1 Portal/Vector/native-next client at a V2 service, or vice versa.
+
+**How to choose:**
+
+- **Already running V1, or you need the Russian UI / the pinned `v1.8.3` stable channel** → `nowhere-v1.sh`.
+- **New deployment and you want the V2 protocol/features (morph, native next, memory profiles)** → `nowhere-v2.sh`.
+- **Want to compare both side by side** → install each on a different port; they never touch each other's files or service.
 
 ---
 

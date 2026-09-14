@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Fixed
 
+**Nowhere V2 manager (`nowhere-v2.sh` → v1.1.3):**
+
+- **Critical**: Fixed `configure` (menu option [3]) silently returning without doing anything. `load_existing_config()` chained `v="$(...)"; [[ -n "$v" ]] && VAR="$v"` assignments, and the final one returned non-zero whenever an optional query parameter (typically `pin`) was absent from the stored URL — which is the normal case — so `set -e` aborted the whole script. Added a `load_q` helper and an explicit `return 0` so existing configs always load.
+- **Critical**: `validate_imported_url()` and `validate_socks_endpoint()` used `python3 ...; [[ $? -eq 0 ]] || die`, which under `set -e` exited *before* the friendly error message on direct calls, while the internal `die` killed the whole manager on the soft boolean checks in `load_existing_config()` / `doctor`. Switched to `if ! python3 ...; then die ...; fi` and wrapped the boolean call sites in subshells.
+- `configure_action`: `[[ portal ]] && build_portal_url || build_vector_url` could fall through to building a Vector URL when the Portal URL failed; replaced with `if/else`. Same fix for the `advanced_wizard` / `quick_wizard` selection.
+- `fingerprint` (tls=2): a missing or unreadable certificate no longer exits silently via `pipefail`; it now reports a clear error.
+- Interactive menu actions (install, configure, links, fingerprint, rollback, clean-releases, check-updates) no longer quit the entire manager on a benign non-zero return.
+- tls=2 copy flow: the wizard and `prepare_tls_files()` now offer the managed TLS directory copy as a second line of defense, so a root-only PEM can no longer dead-end the install.
+- Removed dead state (`SWAP_CREATED`, `NEW_TARGET`) and the unused build-lock loop variable; `shellcheck -S warning` is now clean.
+
 - **Critical**: `install.sh` download always failed — `archive="$tmpdir/$asset"` was declared in a single `local` statement, so `$tmpdir`/`$asset` expanded before the assignments took effect and `curl -o` received `/`. Verified against HEAD: `archive=[/]`. Now split into two `local` statements.
 - `nowhere-v1.sh client-link --host/--name/--client-*` were silently overridden by values stored in `manager.conf`; `show_links` now re-applies CLI overrides after `load_meta`, so command-line flags win as documented.
 - `nowhere-v1.sh status` / `fingerprint` / `doctor` failed with "No config" on systems installed by `install.sh` / `install-source.sh` (legacy `nowhere.env`); they now run `import_legacy_config` first.
@@ -23,6 +33,7 @@ All notable changes to this project will be documented in this file.
 - Unified V1 entry point renamed to `nowhere-v1.sh`; updated the self-update URL, built-in help, English/Chinese deployment steps, and the V1 stable guide.
 - Two-scripts README (EN/zh-CN): documented `--version latest` support.
 - Removed legacy `nowhere.sh.v2.1.0.backup` from version control; added `*.backup` to `.gitignore`.
+- README (EN/zh-CN): added a V1 vs V2 channel comparison (§1.1) and listed `nowhere-v2.sh` in the script-selection guidance.
 
 ### ✨ Changed
 

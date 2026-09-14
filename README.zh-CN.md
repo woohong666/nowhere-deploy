@@ -5,6 +5,8 @@
 基于 [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) 官方核心协议编写的生产级一键部署与运维管理脚本。
 
 > **V1 稳定通道说明**：本仓库的统一管理脚本固定使用 Nowhere `v1.8.3`，文件名为 `nowhere-v1.sh`。它不会跟随 GitHub `latest`，也不支持直接安装 Nowhere V2。
+>
+> **V2 通道说明**：独立的 V2 管理脚本为 `nowhere-v2.sh`，面向 Nowhere `v2.x`（默认 `v2.0.0`）。它使用独立的路径与服务（`/opt/nowhere-v2`、`/etc/nowhere-v2`、`nowhere-v2.service`），不会触碰任何 V1 安装。详见 [§1.1](#11-v1-与-v2-通道对比)。
 
 融合了官方 Release 二进制哈希强校验、本地 Rust 源码全程序优化编译（Fat-LTO）、systemd 高强度权限沙箱、Let's Encrypt 证书权限隔离，以及支持中 / 英 / 俄三语的终端彩色交互控制台（TUI）。
 
@@ -14,6 +16,7 @@
 
 - [0. 下载与运行脚本](#0-下载与运行脚本)
 - [1. 核心特性对比与选型](#1-核心特性对比与选型)
+  - [1.1 V1 与 V2 通道对比](#11-v1-与-v2-通道对比)
 - [2. 前置环境与准备工作](#2-前置环境与准备工作)
 - [3. 快速开始（一键安装）](#3-快速开始一键安装)
   - [3.0 下载、检查并运行](#30-下载检查并运行)
@@ -53,12 +56,13 @@ curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowh
 
 > **💡 我该用哪个脚本？**
 >
-> 本仓库包含三个脚本：
-> - **`nowhere-v1.sh`** ← **推荐大多数用户使用**（支持预编译和源码编译两种模式，带 TUI 交互菜单）
-> - `install.sh` ← 用于自动化/CI，仅支持预编译二进制
-> - `install-source.sh` ← 用于自动化/CI，仅支持源码编译
+> 本仓库包含四个脚本：
+> - **`nowhere-v1.sh`** ← **V1 稳定通道**（Nowhere v1.x，固定 `v1.8.3`；TUI 菜单支持预编译与源码编译）
+> - **`nowhere-v2.sh`** ← **V2 通道**（Nowhere v2.x；与 V1 完全隔离，独立路径与服务）
+> - `install.sh` ← 用于自动化/CI，仅支持 V1 预编译二进制
+> - `install-source.sh` ← 用于自动化/CI，仅支持 V1 源码编译
 >
-> **如果不确定，就用 `nowhere-v1.sh`** — 它提供了交互式菜单，让你选择喜欢的安装方式。
+> **如果不确定该用哪个通道，先看 [§1.1 V1 与 V2 通道对比](#11-v1-与-v2-通道对比)。** 单机部署 V1 时，仍推荐使用 `nowhere-v1.sh` 这个带菜单的入口。
 
 ---
 
@@ -75,6 +79,31 @@ curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowh
 | **额外依赖** | `curl` `python3` `tar` `sha256sum` | 自动安装 `git`、C 编译器与 Rust 1.85+ 工具链 |
 | **内存与磁盘** | 内存无要求，磁盘占用几十 MB | 编译期需 ≥5 GB 临时空间，内存不足自动挂载 Swap |
 | **适用场景** | 追求省时、快速上手测试与主力使用 | 追求 100% 审计级别、拒绝使用第三方二进制的极客场景 |
+
+### 1.1 V1 与 V2 通道对比
+
+本仓库提供**两套彼此独立的管理脚本**，分别对应 Nowhere 的两个大版本协议。二者刻意隔离，可以在同一台 VPS 上共存。
+
+| | **V1 通道**（`nowhere-v1.sh`） | **V2 通道**（`nowhere-v2.sh`） |
+|---|---|---|
+| **核心协议** | Nowhere v1.x，固定 `v1.8.3` | Nowhere v2.x，默认 `v2.0.0`（`--version v2.x.y` 或 `latest-v2`） |
+| **服务名** | `nowhere` | `nowhere-v2` |
+| **安装目录** | `/opt/nowhere` | `/opt/nowhere-v2` |
+| **配置目录** | `/etc/nowhere` | `/etc/nowhere-v2` |
+| **全局二进制** | `/usr/local/bin/nowhere` | `/usr/local/bin/nowhere-v2` |
+| **线协议** | V1 | V2 —— **与 V1 不兼容**（固定 ALPN `nw2`，全新的 endpoint carrier 语法） |
+| **界面语言** | 中文 / English / Русский | 中文 / English |
+| **节点角色** | portal（服务端）/ vector（客户端） | portal / vector，另有原生 V2 `next` 级联 |
+| **额外能力** | rate / etar / dial / socks / next / up / down / mux / sni / pin | 同左，另加 `morph`、传输内存模式、原生 `next` Portal、`backup`、`doctor --fix` |
+| **共存** | 只要监听端口不冲突，可与 V2 共存 | 只要监听端口不冲突，可与 V1 共存 |
+
+> **⚠️ 线协议警告**：V1 与 V2 节点无法互通。同一条流量路径上的所有节点必须使用同一个大版本。不要把 V1 Portal / Vector / native-next 客户端指向 V2 服务，反之亦然。
+
+**怎么选：**
+
+- **已在运行 V1，或需要俄文界面 / 固定 `v1.8.3` 稳定通道** → 用 `nowhere-v1.sh`。
+- **全新部署，想用 V2 协议与特性（morph、原生 next、内存模式）** → 用 `nowhere-v2.sh`。
+- **想两套都对比着跑** → 各自用不同端口安装即可，二者不会改动对方的文件或服务。
 
 ---
 

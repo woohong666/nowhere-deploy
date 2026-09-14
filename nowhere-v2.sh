@@ -12,6 +12,7 @@ umask 077
 readonly SCRIPT_VERSION="1.1.3"
 readonly SCRIPT_CHANNEL="v2"
 # v1.1.3: fix interactive tls=2 certificate copy flow; unreadable PEM can be copied into the managed TLS directory.
+# shellcheck disable=SC2034
 readonly CORE_MAJOR="2"
 readonly DEFAULT_CORE_VERSION="v2.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -61,7 +62,6 @@ FORCE_RECONFIGURE=0
 UPGRADE_MODE=0
 BACKUP_PATH=""
 SWAP_MODE="${NOWHERE_V2_SWAP:-auto}"
-SWAP_CREATED=0
 BUILD_LOCK_HELD=0
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -96,7 +96,6 @@ CLIENT_SNI="${NOWHERE_V2_CLIENT_SNI:-auto}"
 CLIENT_PIN="${NOWHERE_V2_CLIENT_PIN:-none}"
 
 OLD_TARGET=""
-NEW_TARGET=""
 CONFIG_SNAPSHOT_DIR=""
 declare -a CLEANUP_PATHS=()
 declare -A CLI_SET=()
@@ -141,9 +140,7 @@ require_command() { has_cmd "$1" || die "$(tr_msg "Missing command: $1" "缺少�
 
 cleanup_swap() {
   if awk -v p="$SWAP_FILE" 'NR>1 && $1==p {f=1} END{exit(f?0:1)}' /proc/swaps 2>/dev/null; then
-    if has_cmd swapoff && swapoff "$SWAP_FILE" 2>/dev/null; then
-      SWAP_CREATED=0
-    else
+    if ! { has_cmd swapoff && swapoff "$SWAP_FILE" 2>/dev/null; }; then
       warn "$(tr_msg "Could not deactivate temporary swap; leaving it in place." "临时 swap 无法卸载，保留文件避免误删活动 swap。")"
       return 1
     fi
@@ -169,8 +166,8 @@ trap cleanup_all EXIT
 acquire_build_lock() {
   [[ "$BUILD_LOCK_HELD" -eq 1 ]] && return 0
   require_root
-  local attempt pid=""
-  for attempt in 1 2 3; do
+  local pid=""
+  for _ in 1 2 3; do
     if mkdir -m 700 "$BUILD_LOCK_DIR" 2>/dev/null; then
       printf '%s\n' "$$" >"$BUILD_LOCK_DIR/pid"
       BUILD_LOCK_HELD=1
@@ -424,7 +421,7 @@ PY
 
 validate_socks_endpoint() {
   local v="$1"
-  python3 - "$v" <<'PY'
+  if ! python3 - "$v" <<'PY'
 import re,sys,urllib.parse
 s=sys.argv[1]
 if not s or s=='none': sys.exit(2)
@@ -436,7 +433,9 @@ else:
     m=re.fullmatch(r'[^:]*:([0-9]+)',d)
 if not m or not (1<=int(m.group(1))<=65535): sys.exit(2)
 PY
-  [[ $? -eq 0 ]] || die "Invalid SOCKS endpoint: $v"
+  then
+    die "Invalid SOCKS endpoint: $v"
+  fi
 }
 
 validate_next_endpoint() {
@@ -462,7 +461,7 @@ validate_policy_against_endpoint() {
 
 validate_imported_url() {
   local u="$1"
-  python3 - "$u" <<'PY'
+  if ! python3 - "$u" <<'PY'
 import ipaddress,re,sys,urllib.parse
 raw=sys.argv[1]
 def fail(m): print(m,file=sys.stderr); sys.exit(2)
@@ -526,9 +525,10 @@ if u.scheme=='portal':
         if not nk or not ne or '*' in ne: fail('invalid next endpoint')
 else:
     if not q.get('socks'): fail('Vector requires socks=')
-print('ok')
 PY
-  [[ $? -eq 0 ]] || die "$(tr_msg "Invalid V2 URL." "V2 URL 无效。")"
+  then
+    die "$(tr_msg "Invalid V2 URL." "V2 URL 无效。")"
+  fi
   query_has "$u" net && warn "net= is ignored by Nowhere V2; endpoint carriers control TCP/UDP availability."
   query_has "$u" alpn && warn "alpn= is ignored by Nowhere V2; V2 always uses fixed ALPN nw2."
   local role ep up down
@@ -732,28 +732,34 @@ advanced_wizard() {
   fi
 }
 
+load_q() {
+  local _v
+  _v="$(query_get "$1" "$2")"
+  [[ -z "$_v" ]] || printf -v "$3" '%s' "$_v"
+}
+
 load_existing_config() {
   [[ -s "$URL_FILE" ]] || return 0
   local u
   IFS= read -r u <"$URL_FILE" || return 0
-  if ! validate_imported_url "$u" >/dev/null 2>&1; then return 0; fi
+  if ! ( validate_imported_url "$u" ) >/dev/null 2>&1; then return 0; fi
   ROLE="$(url_role "$u")"; KEY="$(url_key "$u")"; ENDPOINT="$(url_endpoint "$u")"
-  local v
-  v="$(query_get "$u" tls)"; [[ -n "$v" ]] && TLS="$v"
-  v="$(query_get "$u" morph)"; [[ -n "$v" ]] && MORPH="$v"
-  v="$(query_get "$u" rate)"; [[ -n "$v" ]] && RATE="$v"
-  v="$(query_get "$u" etar)"; [[ -n "$v" ]] && ETAR="$v"
-  v="$(query_get "$u" dial)"; [[ -n "$v" ]] && DIAL="$v"
-  v="$(query_get "$u" log)"; [[ -n "$v" ]] && LOG_LEVEL="$v"
-  v="$(query_get "$u" crt)"; [[ -n "$v" ]] && CERT="$v"
-  v="$(query_get "$u" key)"; [[ -n "$v" ]] && TLS_KEY="$v"
-  v="$(query_get "$u" socks)"; if [[ "$ROLE" == vector ]]; then [[ -n "$v" ]] && VECTOR_SOCKS="$v"; else [[ -n "$v" ]] && OUT_SOCKS="$v"; fi
-  v="$(query_get "$u" next)"; [[ -n "$v" ]] && NEXT="$v"
-  v="$(query_get "$u" up)"; [[ -n "$v" ]] && UP="$v"
-  v="$(query_get "$u" down)"; [[ -n "$v" ]] && DOWN="$v"
-  v="$(query_get "$u" mux)"; [[ -n "$v" ]] && MUX="$v"
-  v="$(query_get "$u" sni)"; [[ -n "$v" ]] && SNI="$v"
-  v="$(query_get "$u" pin)"; [[ -n "$v" ]] && PIN="$v"
+  load_q "$u" tls TLS
+  load_q "$u" morph MORPH
+  load_q "$u" rate RATE
+  load_q "$u" etar ETAR
+  load_q "$u" dial DIAL
+  load_q "$u" log LOG_LEVEL
+  load_q "$u" crt CERT
+  load_q "$u" key TLS_KEY
+  if [[ "$ROLE" == vector ]]; then load_q "$u" socks VECTOR_SOCKS; else load_q "$u" socks OUT_SOCKS; fi
+  load_q "$u" next NEXT
+  load_q "$u" up UP
+  load_q "$u" down DOWN
+  load_q "$u" mux MUX
+  load_q "$u" sni SNI
+  load_q "$u" pin PIN
+  return 0
 }
 
 write_meta() {
@@ -1063,7 +1069,7 @@ binary_sha256: ${bsha}
 installed_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 manager_channel: v2
 EOF2
-  NEW_TARGET="$release_dir"; ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
+  ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
   ok "$(tr_msg "Installed Nowhere ${VERSION} (${bsha:0:12})" "已安装 Nowhere ${VERSION} (${bsha:0:12})")"
 }
 
@@ -1092,7 +1098,7 @@ ensure_build_swap() {
   free_mb="$(df -Pk /var/tmp | awk 'NR==2{print int($4/1024)}')"; ((free_mb>want+512)) || die "Not enough free disk for temporary swap"
   has_cmd mkswap && has_cmd swapon && has_cmd swapoff || die "mkswap/swapon/swapoff required"
   fallocate -l "${want}M" "$SWAP_FILE" 2>/dev/null || dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$want" status=none
-  chmod 600 "$SWAP_FILE"; mkswap "$SWAP_FILE" >/dev/null; swapon "$SWAP_FILE"; SWAP_CREATED=1
+  chmod 600 "$SWAP_FILE"; mkswap "$SWAP_FILE" >/dev/null; swapon "$SWAP_FILE"
 }
 
 install_source() {
@@ -1112,7 +1118,7 @@ binary_sha256: ${bsha}
 installed_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 manager_channel: v2
 EOF2
-  NEW_TARGET="$release_dir"; ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
+  ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
   cleanup_swap || true; release_build_lock
   ok "$(tr_msg "Built and installed Nowhere ${VERSION}" "已编译并安装 Nowhere ${VERSION}")"
 }
@@ -1159,7 +1165,7 @@ install_action() {
     fi
   fi
 
-  OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"; NEW_TARGET=""
+  OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   if [[ "$INSTALL_METHOD" == source ]]; then install_source; else install_release; fi
   write_launcher; write_unit
 
@@ -1192,10 +1198,10 @@ configure_action() {
     local mode="$CONFIG_MODE"
     if [[ "$mode" == ask ]]; then mode="$(prompt_choice "$(tr_msg "Config mode quick/advanced" "配置模式 quick/advanced")" quick quick advanced)"; fi
     if [[ "$ASSUME_YES" -eq 0 || -z "$ENDPOINT" || -z "$KEY" ]]; then
-      [[ "$mode" == advanced ]] && advanced_wizard || quick_wizard
+      if [[ "$mode" == advanced ]]; then advanced_wizard; else quick_wizard; fi
     fi
     prepare_tls_files
-    [[ "$ROLE" == portal ]] && u="$(build_portal_url)" || u="$(build_vector_url)"
+    if [[ "$ROLE" == portal ]]; then u="$(build_portal_url)"; else u="$(build_vector_url)"; fi
   fi
   # If imported tls=2 uses paths, verify service readability. We do not silently rewrite them.
   if [[ "$ROLE" == portal && "$(query_get "$u" tls)" == 2 ]]; then
@@ -1218,7 +1224,7 @@ PY
 )"
     fi
   fi
-  validate_imported_url "$u"; write_config_url "$u"; write_meta; write_launcher; write_unit
+  write_config_url "$u"; write_meta; write_launcher; write_unit
   systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
   if ! systemctl restart "$SERVICE_NAME" || ! wait_service 12; then
     warn "$(tr_msg "V2 configuration failed; restoring previous V2 configuration" "V2 配置应用失败，正在恢复之前的配置")"
@@ -1305,7 +1311,13 @@ fingerprint() {
   local u role tls cert ep port host fp
   IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"; [[ "$role" == portal ]] || die "$(tr_msg "Fingerprint is a Portal operation" "仅 Portal 支持获取指纹")"
   tls="$(query_get "$u" tls)"; tls="${tls:-1}"
-  if [[ "$tls" == 2 ]]; then cert="$(query_get "$u" crt)"; openssl x509 -in "$cert" -noout -fingerprint -sha256 | sed 's/^.*=//'; return; fi
+  if [[ "$tls" == 2 ]]; then
+    cert="$(query_get "$u" crt)"
+    [[ -f "$cert" ]] || die "$(tr_msg "Certificate file not found: $cert" "证书文件不存在: $cert")"
+    openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' ||
+      die "$(tr_msg "Cannot read certificate fingerprint: $cert" "无法读取证书指纹: $cert")"
+    return
+  fi
   ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || die "$(tr_msg "Portal has no TCP carrier; no TLS certificate to probe" "Portal 没有 TCP carrier，无法探测 TLS 证书")"
   port="$(endpoint_tcp_port portal "$ep")"; host="$(endpoint_host portal "$ep")"; [[ "$host" == '*' ]] && host=127.0.0.1
   fp="$(timeout 8 openssl s_client -alpn nw2 -connect "${host}:${port}" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)"
@@ -1338,7 +1350,7 @@ doctor_action() {
   else warn "$(tr_msg "V2 binary link missing/broken" "V2 二进制软链接缺失或损坏")"; fail=$((fail+1)); fi
   if [[ -s "$URL_FILE" ]]; then
     IFS= read -r u <"$URL_FILE"
-    if validate_imported_url "$u" >/dev/null 2>&1; then ok "$(tr_msg "V2 config URL validates" "V2 配置 URL 校验通过")"; else warn "$(tr_msg "V2 config URL is invalid" "V2 配置 URL 无效")"; fail=$((fail+1)); u=""; fi
+    if ( validate_imported_url "$u" ) >/dev/null 2>&1; then ok "$(tr_msg "V2 config URL validates" "V2 配置 URL 校验通过")"; else warn "$(tr_msg "V2 config URL is invalid" "V2 配置 URL 无效")"; fail=$((fail+1)); u=""; fi
   else warn "$(tr_msg "V2 config missing" "V2 配置缺失")"; fail=$((fail+1)); u=""; fi
   if id "$RUN_USER" >/dev/null 2>&1; then ok "$(tr_msg "Dedicated user exists" "V2 专用用户存在")"; else warn "$(tr_msg "Dedicated V2 user missing" "V2 专用用户缺失")"; fail=$((fail+1)); fi
   systemctl is-enabled --quiet "$SERVICE_NAME" && ok "$(tr_msg "Service enabled" "服务已设置开机启动")" || { warn "$(tr_msg "Service not enabled" "服务未设置开机启动")"; warnc=$((warnc+1)); }
@@ -1523,21 +1535,21 @@ EOF2
     local c
     read -r -p "$(tr_msg 'Choice [0-18]: ' '请输入选项 [0-18]: ')" c </dev/tty || exit 0
     case "$c" in
-      1) ACTION=install; INSTALL_METHOD=release; install_action ;;
-      2) ACTION=install; INSTALL_METHOD=source; install_action ;;
-      3) configure_action ;;
+      1) ACTION=install; INSTALL_METHOD=release; install_action || true ;;
+      2) ACTION=install; INSTALL_METHOD=source; install_action || true ;;
+      3) configure_action || true ;;
       4) show_status ;;
-      5) show_links ;;
+      5) show_links || true ;;
       6) info "$(tr_msg 'Press Ctrl+C to stop viewing logs.' '按 Ctrl+C 退出实时日志。')"; journalctl -u "$SERVICE_NAME" -f || true ;;
       7) systemctl restart "$SERVICE_NAME" && ok "$(tr_msg 'Restarted.' 'V2 服务已重启。')" || warn "$(tr_msg 'Restart failed.' 'V2 服务重启失败。')" ;;
       8) [[ -x "$BIN_LINK" ]] && "$BIN_LINK" tui || warn "$(tr_msg 'V2 binary not installed.' '尚未安装 V2 二进制文件。')" ;;
-      9) fingerprint ;;
-      10) rollback_action ;;
+      9) fingerprint || true ;;
+      10) rollback_action || true ;;
       11) DOCTOR_FIX=0; doctor_action || true ;;
       12) DOCTOR_FIX=1; doctor_action || true ;;
-      13) cleanup_old_releases ;;
+      13) cleanup_old_releases || true ;;
       14) clean_build ;;
-      15) check_updates ;;
+      15) check_updates || true ;;
       16) show_v1_migration_note ;;
       17) prompt_confirm "$(tr_msg 'Purge V2 config too?' '是否同时删除 V2 配置和密钥？')" && PURGE=1 || PURGE=0; uninstall_action ;;
       18) self_update || true ;;
