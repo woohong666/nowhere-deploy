@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: syntax, lint, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          bash --version | head -1
+          python3 --version
+          shellcheck --version | grep -i '^version:'
+
+      # Every shell script in the repo must at least parse.
+      - name: Syntax check
+        run: |
+          set -e
+          for f in nowhere-v2.sh nowhere-v1.sh install.sh install-source.sh tests/nowhere-v2.test.sh; do
+            bash -n "$f"
+            echo "ok  $f"
+          done
+
+      # The V2 manager and the test suite are held to the warning level.
+      - name: shellcheck (V2 manager + tests)
+        run: shellcheck -S warning nowhere-v2.sh tests/nowhere-v2.test.sh
+
+      # The V1 scripts carry pre-existing SC2034 (unused variable) warnings, so
+      # they are only held to the error level here. Tighten this once V1 is
+      # cleaned up or dropped.
+      - name: shellcheck (V1 scripts, errors only)
+        run: shellcheck -S error nowhere-v1.sh install.sh install-source.sh
+
+      # Sandboxed: rewrites the manager's path declarations into a temp dir, so
+      # it needs no root and never touches the real /etc/nowhere-v2 or systemd.
+      - name: Test suite
+        run: bash tests/nowhere-v2.test.sh
