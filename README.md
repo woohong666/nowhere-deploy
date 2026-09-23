@@ -1,109 +1,78 @@
-# Nowhere One-Click Deployment & Management Script (Linux VPS)
+# Nowhere One-Click Deployment & Management Scripts (Linux VPS)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A production-grade one-click deployment and operations script built on the official [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) core protocol.
+Production-grade one-click deployment and operations scripts built on the official [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) core protocol.
 
-> **V1 stable channel:** the unified management script is named `nowhere-v1.sh` and is pinned to Nowhere `v1.8.3`. It does not follow GitHub `latest` and does not install Nowhere V2.
+> **✅ Primary channel: V2** — `nowhere-v2.sh`, targeting Nowhere `v2.x`. **Use this for new deployments.**
+> It follows the newest official stable release by default (`latest-v2`, resolved to the latest `v2.x.y` at install time); pin an exact tag with `--version v2.x.y` when you need reproducibility.
+> It uses its own paths and service (`/opt/nowhere-v2`, `/etc/nowhere-v2`, `nowhere-v2.service`) and never touches a V1 install.
 >
-> **V2 channel:** the isolated V2 manager is named `nowhere-v2.sh` and targets Nowhere `v2.x` (default `v2.0.0`). It uses its own paths and service (`/opt/nowhere-v2`, `/etc/nowhere-v2`, `nowhere-v2.service`) and never touches a V1 install. See [§1.1](#11-v1-vs-v2-which-channel).
+> **🔒 V1 stable channel:** `nowhere-v1.sh`, pinned to Nowhere `v1.8.3`. It does not follow `latest` and does not install V2.
+> Intended only for existing V1 nodes or when you need the Russian interface. See [§12](#12-v1-stable-channel-deployment-only).
 
-It combines strict SHA-256 hash verification of official release binaries, fully-optimized local Rust source compilation (Fat-LTO), a hardened systemd permission sandbox, Let's Encrypt certificate permission isolation, and a color terminal interactive console (TUI) available in Chinese / English / Russian.
+The V2 manager combines strict SHA-256 verification of official release binaries, fully-optimized local Rust source compilation (Fat-LTO), a hardened systemd sandbox, TLS certificate permission isolation, and a bilingual (Chinese / English) colour terminal console.
 
 ---
 
 ## Table of Contents
 
-- [0. Download & Run the Script](#0-download--run-the-script)
-- [1. Feature Comparison & Mode Selection](#1-feature-comparison--mode-selection)
-  - [1.1 V1 vs V2: Which Channel?](#11-v1-vs-v2-which-channel)
+- [0. Which Script Should I Use?](#0-which-script-should-i-use)
+- [1. Install Modes (Release / Source)](#1-install-modes-release--source)
 - [2. Prerequisites](#2-prerequisites)
-- [3. Quick Start (One-Click Install)](#3-quick-start-one-click-install)
-  - [3.0 Download, Verify Syntax, and Run](#30-download-verify-syntax-and-run)
-  - [3.1 Interactive Console Mode (Recommended for Beginners)](#31-interactive-console-mode-recommended-for-beginners)
-  - [3.2 Non-Interactive CLI Deployment (Automation / Scripting)](#32-non-interactive-cli-deployment-automation--scripting)
-- [4. TLS Certificate Configuration & Permission Handling](#4-tls-certificate-configuration--permission-handling)
-- [5. Firewall & Network Rules](#5-firewall--network-rules)
-- [6. Client Connection & Import](#6-client-connection--import)
-- [7. Daily Operations & Service Management](#7-daily-operations--service-management)
-- [8. Upgrade, Zero-Downtime Rollback & Uninstall](#8-upgrade-zero-downtime-rollback--uninstall)
-- [9. Full CLI Parameter Reference](#9-full-cli-parameter-reference)
-- [10. File Layout & Security Sandbox](#10-file-layout--security-sandbox)
+- [3. Quick Start (V2)](#3-quick-start-v2)
+  - [3.0 Download, Verify, and Run](#30-download-verify-and-run)
+  - [3.1 Interactive Menu (Recommended)](#31-interactive-menu-recommended)
+  - [3.2 Non-Interactive CLI Deployment (Automation)](#32-non-interactive-cli-deployment-automation)
+- [4. TLS Certificates and Permission Handling](#4-tls-certificates-and-permission-handling)
+- [5. Firewall and Network Rules](#5-firewall-and-network-rules)
+- [6. Client Links and Import](#6-client-links-and-import)
+- [7. Daily Operations](#7-daily-operations)
+- [8. Upgrade, Rollback, Backup, and Uninstall](#8-upgrade-rollback-backup-and-uninstall)
+- [9. Full CLI Reference](#9-full-cli-reference)
+- [10. File Layout and Sandbox](#10-file-layout-and-sandbox)
 - [11. Troubleshooting (FAQ)](#11-troubleshooting-faq)
+- [12. V1 Stable Channel (Deployment Only)](#12-v1-stable-channel-deployment-only)
 
 ---
 
-## 0. Download & Run the Script
+## 0. Which Script Should I Use?
 
-### Recommended: Download and Verify First (Safest)
+This repository contains four scripts. **V2 is the recommended default:**
 
-```bash
-# Download the unified management script
-wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh
-
-# Make it executable
-chmod 700 nowhere-v1.sh
-
-# Run with root privileges
-sudo bash nowhere-v1.sh
-```
-
-### Alternative: One-Line Command (For Trusted Sources)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh -o nowhere-v1.sh && chmod 700 nowhere-v1.sh && sudo bash nowhere-v1.sh
-```
-
-> **💡 Which script should I use?**
->
-> This repository contains four scripts:
-> - **`nowhere-v1.sh`** ← **V1 stable channel** (Nowhere v1.x, pinned to `v1.8.3`; TUI menu with prebuilt + source build)
-> - **`nowhere-v2.sh`** ← **V2 channel** (Nowhere v2.x; isolated from V1, its own paths and service)
-> - `install.sh` ← For automation/CI, V1 prebuilt binary only
-> - `install-source.sh` ← For automation/CI, V1 source compilation only
->
-> **If you're not sure which channel you need, read [§1.1 V1 vs V2](#11-v1-vs-v2-which-channel) first.** For a single V1 deployment, `nowhere-v1.sh` is still the recommended menu entry point.
-
----
-
-## 1. Feature Comparison & Mode Selection
-
-The script supports two installation modes. Configuration and the service interface are fully unified, so you can switch between them smoothly at any time:
-
-| Aspect | Official Prebuilt Binary (Release) | Local Source Build (Source) |
+| Script | Channel | Purpose |
 |---|---|---|
-| **Acquisition** | Downloads the official static binary published on GitHub | **Clones the Git source directly on the machine and builds it live** |
-| **Deploy time** | ~1 minute | 20–60 minutes (longer on 1–2 core VPS) |
-| **Integrity check** | Mandatory SHA-256 digest comparison against the GitHub API; install is refused without verification | Build artifacts are produced entirely by the local compiler — no extra digest needed |
-| **Performance** | Standard official release-level optimization | Automatically enables `lto = "fat"` + `codegen-units = 1` for maximum optimization |
-| **Extra dependencies** | `curl` `python3` `tar` `sha256sum` | Automatically installs `git`, a C compiler, and the Rust 1.85+ toolchain |
-| **Memory & disk** | No memory requirement; disk usage in the tens of MB | Requires ≥5 GB of temporary space during compilation; auto-mounts swap if memory is insufficient |
-| **Best for** | Time-saving quick setup and primary/production use | Full audit-level scenarios and users who refuse third-party binaries |
-
-### 1.1 V1 vs V2: Which Channel?
-
-This repository ships **two independent management scripts**, one per Nowhere major protocol. They are deliberately isolated and can coexist on the same VPS.
-
-| | **V1 channel** (`nowhere-v1.sh`) | **V2 channel** (`nowhere-v2.sh`) |
-|---|---|---|
-| **Core protocol** | Nowhere v1.x, pinned to `v1.8.3` | Nowhere v2.x, default `v2.0.0` (`--version v2.x.y` or `latest-v2`) |
-| **Service name** | `nowhere` | `nowhere-v2` |
-| **Install root** | `/opt/nowhere` | `/opt/nowhere-v2` |
-| **Config dir** | `/etc/nowhere` | `/etc/nowhere-v2` |
-| **Global binary** | `/usr/local/bin/nowhere` | `/usr/local/bin/nowhere-v2` |
-| **Wire protocol** | V1 | V2 — **not compatible with V1** (fixed ALPN `nw2`, new endpoint carrier syntax) |
-| **Interface language** | 中文 / English / Русский | 中文 / English |
-| **Node role** | portal (server) / vector (client) | portal / vector, plus native V2 `next` chaining |
-| **Extra options** | rate / etar / dial / socks / next / up / down / mux / sni / pin | same, plus `morph`, transport memory profile, native `next` Portal, `backup`, `doctor --fix` |
-| **Coexistence** | Safe alongside V2 as long as listening ports differ | Safe alongside V1 as long as listening ports differ |
-
-> **⚠️ Wire compatibility:** V1 and V2 nodes cannot talk to each other. Every peer on the same traffic path must run the same major version. Never point a V1 Portal/Vector/native-next client at a V2 service, or vice versa.
+| **`nowhere-v2.sh`** | **V2 (primary)** | **Recommended.** Nowhere v2.x with a full TUI menu: release install / source build / configure / doctor / rollback / backup |
+| `nowhere-v1.sh` | V1 stable | Pinned to `v1.8.3`, does not follow `latest`. For existing V1 nodes or the Russian interface |
+| `install.sh` | V1 | Automation / CI only, V1 prebuilt binary |
+| `install-source.sh` | V1 | Automation / CI only, V1 source build |
 
 **How to choose:**
 
-- **Already running V1, or you need the Russian UI / the pinned `v1.8.3` stable channel** → `nowhere-v1.sh`.
-- **New deployment and you want the V2 protocol/features (morph, native next, memory profiles)** → `nowhere-v2.sh`.
-- **Want to compare both side by side** → install each on a different port; they never touch each other's files or service.
+- **New deployment / want V2 features** → `nowhere-v2.sh` ([§3](#3-quick-start-v2)).
+- **Existing V1 node to maintain** → `nowhere-v1.sh` ([§12](#12-v1-stable-channel-deployment-only)).
+- **Want both side by side** → install each on different ports; they are fully isolated.
+
+> **⚠️ Wire protocol warning:** V1 and V2 nodes are **not interoperable**. Every node on the same traffic path must run the same major version.
+> Do not point a V1 Portal / Vector / native-next client at a V2 service, or vice versa.
+>
+> Also note: **Morph changed its wire format in Nowhere 2.1.0.** Morph-enabled 2.1 peers cannot talk to 2.0.x peers, so every peer on a `morph=1` path must be upgraded to `>=2.1.0` together. The manager warns when an upgrade crosses that boundary.
+
+---
+
+## 1. Install Modes (Release / Source)
+
+Both modes share identical configuration and service interfaces, and can take over from each other at any time:
+
+| Dimension | Official release binary (Release) | Local source build (Source) |
+|---|---|---|
+| **Source** | Download the official prebuilt static binary from GitHub | **Clone and compile the upstream source on this machine** |
+| **Time** | ~1 minute | 20–60 minutes (slow on 1–2 vCPU VPS) |
+| **Integrity** | Mandatory SHA-256 digest comparison against the GitHub API; refuses to install without one | Artifact is produced by the local compiler; no extra digest needed |
+| **Performance** | Upstream release-grade optimisation | Forces `lto = "fat"` + `codegen-units = 1` |
+| **Extra deps** | `curl` `python3` `tar` `sha256sum` | Auto-installs `git`, a C compiler, and the Rust toolchain |
+| **Resources** | No memory requirement; tens of MB of disk | Needs ≥5 GB scratch space; auto-mounts swap when memory is low |
+| **Best for** | Getting running fast | Full auditability, avoiding third-party binaries |
 
 ---
 
@@ -111,89 +80,492 @@ This repository ships **two independent management scripts**, one per Nowhere ma
 
 | Check | Requirement |
 |---|---|
-| **OS** | Mainstream Linux distributions (Debian 11+, Ubuntu 20.04+, CentOS 8+, Rocky / AlmaLinux, Arch, etc.) |
-| **Init system** | `systemd` must be running (confirm with `ps -p 1 -o comm=` returning `systemd`) |
+| **OS** | Mainstream Linux (Debian 11+, Ubuntu 20.04+, CentOS 8+, Rocky / AlmaLinux, Arch, …) |
+| **Init system** | A running `systemd` (verify with `ps -p 1 -o comm=`) |
 | **Architecture** | `x86_64` (amd64) or `aarch64` (arm64) |
-| **Privileges** | `root` account, or full `sudo` authorization |
-| **Port** | Recommended listening port range `1024-65535` (the service runs as an unprivileged user) |
-| **Network** | The VPS must be able to reach `github.com` (the source-build mode also needs `static.rust-lang.org` and `crates.io`) |
+| **Privileges** | `root` or full `sudo` |
+| **Ports** | Prefer `1024-65535` (the service runs as an unprivileged user) |
+| **Network** | Reachable `github.com` (source builds also need `static.rust-lang.org` and `crates.io`) |
 
 ---
 
-## 3. Quick Start (One-Click Install)
+## 3. Quick Start (V2)
 
-### 3.0 Download, verify syntax, and run
+### 3.0 Download, Verify, and Run
 
 ```bash
+# Download the V2 manager
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v2.sh -O nowhere-v2.sh
+
+# Make it executable
+chmod 700 nowhere-v2.sh
+
+# Syntax check first (optional but recommended)
+bash -n nowhere-v2.sh
+
+# Run with root privileges
+sudo bash nowhere-v2.sh
+```
+
+Or in one line (trusted sources only):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v2.sh -o nowhere-v2.sh && chmod 700 nowhere-v2.sh && bash -n nowhere-v2.sh && sudo bash nowhere-v2.sh
+```
+
+### 3.1 Interactive Menu (Recommended)
+
+Run `sudo bash nowhere-v2.sh`, pick a language (Chinese / English), then choose from the menu:
+
+```
+ [1] Install/Reinstall official V2 release    [10] Rollback V2 binary
+ [2] Build/install V2 from source             [11] Doctor
+ [3] Configure / Import V2 URL                [12] Doctor --fix
+ [4] Status                                   [13] Clean old V2 releases
+ [5] Show V2 links                            [14] Clean V2 build cache
+ [6] Live logs                                [15] Check latest stable V2
+ [7] Restart V2 service                       [16] V1 -> V2 compatibility note
+ [8] Open V2 TUI                              [17] Uninstall V2 only
+ [9] TLS SHA-256 fingerprint                  [18] Self-update V2 manager
+ [0] Exit
+```
+
+The installer asks for the node role (portal / vector), shared key, listen endpoint, TLS mode, and whether to enable Morph.
+
+> **Tip:** run source builds inside `tmux` or `screen` so an SSH drop does not kill the compile:
+>
+> ```bash
+> tmux new -s nowhere
+> sudo bash nowhere-v2.sh
+> # Ctrl+B then D to detach; tmux attach -t nowhere to return
+> ```
+
+### 3.2 Non-Interactive CLI Deployment (Automation)
+
+Add `-y` / `--yes` for non-interactive mode. See [§9](#9-full-cli-reference) for every option.
+
+#### Case A: Portal for a quick test
+
+```bash
+sudo bash nowhere-v2.sh install -y \
+  --type portal \
+  --endpoint '*:2082' \
+  --key 'MyGeneratedKey_12345678' \
+  --tls 1
+```
+
+> `--tls 1` uses a self-signed certificate and is only suitable for a quick check. Clients must trust it, or you can pin the fingerprint from `sudo bash nowhere-v2.sh fingerprint`.
+
+#### Case B: Portal in production ⭐ Recommended
+
+```bash
+sudo bash nowhere-v2.sh install -y \
+  --type portal \
+  --endpoint '*:2082' \
+  --key 'MyGeneratedKey_12345678' \
+  --tls 2 \
+  --cert /etc/letsencrypt/live/example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/example.com/privkey.pem \
+  --copy-cert \
+  --public-host relay.example.com
+```
+
+`--copy-cert` copies the certificate into `/etc/nowhere-v2/tls/` with service-readable permissions (`640 root:nowhere-v2`), so no manual `chmod` is needed.
+
+#### Case C: Vector client
+
+```bash
+sudo bash nowhere-v2.sh install -y \
+  --type vector \
+  --endpoint 'relay.example.com:2082' \
+  --key 'MyGeneratedKey_12345678' \
+  --vector-socks '127.0.0.1:1082' \
+  --tls 2
+```
+
+#### Case D: Enable Morph
+
+```bash
+sudo bash nowhere-v2.sh install -y --type portal \
+  --endpoint '*:2082' --key 'MyGeneratedKey_12345678' --tls 2 \
+  --cert ... --tls-key ... --copy-cert \
+  --morph 1 \
+  --morph-prelude low7
+```
+
+> **Note:** `morph` must be enabled on **both** ends of a hop with the same shared key. The Morph wire format also changed in Nowhere **2.1.0**, so every node on a `morph=1` path must be on `>=2.1.0`.
+
+---
+
+## 4. TLS Certificates and Permission Handling
+
+### 4.1 Why `--copy-cert` is recommended
+
+Let's Encrypt private keys default to `600 root:root` inside a `700` directory, which the unprivileged `nowhere-v2` user cannot read under the systemd sandbox.
+
+**Do not** `chmod 644` the original key — that weakens system security. `--copy-cert` instead:
+
+1. Copies the certificate and key to `/etc/nowhere-v2/tls/cert.pem` and `key.pem`
+2. Sets them to `640 root:nowhere-v2`
+3. Verifies the service account can actually read them, and fails loudly if not
+
+During interactive setup, if the script detects that the service user cannot read the PEM you selected, it **offers to copy it automatically** rather than dead-ending on a root-only file.
+
+### 4.2 Renewal hook
+
+With Certbot, add `/etc/letsencrypt/renewal-hooks/deploy/nowhere-v2.sh`:
+
+```bash
+#!/usr/bin/env bash
+bash /path/to/nowhere-v2.sh configure \
+  --url "$(head -1 /etc/nowhere-v2/url.conf)" \
+  --cert "$RENEWED_LINEAGE/fullchain.pem" \
+  --tls-key "$RENEWED_LINEAGE/privkey.pem" \
+  --copy-cert
+systemctl restart nowhere-v2
+```
+
+Then `chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere-v2.sh`.
+
+---
+
+## 5. Firewall and Network Rules
+
+Open the ports you actually listen on, both in the host firewall and in your cloud provider's security group. The V2 default port is `2082`, and the endpoint form decides which protocols are needed:
+
+| Endpoint | Open |
+|---|---|
+| `*:2082` | TCP `2082` **and** UDP `2082` |
+| `*/tcp:2082` | TCP `2082` only |
+| `*/udp:2082` | UDP `2082` only |
+| `*/tcp:2082/udp:2083` | TCP `2082` and UDP `2083` |
+
+### UFW (Ubuntu / Debian)
+
+```bash
+sudo ufw allow 2082/tcp
+sudo ufw allow 2082/udp
+sudo ufw reload
+sudo ufw status numbered
+```
+
+### Firewalld (CentOS / RHEL / Fedora / Rocky)
+
+```bash
+sudo firewall-cmd --permanent --add-port=2082/tcp
+sudo firewall-cmd --permanent --add-port=2082/udp
+sudo firewall-cmd --reload
+```
+
+> After deployment the script prints `Firewall: allow TCP/UDP <port>` hints.
+
+---
+
+## 6. Client Links and Import
+
+### 6.1 URI formats
+
+Nowhere V2 involves two kinds of URI:
+
+1. **`portal://` / `vector://`** — the node's own runtime configuration (internal)
+   - Stored in `/etc/nowhere-v2/url.conf`
+   - **Not** for client import (a Vector's own `vector://` link can be used by a matching client)
+2. **`nowhere://`** — a generic share URI
+   - Use it only with clients that **explicitly support V2 / ALPN nw2**
+
+### 6.2 Generating client links
+
+```bash
+# Auto-detect the public IP (needs --public-host already set, or reachable api.ipify.org)
+sudo bash nowhere-v2.sh links
+
+# Or set the public host first
+sudo bash nowhere-v2.sh configure --public-host relay.example.com
+```
+
+On a Portal this prints:
+
+- **Native V2 Vector URL** — a `vector://` link usable by a matching Vector
+- **Generic V2 share URI** — a `nowhere://` link with `socks=` removed and the node name as the fragment
+
+> If you see `Set --public-host or PUBLIC_HOST to generate client links`, the script could not determine a public address; pass `--public-host` explicitly.
+
+### 6.3 Security notes
+
+* A link **contains the shared key**. Anyone who has it can use your VPS as an egress proxy. **Never post it publicly or commit it to a repository.**
+* `--tls 1` (self-signed) requires the client to trust or pin the certificate.
+* `morph` only works when both ends are configured identically.
+
+### 6.4 Inspecting the server configuration
+
+```bash
+sudo bash nowhere-v2.sh link     # show the runtime URI from url.conf
+```
+
+---
+
+## 7. Daily Operations
+
+```bash
+# Interactive menu
+sudo bash nowhere-v2.sh
+
+# Status (includes the Core version actually installed)
+sudo bash nowhere-v2.sh status
+
+# Live logs (Ctrl+C to stop)
+sudo bash nowhere-v2.sh logs
+
+# Restart / start / stop
+sudo bash nowhere-v2.sh restart
+
+# Health check; --fix repairs common problems
+sudo bash nowhere-v2.sh doctor
+sudo bash nowhere-v2.sh doctor --fix
+
+# TLS SHA-256 fingerprint (Portal)
+sudo bash nowhere-v2.sh fingerprint
+
+# Read-only TUI monitor
+sudo bash nowhere-v2.sh tui
+
+# Native systemctl
+sudo systemctl status nowhere-v2
+sudo systemctl restart nowhere-v2
+```
+
+---
+
+## 8. Upgrade, Rollback, Backup, and Uninstall
+
+### 8.1 Upgrade
+
+```bash
+# Upgrade to the newest official stable release (the default)
+sudo bash nowhere-v2.sh upgrade
+
+# Or pin an exact version
+sudo bash nowhere-v2.sh upgrade --version v2.1.0
+```
+
+> `upgrade` **requires an existing V2 configuration**; use `install` for a first deployment.
+> When a config already exists, `install` / `upgrade` only replace the binary. Add `--force-reconfigure` to re-apply configuration options at the same time.
+
+### 8.2 Zero-downtime rollback
+
+```bash
+sudo bash nowhere-v2.sh rollback
+```
+
+This repoints the symlink to the previous usable release and restarts the service — no re-download or rebuild. If a new release fails to start during `upgrade`, the manager **rolls back automatically** and keeps the logs.
+
+Retained releases are controlled by `--keep-releases` (default `3`):
+
+```bash
+sudo bash nowhere-v2.sh clean-releases          # prune manually
+sudo bash nowhere-v2.sh clean-build             # drop source-build cache and swap
+```
+
+### 8.3 Backing up config and certificates
+
+```bash
+# Defaults to /root/nowhere-v2-backup-<timestamp>.tar.gz
+sudo bash nowhere-v2.sh backup
+
+# Or choose the output path
+sudo bash nowhere-v2.sh backup /root/my-backup.tar.gz
+```
+
+The archive contains `/etc/nowhere-v2` (runtime config, manager metadata, TLS material), not the binary.
+
+### 8.4 Checking for new versions
+
+```bash
+sudo bash nowhere-v2.sh check-updates
+```
+
+### 8.5 Uninstall
+
+```bash
+# Remove the program and service, keeping /etc/nowhere-v2
+sudo bash nowhere-v2.sh uninstall
+
+# Purge everything, including config, certificates, and the dedicated user
+sudo bash nowhere-v2.sh uninstall --purge
+```
+
+> V2 uninstall **never** touches V1's `/etc/nowhere`, `/opt/nowhere`, or `nowhere.service`.
+
+---
+
+## 9. Full CLI Reference
+
+### 9.1 Actions
+
+| Action | Description |
+| --- | --- |
+| `install` / `upgrade` / `update` | Install or upgrade (`upgrade` needs an existing config) |
+| `configure` / `config` | Modify or import configuration |
+| `status` | Runtime status, including the installed Core version |
+| `link` / `links` | Show the runtime URI / generate client links |
+| `logs` | Live logs |
+| `restart` / `start` / `stop` | Service control |
+| `tui` | Open the read-only TUI monitor |
+| `fingerprint` | Portal TLS SHA-256 fingerprint |
+| `rollback` | Roll back to the previous usable release |
+| `doctor` / `check` / `diagnose` | Health check (`--fix` repairs) |
+| `clean-releases` / `clean-build` | Prune releases / build cache |
+| `check-updates` | Query the newest official stable version |
+| `backup [PATH]` | Back up config and certificates |
+| `uninstall` / `remove` | Uninstall (`--purge` deletes everything) |
+| `self-update` | Update the manager itself (needs `NOWHERE_V2_SELF_URL`) |
+| `help` | Usage |
+
+### 9.2 Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-y`, `--yes` | off | Non-interactive mode |
+| `--method MODE` | `release` | `release` (prebuilt) or `source` (local build) |
+| `--version TAG` | `latest-v2` | `latest-v2` (newest official stable) or an exact `v2.x.y` |
+| `--type`, `--role` | `portal` | Node role: `portal` / `vector` |
+| `--url URL` | — | Import a `portal://` / `vector://` config (takes precedence over other config options) |
+| `--key KEY` | generated | Shared key (16–255 chars, alphanumerics plus `._~-`) |
+| `--endpoint EP` | `*:2082` (Portal) | `HOST:PORT` or `HOST/tcp:PORT/udp:PORT` |
+| `--public-host HOST` | auto-detected | Public domain / IP used to build client links |
+| `--name NAME` | `Nowhere-V2` | Node display name |
+| `--tls MODE` | `1` | `1` self-signed; `2` local PEM. **Use `2` in production** |
+| `--cert`, `--crt` PATH | — | Certificate chain path, required for TLS 2 |
+| `--tls-key` PATH | — | Private key path, required for TLS 2 |
+| `--copy-cert` | off | Copy the certificate into `/etc/nowhere-v2/tls/` with service-readable permissions |
+| `--morph 0\|1` | `0` | Wire masking; must match on both ends |
+| `--morph-prelude` | `low7` | Client TCP Morph prelude policy: `low7` (default) or `full8` |
+| `--up` / `--down` | `auto` | Carrier policy: `auto` / `tcp` / `udp` / `mix` |
+| `--mux 0\|1` | `0` | TLS multiplexing |
+| `--sni NAME\|none` | `none` | DNS name for certificate verification |
+| `--pin SHA256\|none` | `none` | Pinned certificate SHA-256 |
+| `--out-socks HOST:PORT\|none` | `none` | Outbound SOCKS5 (mutually exclusive with `next`) |
+| `--next KEY@EP` | `none` | Native V2 next-hop Portal |
+| `--vector-socks` | `127.0.0.1:1082` | Vector local SOCKS5 listener |
+| `--client-up/down/mux/sni/pin` | auto | Options used when generating client links |
+| `--rate` / `--etar` | `0` | Forward / reverse rate limit in Mbps (0 = unlimited) |
+| `--dial` | `auto` | Outbound source IP |
+| `--log LEVEL` | `info` | `none` / `debug` / `info` / `warn` / `error` / `event` |
+| `--memory-profile` | `throughput` | Transport memory profile: `memory` / `balanced` / `throughput` |
+| `--config-mode` | `ask` | `ask` / `quick` / `advanced`; also `--quick` / `--advanced` |
+| `--keep-releases N` | `3` | Releases to retain (0–20) |
+| `--libc auto\|gnu\|musl` | `auto` | libc choice for release installs |
+| `--swap auto\|off\|MB` | `auto` | Temporary swap control |
+| `--keep-source` | off | Keep the build tree to speed up later builds |
+| `--github-token TOKEN` | — | Token for GitHub API calls (avoids rate limits) |
+| `--force-reconfigure` | off | With `install` / `upgrade`, explicitly re-apply configuration options |
+| `--fix` | off | With `doctor`, repair automatically |
+| `--purge` | off | With `uninstall`, delete configuration too |
+
+### 9.3 Environment variables
+
+Every configuration value has a matching `NOWHERE_V2_*` variable, for example `NOWHERE_V2_LANG` (`zh` / `en`), `NOWHERE_V2_KEY`, `NOWHERE_V2_TLS`, `NOWHERE_V2_MORPH`, `NOWHERE_V2_MEMORY_PROFILE`, `NOWHERE_V2_MORPH_PRELUDE`, and `NOWHERE_V2_VERSION`.
+
+> Persisted values in `manager.conf` take precedence over environment variables; command-line options take precedence over both.
+
+---
+
+## 10. File Layout and Sandbox
+
+```text
+/opt/nowhere-v2/
+├── releases/
+│   ├── v2.1.0-release-xxxxxxxxxxxx/          # official prebuilt release
+│   │   ├── nowhere
+│   │   └── RELEASE-INFO                      # tag / asset / SHA-256 audit record
+│   └── v2.1.0-source-aaaa-bbbbbbbbbbbb/      # local source build
+│       ├── nowhere
+│       └── BUILD-INFO                        # commit / SHA-256 provenance
+└── current -> releases/...                   # atomic symlink to the active release
+
+/usr/local/bin/nowhere-v2 -> /opt/nowhere-v2/current/nowhere   # global executable symlink
+/usr/local/libexec/nowhere-v2-launch                            # root-owned launcher (reads url.conf)
+
+/etc/nowhere-v2/
+├── url.conf                                  # runtime URL (640, root:nowhere-v2)
+├── manager.conf                              # manager metadata (640, root:nowhere-v2)
+└── tls/
+    ├── cert.pem                              # certificate (640, root:nowhere-v2)
+    └── key.pem                               # private key (640, root:nowhere-v2)
+
+/etc/systemd/system/nowhere-v2.service        # hardened systemd sandbox unit
+```
+
+The unit enables `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`, and injects only `NOW_TRANSPORT_MEMORY_PROFILE` and `NOW_MORPH_TCP_PRELUDE` via `Environment=`.
+
+---
+
+## 11. Troubleshooting (FAQ)
+
+### Q1: `GLIBC_2.xx not found`
+
+* **Cause:** the host glibc is older than the one used for the official GNU build.
+* **Fix:** reinstall with the musl static build:
+
+```bash
+sudo bash nowhere-v2.sh install -y --method release --libc musl [options...]
+```
+
+### Q2: The source build is killed with `signal: 9 Killed`
+
+* **Cause:** Fat-LTO linking exceeded memory and the OOM killer terminated it.
+* **Fix:** allocate a larger temporary swap and retry:
+
+```bash
+sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
+```
+
+### Q3: `GitHub release does not expose a SHA-256 digest ... refusing binary install`
+
+* **Cause:** the manager enforces zero-trust verification, and that release does not publish a digest for the asset.
+* **Fix:** use the source build instead: `--method source`.
+
+### Q4: `V2 service user cannot read TLS files`
+
+* **Cause:** `--tls 2` referenced a root-only PEM that the service user cannot read.
+* **Fix:** reconfigure with `--copy-cert` so the manager copies the material into `/etc/nowhere-v2/tls/`.
+
+### Q5: Traffic breaks after an upgrade (especially with `morph`)
+
+* **Cause:** Nowhere **2.1.0** changed the Morph wire format; morph-enabled 2.1 peers are incompatible with 2.0.x peers.
+* **Fix:** upgrade **every** node on the path (Portal / Vector / native next / other clients) to `>=2.1.0`.
+
+### Q6: Clients cannot connect or handshakes time out
+
+1. Check the service: `sudo systemctl status nowhere-v2`
+2. Check listeners: `sudo ss -lntup | grep 2082`
+3. Check the host firewall (UFW / Firewalld) for the right ports and protocols
+4. Check your cloud provider's **security group** inbound rules
+5. Confirm DNS resolves and is not proxied by a CDN (a direct connection is required)
+6. Run `sudo bash nowhere-v2.sh doctor` for a full check
+
+---
+
+## 12. V1 Stable Channel (Deployment Only)
+
+> The V1 channel is **pinned to Nowhere `v1.8.3`**, does not follow `latest`, and **does not support V2**.
+> Use it only for existing V1 nodes or when you need the Russian interface.
+
+### Deploy
+
+```bash
+# Download
 wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v1.sh -O nowhere-v1.sh
+
+# Verify and run
 chmod 700 nowhere-v1.sh
 bash -n nowhere-v1.sh
 sudo bash nowhere-v1.sh
 ```
 
-The deployment entry point is consistently named `nowhere-v1.sh`. The old names `nowhere.sh` and `nowhere-v1-stable.sh` are no longer deployment entry points.
-
-
-### 3.1 Interactive Console Mode (Recommended for Beginners)
-
-After downloading the script (see [§0](#0-download--run-the-script)), run it directly:
+### Non-interactive production example
 
 ```bash
-chmod 700 nowhere-v1.sh
-sudo bash nowhere-v1.sh
-```
-
-After launch, choose the interface language (Chinese, English, or Russian), then select the corresponding number in the TUI menu:
-
-* Press `1`: **Install the official prebuilt version** (enter the port, key, and certificate paths; deployment starts within 1 minute).
-* Press `2`: **Build from source locally** (automatically sets up the Rust toolchain and temporary swap, then starts compiling).
-
-> **Tip**: In source-build mode, it's recommended to run inside a `tmux` or `screen` session so a network hiccup doesn't kill your SSH connection — and the build — mid-way:
->
-> ```bash
-> tmux new -s nowhere
-> sudo bash nowhere-v1.sh
-> # Detach anytime with Ctrl+B then D; reattach anytime with tmux attach -t nowhere
-> ```
-
----
-
-### 3.2 Non-Interactive CLI Deployment (Automation / Scripting)
-
-> **⚠️ Important: TLS Default Changed in v2.5.2**
->
-> Starting from v2.5.2, the script defaults to **TLS 1 (self-signed certificate)** for quick testing.
-> 
-> **For production deployments, you MUST explicitly specify `--tls 2` with valid certificates**, otherwise clients will encounter certificate verification errors or require fingerprint pinning.
-
-#### Scenario A: Quick install for temporary testing (TLS 1, self-signed)
-
-No domain or certificate setup required — verify connectivity quickly:
-
-```bash
-sudo bash nowhere-v1.sh install \
-  --method release \
-  --port 2077 \
-  --net mix \
-  --tls 1 \
-  --key 'MyGeneratedKey_12345678'
-```
-
-> **Note**: TLS 1 uses a self-signed certificate. Clients must either:
-> - Trust the certificate manually, or
-> - Pin the certificate fingerprint using `sudo bash nowhere-v1.sh fingerprint`
-
-#### Scenario B: Production deployment (TLS 2, strictly verified PEM certificate) ⭐ Recommended
-
-Use your own real-domain PEM certificate (e.g. issued by Let's Encrypt / acme.sh):
-
-```bash
-# 1. Copy the authorized certificate into a dedicated, isolated path
-sudo bash nowhere-v1.sh prepare-tls \
-  --cert /etc/letsencrypt/live/example.com/fullchain.pem \
-  --tls-key /etc/letsencrypt/live/example.com/privkey.pem
-
-# 2. Start the production deployment
 sudo bash nowhere-v1.sh install \
   --method release \
   --port 2077 \
@@ -204,262 +576,28 @@ sudo bash nowhere-v1.sh install \
   --key 'MyGeneratedKey_12345678'
 ```
 
----
+### V1 / V2 isolation
 
-## 4. TLS Certificate Configuration & Permission Handling
+| | V1 | V2 |
+|---|---|---|
+| Service | `nowhere` | `nowhere-v2` |
+| Install root | `/opt/nowhere` | `/opt/nowhere-v2` |
+| Config dir | `/etc/nowhere` | `/etc/nowhere-v2` |
+| Global binary | `/usr/local/bin/nowhere` | `/usr/local/bin/nowhere-v2` |
+| Default port | `2077` | `2082` |
+| Languages | Chinese / English / Russian | Chinese / English |
 
-### 4.1 Why is `prepare-tls` required?
+They coexist on one VPS as long as their ports do not collide, and neither modifies the other's files or services.
 
-Let's Encrypt's default private key permissions are `600 root:root`, with the parent directory at `700`. The unprivileged `nowhere` service user, running inside a strict systemd sandbox, has no permission to read it.
+### V1 documentation
 
-**It is strongly discouraged** to `chmod 644` the original certificate private key directly — doing so undermines system security. Running `prepare-tls` safely syncs the certificate into `/etc/nowhere/tls/` and grants group ownership to the `nowhere` system user (`640 root:nowhere`).
+- [`NOWHERE_V1_STABLE_README.md`](NOWHERE_V1_STABLE_README.md) — full V1 stable manager documentation
+- [`README.two-scripts.EN.md`](README.two-scripts.EN.md) — `install.sh` / `install-source.sh` automation installers
 
-### 4.2 Automatic Renewal & Hook Configuration
-
-If you use Certbot to manage certificates, add a renewal hook at `/etc/letsencrypt/renewal-hooks/deploy/nowhere-v1.sh`:
-
-```bash
-#!/usr/bin/env bash
-bash /path/to/nowhere-v1.sh prepare-tls \
-  --cert "$RENEWED_LINEAGE/fullchain.pem" \
-  --tls-key "$RENEWED_LINEAGE/privkey.pem"
-systemctl restart nowhere
-```
-
-Make it executable: `chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere-v1.sh`. From then on, every certificate renewal automatically re-authorizes the files and hot-reloads the service.
+> V1 feature details (`prepare-tls`, `client-link`, `--net`, …) live in those documents. This main README only keeps the deployment entry point.
 
 ---
 
-## 5. Firewall & Network Rules
+## License
 
-Depending on your `--net` parameter, open the corresponding port in both the system firewall and your cloud provider's console (security group):
-
-### UFW (Ubuntu / Debian)
-
-```bash
-# If using --net mix, both TCP and UDP must be allowed
-sudo ufw allow 2077/tcp
-sudo ufw allow 2077/udp
-sudo ufw reload
-sudo ufw status numbered
-```
-
-### Firewalld (CentOS / RHEL / Fedora / Rocky)
-
-```bash
-sudo firewall-cmd --permanent --add-port=2077/tcp
-sudo firewall-cmd --permanent --add-port=2077/udp
-sudo firewall-cmd --reload
-```
-
----
-
-## 6. Client Connection & Import
-
-### 6.1 Understanding Link Formats
-
-**Nowhere uses two different URI formats:**
-
-1. **`portal://`** - Server-side configuration (internal use only)
-   - Used by the Nowhere service to start the server
-   - Stored in `/etc/nowhere/url.conf`
-   - **NOT for client import!**
-
-2. **`nowhere://`** - Client-side connection link (for Anywhere 2.0)
-   - Format: `nowhere://shared-key@relay.example:2077?up=udp&down=udp#Nowhere%20VPS`
-   - This is what you import into Anywhere client
-   - Parameters `up`/`down` specify upstream/downstream carrier strategy: `tcp`, `udp`, or `mix`
-   - TCP mode automatically enables multiplexing (`mux=1`)
-   - TLS 2 + domain name automatically adds SNI parameter
-
-### 6.2 Get Client Connection Link
-
-After deployment, use the management script to generate the client-importable `nowhere://` link:
-
-```bash
-# Auto-detect public IP and generate link
-sudo bash nowhere-v1.sh client-link
-
-# Manually specify server domain or IP (overrides config)
-sudo bash nowhere-v1.sh client-link --host relay.example.com
-
-# Customize node display name
-sudo bash nowhere-v1.sh client-link --name "US-NYC-01"
-```
-
-**Note:**
-- Early versions of the Nowhere binary don't provide a `client-link` subcommand; the script builds the `nowhere://` link directly from the stored `portal://` config
-- TLS mode 1 (self-signed certificate) requires clients to trust or pin the certificate fingerprint to connect
-- `--host` priority: command-line flag > `LISTEN_HOST` in config file > auto-detected public IP
-
-
-> **Note**: The exact command syntax depends on your Nowhere version. If the above commands don't work, check the official [Nowhere documentation](https://github.com/NodePassProject/Nowhere) for the correct syntax.
-
-### 6.3 Security Warning
-
-* **mix mode**: TCP and UDP share the same port.
-* **Keep your link secret**: The connection link embeds your shared key. Anyone who obtains it can use your VPS as an outbound proxy. Never post it in public groups or repositories!
-
-### 6.4 View Server Configuration (Advanced)
-
-To view the internal server configuration (not for client use):
-
-```bash
-sudo bash nowhere-v1.sh link
-```
-
-This shows the `portal://` URI used by the systemd service.
-
----
-
-## 7. Daily Operations & Service Management
-
-Regardless of which installation mode you used, the following commands are available:
-
-```bash
-# Open the interactive control menu
-sudo bash nowhere-v1.sh menu
-
-# Check service status and the currently running release version
-sudo bash nowhere-v1.sh status
-
-# Tail live system logs (Ctrl+C to exit)
-sudo bash nowhere-v1.sh logs
-
-# Restart the Nowhere service
-sudo bash nowhere-v1.sh restart
-
-# Native systemctl operations
-sudo systemctl status nowhere
-sudo systemctl restart nowhere
-```
-
----
-
-## 8. Upgrade, Zero-Downtime Rollback & Uninstall
-
-### 8.1 Upgrading
-
-```bash
-# Re-deploy the pinned V1 stable release
-sudo bash nowhere-v1.sh upgrade --version v1.8.3
-```
-
-The `/etc/nowhere/url.conf` configuration is preserved during an upgrade. If the new version fails its startup check, the script automatically reverts to the previous version to prevent service loss.
-
-### 8.2 Instant, Lossless Rollback
-
-If a new version misbehaves, roll back immediately:
-
-```bash
-sudo bash nowhere-v1.sh rollback
-```
-
-The script repoints the symlink to the last successfully built/running release and restarts the service — instant, with no re-download or rebuild required.
-
-### 8.3 Cleanup & Uninstall
-
-```bash
-# Clean up leftover source-build cache and temporary swap
-sudo bash nowhere-v1.sh clean-build
-
-# Uninstall the binary and systemd service (keeps /etc/nowhere config and keys)
-sudo bash nowhere-v1.sh uninstall
-
-# Full uninstall (also removes all config, certificate grants, and runtime state — irreversible)
-sudo bash nowhere-v1.sh uninstall --purge
-```
-
----
-
-## 9. Full CLI Parameter Reference
-
-Parameters of `nowhere-v1.sh` (the automation-only `install.sh` / `install-source.sh` accept a subset: `--version` `--libc` `--key` `--port` `--net` `--tls` `--cert` `--tls-key` `--listen-host`; `install-source.sh` additionally accepts `--commit` `--jobs` `--swap` `--keep-source` `--git-url`):
-
-| Parameter | Default | Description |
-| --- | --- | --- |
-| `--method MODE` | `release` | Install mode: `release` (prebuilt) or `source` (local build) |
-| `--key KEY` | auto-generated | Portal shared key (16–255 chars; letters, digits, and `._~-` only) |
-| `--port PORT` | `2077` | Listening port (must be within `1024-65535`) |
-| `--net MODE` | `mix` | Network protocol: `mix` (TCP/UDP on the same port), `tcp`, or `udp` |
-| `--tls MODE` | `1` | TLS mode: `1` (temporary self-signed cert), `2` (local PEM certificate file). **Production must use `2`** |
-| `--cert PATH` | none | Full-chain certificate path (`fullchain.pem`); required for TLS 2 |
-| `--tls-key PATH` | none | Private key file path (`privkey.pem`); required for TLS 2 |
-| `--version TAG` | `v1.8.3` | V1 stable channel is pinned to `v1.8.3`; `latest`, V2, and other versions are rejected |
-| `--libc MODE` | `auto` | C library compatibility (prebuilt mode only): `auto`, `gnu`, or `musl` |
-| `--swap MODE` | `auto` | Temporary swap control: `auto`, `off`, or a custom size in MB |
-| `--keep-source` | off | Keep the build tree and cache after compiling to speed up the next incremental build |
-
-Interface language is selected interactively on first run, or set via the `NOWHERE_LANG` environment variable (`zh` / `en` / `ru`).
-
----
-
-## 10. File Layout & Security Sandbox
-
-After installation, files are laid out as follows:
-
-```text
-/opt/nowhere/
-├── releases/
-│   ├── v1.8.3-prebuilt-xxxxxxxxxxxx/     # Official prebuilt binary release directory
-│   │   ├── nowhere
-│   │   └── RELEASE-INFO                  # Official download & digest audit record
-│   └── v1.8.3-source-yyyy-zzzzzzzzzzzz/  # Local source-build release directory
-│       ├── nowhere
-│       └── BUILD-INFO                    # Compiler & commit-hash provenance record
-└── current -> releases/...               # Atomic symlink pointing to the active release
-
-/usr/local/bin/nowhere -> /opt/nowhere/current/nowhere  # Global executable symlink
-/usr/local/libexec/nowhere-launch                      # Root-owned launcher (reads url.conf)
-
-/etc/nowhere/
-├── url.conf                              # Run URL (mode 640, root:nowhere)
-├── manager.conf                          # Manager metadata (mode 600, root only)
-└── tls/
-    ├── fullchain.pem                     # Authorized certificate (mode 640, root:nowhere)
-    └── privkey.pem                       # Authorized private key (mode 640, root:nowhere)
-
-/etc/systemd/system/nowhere.service       # Hardened systemd sandbox unit
-/var/lib/nowhere/                         # Dedicated runtime home / state directory
-```
-
----
-
-## 11. Troubleshooting (FAQ)
-
-### Q1: `GLIBC_2.xx not found`
-
-* **Cause**: The system's bundled glibc version is older than the one used to build the official GNU binary.
-* **Fix**: Reinstall using the official static musl build:
-
-```bash
-sudo bash nowhere-v1.sh install --method release --libc musl [other args...]
-```
-
-### Q2: Source build is killed with `signal: 9 Killed`
-
-* **Cause**: Full-program link-time optimization (Fat-LTO) exceeded available physical memory and was terminated by the OOM killer.
-* **Fix**: Allocate more temporary swap and limit parallel jobs, then retry:
-
-```bash
-sudo bash nowhere-v1.sh install --method source --swap 4096 --jobs 1 [other args...]
-```
-
-### Q3: `GitHub did not publish a SHA-256 digest`
-
-* **Cause**: The script enforces zero-trust verification; occasionally the official release pipeline doesn't publish a digest file for the artifact, so the script aborts the download rather than proceed unverified.
-* **Fix**: Use local source-build mode instead: `--method source`.
-
-### Q4: `Service user nowhere cannot read certificate`
-
-* **Cause**: TLS 2 mode referenced the raw Let's Encrypt private key directly, which the service user has no permission to read.
-* **Fix**: Always run `sudo bash nowhere-v1.sh prepare-tls --cert ... --tls-key ...` first, and use the `/etc/nowhere/tls/` paths it outputs as your install parameters.
-
-### Q5: Client can't connect, or the handshake times out
-
-* **Checklist**:
-  1. Confirm the service is running: `sudo systemctl status nowhere`;
-  2. Confirm the local port is listening: `sudo ss -lntup | grep 2077`;
-  3. Confirm the system firewall (UFW / Firewalld) allows the port/protocol (TCP/UDP);
-  4. Confirm your VPS provider's console (Alibaba Cloud, Tencent Cloud, AWS, Oracle, etc.) security-group inbound rules allow the port;
-  5. Confirm DNS resolution is correct and CDN proxying is disabled (direct connection required).
+[GPL-3.0](LICENSE), matching upstream [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere).
