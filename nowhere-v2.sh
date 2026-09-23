@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.2
+# Nowhere V2 Unified Manager v1.2.3
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,14 +9,15 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.2"
+readonly SCRIPT_VERSION="1.2.3"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.3: default to latest-v2 instead of a pinned tag; drop dead code; match upstream's single-'@' rule for next=.
 # v1.2.2: validate persisted/manager-supplied values before they reach the unit; warn when a morph=1 config crosses the 2.1.0 wire break.
 # v1.2.1: register --morph-prelude as a CLI override so an existing manager.conf cannot silently discard it.
 # v1.2.0: add Nowhere v2.1.0 support; introduce --morph-prelude and NOW_MORPH_TCP_PRELUDE environment variable.
-# shellcheck disable=SC2034
-readonly CORE_MAJOR="2"
-readonly DEFAULT_CORE_VERSION="v2.1.0"
+# The core version resolves from the official releases at install time so the
+# manager is never pinned to a stale tag. Override with --version or NOWHERE_V2_VERSION.
+readonly DEFAULT_CORE_VERSION="latest-v2"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly DEFAULT_REPO_URL="https://github.com/NodePassProject/Nowhere.git"
 readonly SELF_UPDATE_URL="${NOWHERE_V2_SELF_URL:-}"
@@ -240,7 +241,6 @@ validate_key() {
 }
 validate_role() { [[ "$1" == portal || "$1" == vector ]] || die "role must be portal|vector"; }
 validate_bool01() { [[ "$2" == 0 || "$2" == 1 ]] || die "$1 must be 0|1"; }
-validate_policy() { [[ "$1" == auto || "$1" == tcp || "$1" == udp || "$1" == mix ]] || die "up/down must be auto|tcp|udp|mix"; }
 validate_mux() { [[ "$1" == 0 || "$1" == 1 ]] || die "mux must be 0|1"; }
 validate_tls() { [[ "$1" == 1 || "$1" == 2 ]] || die "tls must be 1|2"; }
 validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error|event)$ ]] || die "invalid log level: $1"; }
@@ -270,13 +270,6 @@ urlencode() {
     case "$c" in [A-Za-z0-9.~_-]) out+="$c" ;; *) printf -v c '%%%02X' "'$c"; out+="$c" ;; esac
   done
   printf '%s' "$out"
-}
-
-urldecode() {
-  python3 - "$1" <<'PY'
-import sys, urllib.parse
-print(urllib.parse.unquote(sys.argv[1]), end='')
-PY
 }
 
 # Endpoint validator/canonicalizer for V2 grammar.
@@ -447,6 +440,9 @@ PY
 
 validate_next_endpoint() {
   local v="$1" keypart ep LC_ALL=C
+  # Upstream splits on the last '@' and rejects a second one in the key
+  # (vector/config.rs: "reserved shared-key characters must be percent-encoded").
+  [[ "$v" != *@*@* ]] || die "next must contain exactly one '@'; percent-encode '@' in the shared key as %40"
   [[ "$v" == *@* ]] || die "next must be KEY@ENDPOINT"
   keypart="${v%@*}"; ep="${v##*@}"
   (( ${#keypart} >= 1 && ${#keypart} <= 255 )) || die "next key must be 1-255 bytes"
@@ -1308,7 +1304,9 @@ print_firewall_hint() {
 
 show_status() {
   require_root; require_systemd
-  printf '%b%s%b %s | %s %s\n' "$C_CYAN" "$(tr_msg "Nowhere V2 Manager" "Nowhere V2 管理器")" "$C_NC" "$SCRIPT_VERSION" "$(tr_msg "Core target" "Core 目标版本")" "$VERSION"
+  local installed
+  installed="$(installed_core_version)"; installed="${installed:-$VERSION}"
+  printf '%b%s%b %s | %s %s\n' "$C_CYAN" "$(tr_msg "Nowhere V2 Manager" "Nowhere V2 管理器")" "$C_NC" "$SCRIPT_VERSION" "$(tr_msg "Core installed" "已安装 Core")" "$installed"
   printf '%s: ' "$(tr_msg 'Service' '服务状态')"; systemctl is-active "$SERVICE_NAME" 2>/dev/null || true
   printf '%s: ' "$(tr_msg 'Enabled' '开机启动')"; systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true
   printf '%s: %s\n' "$(tr_msg 'Current release' '当前 Release')" "$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo none)"
@@ -1638,7 +1636,7 @@ Nowhere V2 管理器 v${SCRIPT_VERSION}（通道：${SCRIPT_CHANNEL}）
   sudo bash nowhere-v2.sh uninstall [--purge]
 
 Core 版本策略：
-  默认：${DEFAULT_CORE_VERSION}
+  默认：${DEFAULT_CORE_VERSION}（安装时解析为官网最新稳定 v2.x.y）
   允许：指定稳定版 v2.x.y，或 latest-v2
   拒绝：V1、普通 latest、预发布版本、未来主版本
 
@@ -1689,7 +1687,7 @@ Usage:
   sudo bash nowhere-v2.sh uninstall [--purge]
 
 Core version policy:
-  Default: ${DEFAULT_CORE_VERSION}
+  Default: ${DEFAULT_CORE_VERSION} (resolved to the newest stable v2.x.y at install time)
   Allowed: exact stable v2.x.y or latest-v2
   Rejected: V1, plain 'latest', prereleases, future major versions
 
