@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.6
+# Nowhere V2 Unified Manager v1.2.7
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.6"
+readonly SCRIPT_VERSION="1.2.7"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.7: serialise installs/release-pruning with the build lock; refresh manager.conf version fields on a binary-only install.
 # v1.2.6: prompt_choice/prompt_key no longer spin forever without a terminal; reject link members in release tars; refuse a backup path inside the config dir.
 # v1.2.5: re-read manager.conf before rewriting the unit (doctor --fix / config restore no longer reset persisted values); refuse manager downgrades; require Rust >= 1.85 for source builds.
 # v1.2.4: translate the remaining operator-facing messages so LANG_CODE=zh no longer shows English errors.
@@ -184,7 +185,7 @@ acquire_build_lock() {
     pid=""
     [[ -r "$BUILD_LOCK_DIR/pid" ]] && IFS= read -r pid <"$BUILD_LOCK_DIR/pid" || true
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      die "$(tr_msg "Another V2 source build/cleanup is running (PID ${pid})." "另一个 V2 源码构建/清理正在运行（PID ${pid}）。")"
+      die "$(tr_msg "Another V2 install/build/cleanup is running (PID ${pid})." "另一个 V2 安装/构建/清理正在运行（PID ${pid}）。")"
     fi
     rm -rf -- "$BUILD_LOCK_DIR" 2>/dev/null || true
   done
@@ -821,6 +822,28 @@ load_meta() {
   done <"$META_FILE"
 }
 
+# The binary-only install/upgrade path never rewrites manager.conf, so its
+# SCRIPT_VERSION/CORE_VERSION fields go stale. Refresh just those two lines in
+# place: rewriting the whole file is not safe there because load_meta does not
+# restore every field (ROLE, for example), so the defaults would be written.
+refresh_meta_versions() {
+  [[ -r "$META_FILE" ]] || return 0
+  local tmp
+  tmp="$(mktemp)" || return 0
+  CLEANUP_PATHS+=("$tmp")
+  if awk -v sv="$SCRIPT_VERSION" -v cv="$VERSION" '
+        /^SCRIPT_VERSION=/ { print "SCRIPT_VERSION=" sv; s=1; next }
+        /^CORE_VERSION=/   { print "CORE_VERSION=" cv;   c=1; next }
+        { print }
+        END { if (!s) print "SCRIPT_VERSION=" sv; if (!c) print "CORE_VERSION=" cv }
+      ' "$META_FILE" >"$tmp"; then
+    # Write through the original path so its ownership and mode are preserved.
+    cat "$tmp" >"$META_FILE" 2>/dev/null ||
+      warn "$(tr_msg "Could not refresh the version fields in ${META_FILE}" "无法刷新 ${META_FILE} 中的版本字段")"
+  fi
+  rm -f -- "$tmp"
+}
+
 apply_cli_overrides() {
   local k
   for k in "${!CLI_SET[@]}"; do
@@ -1173,6 +1196,9 @@ EOF2
 
 cleanup_old_releases() {
   require_root; validate_keep_releases "$KEEP_RELEASES"
+  # Serialise against installs/builds: this walks and deletes inside the releases
+  # directory. No-op when the caller already holds the lock.
+  acquire_build_lock
   local quiet="${1:-0}" current previous d kept=0 removed=0
   [[ "$KEEP_RELEASES" -gt 0 ]] || { [[ "$quiet" == 1 ]] || info "$(tr_msg "Release pruning disabled" "旧版本自动清理已关闭")"; return 0; }
   [[ -d "$RELEASES_DIR" ]] || return 0
@@ -1235,6 +1261,9 @@ warn_morph_upgrade_requirement() {
 
 install_action() {
   require_root; require_systemd; ensure_user
+  # Serialise installs: two concurrent runs would race on the releases directory
+  # and the `current` symlink. Released by the EXIT trap.
+  acquire_build_lock
   local had_config=0 old_core=""
   [[ -s "$URL_FILE" ]] && had_config=1
   if [[ "$UPGRADE_MODE" -eq 1 && "$had_config" -eq 0 ]]; then
@@ -1268,6 +1297,9 @@ install_action() {
       if rollback_binary "$OLD_TARGET"; then warn "$(tr_msg "Rolled back to previous V2 binary" "已回滚到上一版 V2 二进制文件")"; else die "$(tr_msg "New release failed and rollback did not recover service" "新版启动失败且自动回滚未能恢复服务")"; fi
       return 1
     fi
+    # This path never rewrites manager.conf, so keep its version fields in step
+    # with what is actually installed.
+    refresh_meta_versions
   fi
   cleanup_old_releases 1
   ok "$(tr_msg "Nowhere V2 ${VERSION} is active" "Nowhere V2 ${VERSION} 已正常运行")"
