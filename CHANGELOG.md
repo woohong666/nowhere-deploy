@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.6
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.7
 
 #### ✨ Added
 
@@ -18,6 +18,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🐛 Fixed
 
+- `manager.conf` kept the pre-upgrade `CORE_VERSION` after a binary-only `install`/`upgrade` (`v1.2.7`). That path only replaces the binary and never rewrites the metadata, so the recorded version drifted from the installed one. The file's version fields are now refreshed in place — deliberately *not* by rewriting the whole file, because `load_meta` does not restore every field (`ROLE`, for instance) and the defaults would be written instead. (#10)
 - **Critical** (`v1.2.6`): `prompt_choice` and `prompt_key` could spin forever. When `/dev/tty` was unavailable the `read` failed, the default was substituted, and if that default was not in the allowed list the retry loop never terminated — it printed an invalid-choice warning indefinitely. Reproduced: a 3-second run emitted 12,365 lines and never returned. Reachable from `NOWHERE_V2_LOG=loud sudo bash nowhere-v2.sh configure --advanced` (or any invalid `NOWHERE_V2_*` value feeding a wizard prompt) on a host without a controlling terminal. Both now accept a valid default and otherwise stop with a message naming the rejected value and the allowed ones. (#9)
 - `safe_extract_tar` validated member paths but not member types, so a tar containing a symlink or hardlink was extracted unchecked. It now refuses link members, matching the fact that a release asset only ever contains one regular file. (#9)
 - `backup_action` accepted an output path inside `/etc/nowhere-v2`, which made `tar` archive its own output. It now refuses a destination inside the configuration directory. (#9)
@@ -36,6 +37,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🔄 Changed
 
+- Installs and release pruning are now serialised by the existing build lock (`v1.2.7`). `install_action` and `cleanup_old_releases` acquire it, so two concurrent runs can no longer race on the releases directory or the `current` symlink. It is idempotent, so the source-build path (which already held it) is unaffected, and a stale lock from a crashed run is still detected by PID and reclaimed. (#10)
 - `self_update` now refuses to **downgrade** the manager (`v1.2.5`). It previously compared versions with `!=`, so pointing `NOWHERE_V2_SELF_URL` at an older copy prompted an "update" to that older version. It now requires the remote version to be `>=` the local one, and the confirmation prompt is bilingual like the rest of the script. (#8)
 - `ensure_rust` now checks the toolchain version before accepting a system Rust (`v1.2.5`). Upstream is `edition = "2024"` (stabilised in Rust 1.85) and ships no `rust-toolchain` file, so an older distro toolchain failed deep inside `cargo` with a confusing error. It now warns and installs a managed toolchain instead. (#8)
 - `DEFAULT_CORE_VERSION` no longer pins a literal tag (`v1.2.3`). It defaults to `latest-v2`, which `resolve_version` turns into the newest stable `v2.x.y` at install time, so the manager stops going stale on every upstream release. `--version v2.x.y` and `NOWHERE_V2_VERSION` still pin an exact tag.
