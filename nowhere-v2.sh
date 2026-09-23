@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.3
+# Nowhere V2 Unified Manager v1.2.4
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.3"
+readonly SCRIPT_VERSION="1.2.4"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.4: translate the remaining operator-facing messages so LANG_CODE=zh no longer shows English errors.
 # v1.2.3: default to latest-v2 instead of a pinned tag; drop dead code; match upstream's single-'@' rule for next=.
 # v1.2.2: validate persisted/manager-supplied values before they reach the unit; warn when a morph=1 config crosses the 2.1.0 wire break.
 # v1.2.1: register --morph-prelude as a CLI override so an existing manager.conf cannot silently discard it.
@@ -189,13 +190,13 @@ acquire_build_lock() {
 }
 
 cleanup_stale_swap() {
-  [[ "$BUILD_LOCK_HELD" -eq 1 ]] || die "Internal error: build lock required"
+  [[ "$BUILD_LOCK_HELD" -eq 1 ]] || die "$(tr_msg "Internal error: build lock required" "内部错误：需要构建锁")"
   [[ -e "$SWAP_FILE" ]] || return 0
   if awk -v p="$SWAP_FILE" 'NR>1 && $1==p {f=1} END{exit(f?0:1)}' /proc/swaps 2>/dev/null; then
-    has_cmd swapoff || die "swapoff is required"
-    swapoff "$SWAP_FILE" || die "Failed to deactivate stale swap"
+    has_cmd swapoff || die "$(tr_msg "swapoff is required" "需要 swapoff")"
+    swapoff "$SWAP_FILE" || die "$(tr_msg "Failed to deactivate stale swap" "无法关闭残留 swap")"
   fi
-  rm -f -- "$SWAP_FILE" || die "Failed to remove stale swap"
+  rm -f -- "$SWAP_FILE" || die "$(tr_msg "Failed to remove stale swap" "无法删除残留 swap")"
 }
 
 pkg_manager() {
@@ -239,20 +240,20 @@ validate_key() {
   local v="$1" LC_ALL=C
   [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]] || die "$(tr_msg "Generated/CLI key must be 16-255 safe URL characters." "生成/命令行密钥必须为 16-255 位安全 URL 字符。")"
 }
-validate_role() { [[ "$1" == portal || "$1" == vector ]] || die "role must be portal|vector"; }
-validate_bool01() { [[ "$2" == 0 || "$2" == 1 ]] || die "$1 must be 0|1"; }
-validate_mux() { [[ "$1" == 0 || "$1" == 1 ]] || die "mux must be 0|1"; }
-validate_tls() { [[ "$1" == 1 || "$1" == 2 ]] || die "tls must be 1|2"; }
-validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error|event)$ ]] || die "invalid log level: $1"; }
-validate_rate() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "rate/etar must be non-negative"; }
-validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) || die "keep-releases must be 0-20"; }
-validate_config_mode() { [[ "$1" == ask || "$1" == quick || "$1" == advanced ]] || die "config-mode must be ask|quick|advanced"; }
+validate_role() { [[ "$1" == portal || "$1" == vector ]] || die "$(tr_msg "role must be portal|vector" "role 必须为 portal|vector")"; }
+validate_bool01() { [[ "$2" == 0 || "$2" == 1 ]] || die "$(tr_msg "${1} must be 0|1" "${1} 必须为 0|1")"; }
+validate_mux() { [[ "$1" == 0 || "$1" == 1 ]] || die "$(tr_msg "mux must be 0|1" "mux 必须为 0|1")"; }
+validate_tls() { [[ "$1" == 1 || "$1" == 2 ]] || die "$(tr_msg "tls must be 1|2" "tls 必须为 1|2")"; }
+validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error|event)$ ]] || die "$(tr_msg "invalid log level: ${1}" "无效的日志等级: ${1}")"; }
+validate_rate() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "$(tr_msg "rate/etar must be non-negative" "rate/etar 必须为非负数")"; }
+validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) || die "$(tr_msg "keep-releases must be 0-20" "keep-releases 必须为 0-20")"; }
+validate_config_mode() { [[ "$1" == ask || "$1" == quick || "$1" == advanced ]] || die "$(tr_msg "config-mode must be ask|quick|advanced" "config-mode 必须为 ask|quick|advanced")"; }
 is_valid_memory_profile() { [[ "$1" == memory || "$1" == balanced || "$1" == throughput ]]; }
 is_valid_morph_prelude() { [[ "$1" == low7 || "$1" == full8 ]]; }
-validate_memory_profile() { is_valid_memory_profile "$1" || die "memory-profile must be memory|balanced|throughput"; }
-validate_morph_prelude() { is_valid_morph_prelude "$1" || die "morph-prelude must be low7|full8"; }
-validate_sni() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Za-z0-9.-]+$ ]] || die "sni must be DNS name or none"; }
-validate_pin() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Fa-f0-9]{64}$ ]] || die "pin must be none or 64 hex characters"; }
+validate_memory_profile() { is_valid_memory_profile "$1" || die "$(tr_msg "memory-profile must be memory|balanced|throughput" "memory-profile 必须为 memory|balanced|throughput")"; }
+validate_morph_prelude() { is_valid_morph_prelude "$1" || die "$(tr_msg "morph-prelude must be low7|full8" "morph-prelude 必须为 low7|full8")"; }
+validate_sni() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Za-z0-9.-]+$ ]] || die "$(tr_msg "sni must be DNS name or none" "sni 必须为 DNS 域名或 none")"; }
+validate_pin() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Fa-f0-9]{64}$ ]] || die "$(tr_msg "pin must be none or 64 hex characters" "pin 必须为 none 或 64 位十六进制")"; }
 validate_version_arg() {
   local v="$1"
   [[ "$v" == latest-v2 || "$v" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "Version must be latest-v2 or an exact stable v2.x.y tag." "版本必须为 latest-v2 或明确的稳定版 v2.x.y 标签。")"
@@ -434,7 +435,7 @@ else:
 if not m or not (1<=int(m.group(1))<=65535): sys.exit(2)
 PY
   then
-    die "Invalid SOCKS endpoint: $v"
+    die "$(tr_msg "Invalid SOCKS endpoint: ${v}" "无效的 SOCKS 端点: ${v}")"
   fi
 }
 
@@ -442,12 +443,12 @@ validate_next_endpoint() {
   local v="$1" keypart ep LC_ALL=C
   # Upstream splits on the last '@' and rejects a second one in the key
   # (vector/config.rs: "reserved shared-key characters must be percent-encoded").
-  [[ "$v" != *@*@* ]] || die "next must contain exactly one '@'; percent-encode '@' in the shared key as %40"
-  [[ "$v" == *@* ]] || die "next must be KEY@ENDPOINT"
+  [[ "$v" != *@*@* ]] || die "$(tr_msg "next must contain exactly one '@'; percent-encode '@' in the shared key as %40" "next 必须只包含一个 '@'；共享密钥中的 '@' 请编码为 %40")"
+  [[ "$v" == *@* ]] || die "$(tr_msg "next must be KEY@ENDPOINT" "next 必须为 KEY@ENDPOINT")"
   keypart="${v%@*}"; ep="${v##*@}"
-  (( ${#keypart} >= 1 && ${#keypart} <= 255 )) || die "next key must be 1-255 bytes"
-  [[ "$keypart" != *$'\n'* && "$keypart" != *$'\r'* ]] || die "next key contains newline"
-  endpoint_info vector "$ep" >/dev/null || die "Invalid next endpoint"
+  (( ${#keypart} >= 1 && ${#keypart} <= 255 )) || die "$(tr_msg "next key must be 1-255 bytes" "next 密钥必须为 1-255 字节")"
+  [[ "$keypart" != *$'\n'* && "$keypart" != *$'\r'* ]] || die "$(tr_msg "next key contains newline" "next 密钥包含换行符")"
+  endpoint_info vector "$ep" >/dev/null || die "$(tr_msg "Invalid next endpoint" "无效的 next 端点")"
 }
 
 validate_policy_against_endpoint() {
@@ -455,10 +456,10 @@ validate_policy_against_endpoint() {
   [[ "$p" == auto ]] && return 0
   ht="$(endpoint_has_tcp "$role" "$ep")"; hu="$(endpoint_has_udp "$role" "$ep")"
   case "$p" in
-    tcp) [[ "$ht" == 1 ]] || die "TCP policy selected but endpoint has no TCP carrier" ;;
-    udp) [[ "$hu" == 1 ]] || die "UDP policy selected but endpoint has no UDP carrier" ;;
-    mix) [[ "$ht" == 1 && "$hu" == 1 ]] || die "mix requires both TCP and UDP carriers" ;;
-    *) die "invalid policy: $p" ;;
+    tcp) [[ "$ht" == 1 ]] || die "$(tr_msg "TCP policy selected but endpoint has no TCP carrier" "选择了 TCP 策略，但端点没有 TCP carrier")" ;;
+    udp) [[ "$hu" == 1 ]] || die "$(tr_msg "UDP policy selected but endpoint has no UDP carrier" "选择了 UDP 策略，但端点没有 UDP carrier")" ;;
+    mix) [[ "$ht" == 1 && "$hu" == 1 ]] || die "$(tr_msg "mix requires both TCP and UDP carriers" "mix 需要同时具备 TCP 和 UDP carrier")" ;;
+    *) die "$(tr_msg "invalid policy: ${p}" "无效的策略: ${p}")" ;;
   esac
 }
 
@@ -532,11 +533,11 @@ PY
   then
     die "$(tr_msg "Invalid V2 URL." "V2 URL 无效。")"
   fi
-  query_has "$u" net && warn "net= is ignored by Nowhere V2; endpoint carriers control TCP/UDP availability."
-  query_has "$u" alpn && warn "alpn= is ignored by Nowhere V2; V2 always uses fixed ALPN nw2."
+  query_has "$u" net && warn "$(tr_msg "net= is ignored by Nowhere V2; endpoint carriers control TCP/UDP availability." "Nowhere V2 会忽略 net=；TCP/UDP 可用性由端点的 carrier 决定。")"
+  query_has "$u" alpn && warn "$(tr_msg "alpn= is ignored by Nowhere V2; V2 always uses fixed ALPN nw2." "Nowhere V2 会忽略 alpn=；V2 固定使用 ALPN nw2。")"
   local role ep up down
   role="$(url_role "$u")"; ep="$(url_endpoint "$u")"
-  endpoint_info "$role" "$ep" >/dev/null || die "Invalid V2 endpoint"
+  endpoint_info "$role" "$ep" >/dev/null || die "$(tr_msg "Invalid V2 endpoint" "无效的 V2 端点")"
   up="$(query_get "$u" up)"; down="$(query_get "$u" down)"
   [[ -z "$up" ]] || validate_policy_against_endpoint "$role" "$ep" "$up"
   [[ -z "$down" ]] || validate_policy_against_endpoint "$role" "$ep" "$down"
@@ -559,10 +560,10 @@ build_portal_url() {
   [[ "$DIAL" == auto || -z "$DIAL" ]] || q+="&dial=$(urlencode "$DIAL")"
   [[ "$LOG_LEVEL" == info ]] || q+="&log=${LOG_LEVEL}"
   if [[ "$TLS" == 2 ]]; then
-    [[ -f "$CERT" && -f "$TLS_KEY" ]] || die "tls=2 requires existing cert/key files"
+    [[ -f "$CERT" && -f "$TLS_KEY" ]] || die "$(tr_msg "tls=2 requires existing cert/key files" "tls=2 需要已存在的证书/私钥文件")"
     q+="&crt=$(urlencode "$CERT")&key=$(urlencode "$TLS_KEY")"
   fi
-  [[ "$OUT_SOCKS" == none || "$NEXT" == none ]] || die "socks= and next= are mutually exclusive"
+  [[ "$OUT_SOCKS" == none || "$NEXT" == none ]] || die "$(tr_msg "socks= and next= are mutually exclusive" "socks= 与 next= 互斥")"
   if [[ "$OUT_SOCKS" != none && -n "$OUT_SOCKS" ]]; then
     validate_socks_endpoint "$OUT_SOCKS"; q+="&socks=$(urlencode "$OUT_SOCKS")"
   elif [[ "$NEXT" != none && -n "$NEXT" ]]; then
@@ -958,7 +959,7 @@ write_config_url() {
 }
 
 snapshot_config_state() {
-  CONFIG_SNAPSHOT_DIR="$(mktemp -d)" || die "Cannot create config snapshot"
+  CONFIG_SNAPSHOT_DIR="$(mktemp -d)" || die "$(tr_msg "Cannot create config snapshot" "无法创建配置快照")"
   CLEANUP_PATHS+=("$CONFIG_SNAPSHOT_DIR")
   [[ -e "$URL_FILE" ]] && cp -a -- "$URL_FILE" "$CONFIG_SNAPSHOT_DIR/url.conf"
   [[ -e "$META_FILE" ]] && cp -a -- "$META_FILE" "$CONFIG_SNAPSHOT_DIR/manager.conf"
@@ -996,7 +997,7 @@ resolve_version() {
   install_runtime_deps
   local tmp
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
-  curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=50" "$tmp" || die "Cannot fetch V2 releases"
+  curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=50" "$tmp" || die "$(tr_msg "Cannot fetch V2 releases" "无法获取 V2 发布列表")"
   VERSION="$(python3 - "$tmp" <<'PY'
 import json,re,sys
 c=[]
@@ -1008,7 +1009,7 @@ for r in json.load(open(sys.argv[1],encoding='utf-8')):
 if c: print(max(c)[1])
 PY
 )"
-  [[ "$VERSION" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "No stable v2.x release found"
+  [[ "$VERSION" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "No stable v2.x release found" "未找到稳定的 v2.x 版本")"
 }
 
 release_asset_fields() {
@@ -1035,20 +1036,20 @@ PY
 }
 
 detect_libc() {
-  case "$LIBC" in gnu|musl) printf '%s' "$LIBC"; return ;; auto) ;; *) die "--libc must be auto|gnu|musl" ;; esac
+  case "$LIBC" in gnu|musl) printf '%s' "$LIBC"; return ;; auto) ;; *) die "$(tr_msg "--libc must be auto|gnu|musl" "--libc 必须为 auto|gnu|musl")" ;; esac
   if [[ -f /etc/alpine-release ]] || (has_cmd ldd && ldd --version 2>&1 | grep -qi musl); then printf musl; else printf gnu; fi
 }
 
 target_triple() {
   local arch libc
-  case "$(uname -m)" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) die "Unsupported CPU: $(uname -m)" ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) die "$(tr_msg "Unsupported CPU: $(uname -m)" "不支持的 CPU: $(uname -m)")" ;; esac
   libc="$(detect_libc)"; printf '%s-unknown-linux-%s' "$arch" "$libc"
 }
 
 safe_extract_tar() {
   local archive="$1" dest="$2" member
   while IFS= read -r member; do
-    [[ "$member" == /* || "$member" == ../* || "$member" == */../* || "$member" == *'/..' ]] && die "Unsafe path in release tar: $member"
+    [[ "$member" == /* || "$member" == ../* || "$member" == */../* || "$member" == *'/..' ]] && die "$(tr_msg "Unsafe path in release tar: ${member}" "发布包中存在不安全路径: ${member}")"
   done < <(tar -tzf "$archive")
   tar -xzf "$archive" -C "$dest"
 }
@@ -1057,20 +1058,20 @@ install_release() {
   install_runtime_deps; resolve_version
   local json fields name url digest expected actual tmp archive bin bsha target release_dir
   json="$(mktemp)"; CLEANUP_PATHS+=("$json")
-  curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${VERSION}" "$json" || die "Failed to read release metadata"
+  curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${VERSION}" "$json" || die "$(tr_msg "Failed to read release metadata" "读取发布元数据失败")"
   target="$(target_triple)"
-  fields="$(release_asset_fields "$json" "$target")" || die "No unambiguous Linux asset for ${target}"
+  fields="$(release_asset_fields "$json" "$target")" || die "$(tr_msg "No unambiguous Linux asset for ${target}" "找不到与 ${target} 唯一对应的 Linux 资产")"
   name="$(sed -n '1p' <<<"$fields")"; url="$(sed -n '2p' <<<"$fields")"; digest="$(sed -n '3p' <<<"$fields")"
-  [[ -n "$name" && -n "$url" ]] || die "Release asset metadata incomplete"
-  [[ "$digest" =~ ^sha256:[0-9A-Fa-f]{64}$ ]] || die "GitHub release does not expose a SHA-256 digest for ${name}; refusing binary install"
+  [[ -n "$name" && -n "$url" ]] || die "$(tr_msg "Release asset metadata incomplete" "发布资产元数据不完整")"
+  [[ "$digest" =~ ^sha256:[0-9A-Fa-f]{64}$ ]] || die "$(tr_msg "GitHub release does not expose a SHA-256 digest for ${name}; refusing binary install" "GitHub 发布未提供 ${name} 的 SHA-256 摘要；拒绝安装二进制")"
   expected="${digest#sha256:}"
   tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp"); archive="$tmp/$name"
   info "$(tr_msg "Downloading verified ${VERSION} / ${name}" "正在下载并校验 ${VERSION} / ${name}")"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 10 -o "$archive" "$url"
   actual="$(sha256sum "$archive" | awk '{print $1}')"
-  [[ "${actual,,}" == "${expected,,}" ]] || die "Release SHA-256 mismatch"
+  [[ "${actual,,}" == "${expected,,}" ]] || die "$(tr_msg "Release SHA-256 mismatch" "发布包 SHA-256 校验不匹配")"
   mkdir -p "$tmp/extracted"; safe_extract_tar "$archive" "$tmp/extracted"
-  bin="$(find "$tmp/extracted" -type f -name nowhere -print -quit)"; [[ -n "$bin" ]] || die "No nowhere binary in release asset"
+  bin="$(find "$tmp/extracted" -type f -name nowhere -print -quit)"; [[ -n "$bin" ]] || die "$(tr_msg "No nowhere binary in release asset" "发布资产中没有 nowhere 二进制")"
   chmod 755 "$bin"; bsha="$(sha256sum "$bin" | awk '{print $1}')"
   release_dir="$RELEASES_DIR/${VERSION}-release-${bsha:0:12}"
   install -d -m 755 "$release_dir"; install -m 755 "$bin" "$release_dir/nowhere"
@@ -1095,7 +1096,7 @@ ensure_rust() {
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 -o "$tmp/rustup-init" "$url"
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 -o "$tmp/rustup-init.sha256" "${url}.sha256"
   expected="$(awk '{print $1}' "$tmp/rustup-init.sha256")"; actual="$(sha256sum "$tmp/rustup-init" | awk '{print $1}')"
-  [[ "${expected,,}" == "${actual,,}" ]] || die "rustup-init SHA-256 mismatch"
+  [[ "${expected,,}" == "${actual,,}" ]] || die "$(tr_msg "rustup-init SHA-256 mismatch" "rustup-init SHA-256 校验不匹配")"
   chmod 700 "$tmp/rustup-init"
   RUSTUP_HOME="$RUSTUP_HOME_DIR" CARGO_HOME="$CARGO_HOME_DIR" "$tmp/rustup-init" -y --no-modify-path --profile minimal --default-toolchain stable
   export RUSTUP_HOME="$RUSTUP_HOME_DIR" CARGO_HOME="$CARGO_HOME_DIR" PATH="$CARGO_HOME_DIR/bin:$PATH"
@@ -1107,10 +1108,10 @@ ensure_build_swap() {
   local mem_kb mem_mb want free_mb
   mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"; mem_mb=$(( ${mem_kb:-0}/1024 )); want=0
   if [[ "$SWAP_MODE" == auto ]]; then ((mem_mb>=2048)) && return 0; ((mem_mb<1024)) && want=4096 || want=2048
-  elif [[ "$SWAP_MODE" =~ ^[0-9]+$ ]]; then want="$SWAP_MODE"; else die "--swap must be auto|off|MB"; fi
+  elif [[ "$SWAP_MODE" =~ ^[0-9]+$ ]]; then want="$SWAP_MODE"; else die "$(tr_msg "--swap must be auto|off|MB" "--swap 必须为 auto|off|MB")"; fi
   ((want>0)) || return 0
-  free_mb="$(df -Pk /var/tmp | awk 'NR==2{print int($4/1024)}')"; ((free_mb>want+512)) || die "Not enough free disk for temporary swap"
-  has_cmd mkswap && has_cmd swapon && has_cmd swapoff || die "mkswap/swapon/swapoff required"
+  free_mb="$(df -Pk /var/tmp | awk 'NR==2{print int($4/1024)}')"; ((free_mb>want+512)) || die "$(tr_msg "Not enough free disk for temporary swap" "磁盘剩余空间不足以创建临时 swap")"
+  has_cmd mkswap && has_cmd swapon && has_cmd swapoff || die "$(tr_msg "mkswap/swapon/swapoff required" "需要 mkswap/swapon/swapoff")"
   fallocate -l "${want}M" "$SWAP_FILE" 2>/dev/null || dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$want" status=none
   chmod 600 "$SWAP_FILE"; mkswap "$SWAP_FILE" >/dev/null; swapon "$SWAP_FILE"
 }
@@ -1119,9 +1120,9 @@ install_source() {
   acquire_build_lock; cleanup_stale_swap; resolve_version; install_runtime_deps; install_build_deps; ensure_rust; ensure_build_swap
   local tmp commit bsha release_dir
   tmp="$(mktemp -d /var/tmp/nowhere-v2-build.XXXXXX)"; [[ "$KEEP_SOURCE" -eq 1 ]] || CLEANUP_PATHS+=("$tmp")
-  git clone --quiet --depth 1 --branch "$VERSION" "$DEFAULT_REPO_URL" "$tmp/src" || die "git clone failed"
-  (cd "$tmp/src"; export RUSTUP_HOME="$RUSTUP_HOME_DIR" CARGO_HOME="$CARGO_HOME_DIR" PATH="$CARGO_HOME_DIR/bin:$PATH"; cargo build --release --locked) || die "cargo build failed"
-  [[ -x "$tmp/src/target/release/nowhere" ]] || die "built binary not found"
+  git clone --quiet --depth 1 --branch "$VERSION" "$DEFAULT_REPO_URL" "$tmp/src" || die "$(tr_msg "git clone failed" "git clone 失败")"
+  (cd "$tmp/src"; export RUSTUP_HOME="$RUSTUP_HOME_DIR" CARGO_HOME="$CARGO_HOME_DIR" PATH="$CARGO_HOME_DIR/bin:$PATH"; cargo build --release --locked) || die "$(tr_msg "cargo build failed" "cargo 编译失败")"
+  [[ -x "$tmp/src/target/release/nowhere" ]] || die "$(tr_msg "built binary not found" "未找到编译产物二进制")"
   commit="$(git -C "$tmp/src" rev-parse HEAD)"; bsha="$(sha256sum "$tmp/src/target/release/nowhere" | awk '{print $1}')"
   release_dir="$RELEASES_DIR/${VERSION}-source-${commit:0:8}-${bsha:0:12}"; install -d -m 755 "$release_dir"; install -m 755 "$tmp/src/target/release/nowhere" "$release_dir/nowhere"
   cat >"$release_dir/BUILD-INFO" <<EOF2
@@ -1415,13 +1416,13 @@ doctor_action() {
   if [[ -n "$u" ]]; then
     role="$(url_role "$u")"; ep="$(url_endpoint "$u")"
     if [[ "$role" == portal ]]; then
-      if [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]]; then p="$(endpoint_tcp_port portal "$ep")"; fam="$(endpoint_tcp_family portal "$ep")"; port_listening_tcp "$p" "$fam" && ok "TCP carrier listens on ${p} (family ${fam})" || { warn "TCP carrier not listening on ${p} for family ${fam}"; fail=$((fail+1)); }; fi
-      if [[ "$(endpoint_has_udp portal "$ep")" == 1 ]]; then p="$(endpoint_udp_port portal "$ep")"; fam="$(endpoint_udp_family portal "$ep")"; port_listening_udp "$p" "$fam" && ok "UDP carrier listens on ${p} (family ${fam})" || { warn "UDP carrier not listening on ${p} for family ${fam}"; fail=$((fail+1)); }; fi
+      if [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]]; then p="$(endpoint_tcp_port portal "$ep")"; fam="$(endpoint_tcp_family portal "$ep")"; port_listening_tcp "$p" "$fam" && ok "$(tr_msg "TCP carrier listens on ${p} (family ${fam})" "TCP carrier 正在监听 ${p}（地址族 ${fam}）")" || { warn "$(tr_msg "TCP carrier not listening on ${p} for family ${fam}" "TCP carrier 未在 ${p} 监听（地址族 ${fam}）")"; fail=$((fail+1)); }; fi
+      if [[ "$(endpoint_has_udp portal "$ep")" == 1 ]]; then p="$(endpoint_udp_port portal "$ep")"; fam="$(endpoint_udp_family portal "$ep")"; port_listening_udp "$p" "$fam" && ok "$(tr_msg "UDP carrier listens on ${p} (family ${fam})" "UDP carrier 正在监听 ${p}（地址族 ${fam}）")" || { warn "$(tr_msg "UDP carrier not listening on ${p} for family ${fam}" "UDP carrier 未在 ${p} 监听（地址族 ${fam}）")"; fail=$((fail+1)); }; fi
       tls="$(query_get "$u" tls)"; if [[ "$tls" == 2 ]]; then
-        for f in "$(query_get "$u" crt)" "$(query_get "$u" key)"; do runuser -u "$RUN_USER" -- test -r "$f" 2>/dev/null && ok "TLS file readable: $f" || { warn "TLS file not readable by ${RUN_USER}: $f"; fail=$((fail+1)); }; done
+        for f in "$(query_get "$u" crt)" "$(query_get "$u" key)"; do runuser -u "$RUN_USER" -- test -r "$f" 2>/dev/null && ok "$(tr_msg "TLS file readable: ${f}" "TLS 文件可读: ${f}")" || { warn "$(tr_msg "TLS file not readable by ${RUN_USER}: ${f}" "${RUN_USER} 无法读取 TLS 文件: ${f}")"; fail=$((fail+1)); }; done
       fi
     else
-      p="$(query_get "$u" socks | sed 's/.*://')"; [[ "$p" =~ ^[0-9]+$ ]] && port_listening_tcp "$p" && ok "Vector SOCKS listens on ${p}" || { warn "Vector SOCKS listener not detected"; fail=$((fail+1)); }
+      p="$(query_get "$u" socks | sed 's/.*://')"; [[ "$p" =~ ^[0-9]+$ ]] && port_listening_tcp "$p" && ok "$(tr_msg "Vector SOCKS listens on ${p}" "Vector SOCKS 正在监听 ${p}")" || { warn "$(tr_msg "Vector SOCKS listener not detected" "未检测到 Vector SOCKS 监听")"; fail=$((fail+1)); }
     fi
     [[ "$(query_get "$u" morph)" == 1 ]] && { warn "$(tr_msg "Morph enabled: every peer on this hop must be Nowhere >=2.1.0 with matching morph=1" "Morph 已启用：此跳所有对端必须是 Nowhere >=2.1.0 且同样开启 morph=1")"; warnc=$((warnc+1)); }
   fi
@@ -1488,21 +1489,21 @@ check_updates() {
 }
 
 self_update() {
-  [[ -n "$SELF_UPDATE_URL" ]] || { warn "Self-update is disabled until NOWHERE_V2_SELF_URL is configured."; return 1; }
+  [[ -n "$SELF_UPDATE_URL" ]] || { warn "$(tr_msg "Self-update is disabled until NOWHERE_V2_SELF_URL is configured." "在配置 NOWHERE_V2_SELF_URL 之前，自更新功能不可用。")"; return 1; }
   require_command curl
   local tmp remote_ver remote_channel self backup staging
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --max-time 15 -o "$tmp" "$SELF_UPDATE_URL" || return 1
-  bash -n "$tmp" || { warn "Downloaded manager has syntax errors"; return 1; }
+  bash -n "$tmp" || { warn "$(tr_msg "Downloaded manager has syntax errors" "下载的管理脚本存在语法错误")"; return 1; }
   remote_ver="$(grep -oE '^readonly SCRIPT_VERSION="[^"]+"' "$tmp" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
   remote_channel="$(grep -oE '^readonly SCRIPT_CHANNEL="[^"]+"' "$tmp" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-  [[ "$remote_channel" == v2 ]] || { warn "Refusing cross-channel self-update"; return 1; }
-  [[ "$remote_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { warn "Invalid remote script version"; return 1; }
-  [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "Manager already up to date"; return 0; }
+  [[ "$remote_channel" == v2 ]] || { warn "$(tr_msg "Refusing cross-channel self-update" "拒绝跨通道自更新")"; return 1; }
+  [[ "$remote_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { warn "$(tr_msg "Invalid remote script version" "远端脚本版本无效")"; return 1; }
+  [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "$(tr_msg "Manager already up to date" "管理脚本已是最新")"; return 0; }
   prompt_confirm "Apply V2 manager update ${SCRIPT_VERSION} -> ${remote_ver}?" || return 0
   self="$(readlink -f "$0" 2>/dev/null || echo "$0")"; backup="${self}.bak.$(date +%s)"; cp "$self" "$backup" || return 1
   staging="${self}.upgrade.$$"; cp "$tmp" "$staging" && chmod 755 "$staging" && mv -f "$staging" "$self" || { rm -f "$staging"; return 1; }
-  ok "V2 manager updated; backup: $backup"; exit 0
+  ok "$(tr_msg "V2 manager updated; backup: ${backup}" "V2 管理脚本已更新；备份: ${backup}")"; exit 0
 }
 
 show_v1_migration_note() {
@@ -1780,7 +1781,7 @@ parse_args() {
       --force-reconfigure) FORCE_RECONFIGURE=1; shift ;;
       --purge) PURGE=1; shift ;;
       -h|--help) ACTION=help; shift ;;
-      *) if [[ "$ACTION" == backup && -z "$BACKUP_PATH" && "$1" != -* ]]; then BACKUP_PATH="$1"; shift; else die "Unknown option: $1"; fi ;;
+      *) if [[ "$ACTION" == backup && -z "$BACKUP_PATH" && "$1" != -* ]]; then BACKUP_PATH="$1"; shift; else die "$(tr_msg "Unknown option: ${1}" "未知选项: ${1}")"; fi ;;
     esac
   done
 }
@@ -1791,7 +1792,7 @@ apply_noninteractive_defaults() {
   validate_role "$ROLE"; validate_bool01 morph "$MORPH"; validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
   [[ -n "$KEY" ]] || KEY="$(random_key)"
   if [[ -z "$ENDPOINT" ]]; then
-    [[ "$ROLE" == portal ]] && ENDPOINT="*:${DEFAULT_PORT}" || die "Vector non-interactive mode requires --endpoint"
+    [[ "$ROLE" == portal ]] && ENDPOINT="*:${DEFAULT_PORT}" || die "$(tr_msg "Vector non-interactive mode requires --endpoint" "Vector 非交互模式需要 --endpoint")"
   fi
   if [[ "$ROLE" == vector ]]; then
     validate_socks_endpoint "$VECTOR_SOCKS"
@@ -1809,13 +1810,13 @@ main() {
   fi
   case "$ACTION" in
     menu) interactive_menu ;;
-    install|upgrade|update) [[ "$INSTALL_METHOD" == release || "$INSTALL_METHOD" == source ]] || die "--method must be release|source"; install_action ;;
+    install|upgrade|update) [[ "$INSTALL_METHOD" == release || "$INSTALL_METHOD" == source ]] || die "$(tr_msg "--method must be release|source" "--method 必须为 release|source")"; install_action ;;
     configure|config) configure_action ;;
     status) show_status ;;
     link|links) show_links ;;
     logs|log) require_root; require_systemd; journalctl -u "$SERVICE_NAME" -f ;;
     restart|start|stop) require_root; require_systemd; systemctl "$ACTION" "$SERVICE_NAME" ;;
-    tui) require_root; [[ -x "$BIN_LINK" ]] || die "V2 binary not installed"; "$BIN_LINK" tui ;;
+    tui) require_root; [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V2 binary not installed" "尚未安装 V2 二进制")"; "$BIN_LINK" tui ;;
     fingerprint) fingerprint ;;
     rollback) rollback_action ;;
     doctor|check|diagnose) doctor_action ;;
