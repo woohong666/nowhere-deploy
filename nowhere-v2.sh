@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.4
+# Nowhere V2 Unified Manager v1.2.5
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.4"
+readonly SCRIPT_VERSION="1.2.5"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.5: re-read manager.conf before rewriting the unit (doctor --fix / config restore no longer reset persisted values); refuse manager downgrades; require Rust >= 1.85 for source builds.
 # v1.2.4: translate the remaining operator-facing messages so LANG_CODE=zh no longer shows English errors.
 # v1.2.3: default to latest-v2 instead of a pinned tag; drop dead code; match upstream's single-'@' rule for next=.
 # v1.2.2: validate persisted/manager-supplied values before they reach the unit; warn when a morph=1 config crosses the 2.1.0 wire break.
@@ -974,6 +975,9 @@ restore_config_state() {
   [[ -e "$CONFIG_SNAPSHOT_DIR/url.conf" ]] && cp -a -- "$CONFIG_SNAPSHOT_DIR/url.conf" "$URL_FILE"
   [[ -e "$CONFIG_SNAPSHOT_DIR/manager.conf" ]] && cp -a -- "$CONFIG_SNAPSHOT_DIR/manager.conf" "$META_FILE"
   [[ -d "$CONFIG_SNAPSHOT_DIR/tls" ]] && cp -a -- "$CONFIG_SNAPSHOT_DIR/tls" "$TLS_DIR"
+  # The in-memory globals still hold the failed attempt's values. Re-read the
+  # restored manager.conf so the unit matches the configuration that survived.
+  load_meta
   write_launcher; write_unit
   if [[ -s "$URL_FILE" && -x "$CURRENT_LINK/nowhere" ]]; then systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true; wait_service 12; else systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true; fi
 }
@@ -1089,7 +1093,15 @@ EOF2
 }
 
 ensure_rust() {
-  if has_cmd rustc && has_cmd cargo; then return 0; fi
+  if has_cmd rustc && has_cmd cargo; then
+    # Upstream is edition 2024 (stabilised in Rust 1.85) and ships no
+    # rust-toolchain file, so an older distro toolchain fails deep inside cargo
+    # with a confusing error. Check up front and install a managed toolchain.
+    local rv
+    rv="$(rustc --version 2>/dev/null | awk '{print $2}')"
+    if version_ge "$rv" "1.85.0"; then return 0; fi
+    warn "$(tr_msg "System Rust ${rv:-unknown} is older than 1.85 and cannot build edition-2024 sources; installing a managed toolchain instead." "系统 Rust ${rv:-未知} 低于 1.85，无法编译 edition 2024 源码；改为安装受管工具链。")"
+  fi
   local target tmp url expected actual
   target="$(target_triple)"; tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp")
   url="https://static.rust-lang.org/rustup/dist/${target}/rustup-init"
@@ -1434,6 +1446,10 @@ doctor_action() {
     info "$(tr_msg "doctor --fix may rewrite V2 management files and restart ${SERVICE_NAME}." "doctor --fix 可能重写 V2 管理文件并重启 ${SERVICE_NAME}。")"
     info "$(tr_msg "Applying safe V2 management repairs..." "正在应用安全的 V2 管理修复...")"
     ensure_user; [[ -x "$CURRENT_LINK/nowhere" ]] && ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
+    # write_unit interpolates MEMORY_PROFILE and MORPH_PRELUDE. Without re-reading
+    # manager.conf first, a repair would silently reset a configured value to the
+    # script default while manager.conf kept the original.
+    load_meta
     write_launcher; write_unit
     [[ -s "$URL_FILE" ]] && { chmod 640 "$URL_FILE"; chown root:"$RUN_GROUP" "$URL_FILE"; }
     systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
@@ -1500,7 +1516,11 @@ self_update() {
   [[ "$remote_channel" == v2 ]] || { warn "$(tr_msg "Refusing cross-channel self-update" "拒绝跨通道自更新")"; return 1; }
   [[ "$remote_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { warn "$(tr_msg "Invalid remote script version" "远端脚本版本无效")"; return 1; }
   [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "$(tr_msg "Manager already up to date" "管理脚本已是最新")"; return 0; }
-  prompt_confirm "Apply V2 manager update ${SCRIPT_VERSION} -> ${remote_ver}?" || return 0
+  version_ge "$remote_ver" "$SCRIPT_VERSION" || {
+    warn "$(tr_msg "Refusing to downgrade the manager: remote ${remote_ver} is older than local ${SCRIPT_VERSION}." "拒绝降级管理脚本：远端 ${remote_ver} 低于本地 ${SCRIPT_VERSION}。")"
+    return 1
+  }
+  prompt_confirm "$(tr_msg "Apply V2 manager update ${SCRIPT_VERSION} -> ${remote_ver}?" "应用 V2 管理脚本更新 ${SCRIPT_VERSION} -> ${remote_ver}？")" || return 0
   self="$(readlink -f "$0" 2>/dev/null || echo "$0")"; backup="${self}.bak.$(date +%s)"; cp "$self" "$backup" || return 1
   staging="${self}.upgrade.$$"; cp "$tmp" "$staging" && chmod 755 "$staging" && mv -f "$staging" "$self" || { rm -f "$staging"; return 1; }
   ok "$(tr_msg "V2 manager updated; backup: ${backup}" "V2 管理脚本已更新；备份: ${backup}")"; exit 0

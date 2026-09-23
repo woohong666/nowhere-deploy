@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.4
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.5
 
 #### ✨ Added
 
@@ -18,6 +18,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🐛 Fixed
 
+- **Critical** (`v1.2.5`): `doctor --fix` rewrote the systemd unit without re-reading `manager.conf`. Because `write_unit` interpolates `MEMORY_PROFILE` and `MORPH_PRELUDE`, a repair silently reset a configured `memory` / `full8` back to the script defaults while `manager.conf` kept the original — leaving the unit, the service, and the manager metadata disagreeing. `doctor_action` now calls `load_meta` before `write_unit`. (#8)
+- **Critical** (`v1.2.5`): `restore_config_state` restored `manager.conf` from the snapshot but then rewrote the unit from the in-memory globals, which still held the *failed attempt's* values. A failed `configure` therefore left the unit on the values that had just been rolled back. It now re-reads the restored `manager.conf` first. (#8)
 - **Critical** (`v1.2.1`): `--morph-prelude` was assigned directly instead of through `set_cli`, so it never registered as a CLI override. On an existing install, `load_meta` restored the persisted `MORPH_PRELUDE` from `manager.conf` and `apply_cli_overrides` had nothing to re-apply, silently discarding the flag. Fresh installs were unaffected, which hid the bug. (#2)
 - **Critical** (`v1.2.2`): `load_meta()` copied persisted values into the systemd unit without validation. `MEMORY_PROFILE` and `MORPH_PRELUDE` are interpolated into the unit verbatim, so a corrupted or hand-edited `manager.conf` propagated straight through — including on the binary-only `install` path. Both are now validated, and a rejected value falls back to the already-validated current value with a warning. (#3)
 - **Critical** (`v1.2.2`): `main()` validated `MEMORY_PROFILE` but not `MORPH_PRELUDE`. An invalid `NOWHERE_V2_MORPH_PRELUDE` could therefore reach `write_unit` on paths that skip both `parse_args` validation and `apply_noninteractive_defaults`. Upstream rejects anything other than `low7`/`full8`, so the service failed to start with a misleading "configuration failed" message. (#3)
@@ -31,6 +33,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🔄 Changed
 
+- `self_update` now refuses to **downgrade** the manager (`v1.2.5`). It previously compared versions with `!=`, so pointing `NOWHERE_V2_SELF_URL` at an older copy prompted an "update" to that older version. It now requires the remote version to be `>=` the local one, and the confirmation prompt is bilingual like the rest of the script. (#8)
+- `ensure_rust` now checks the toolchain version before accepting a system Rust (`v1.2.5`). Upstream is `edition = "2024"` (stabilised in Rust 1.85) and ships no `rust-toolchain` file, so an older distro toolchain failed deep inside `cargo` with a confusing error. It now warns and installs a managed toolchain instead. (#8)
 - `DEFAULT_CORE_VERSION` no longer pins a literal tag (`v1.2.3`). It defaults to `latest-v2`, which `resolve_version` turns into the newest stable `v2.x.y` at install time, so the manager stops going stale on every upstream release. `--version v2.x.y` and `NOWHERE_V2_VERSION` still pin an exact tag.
 - 68 operator-facing messages are now bilingual (`v1.2.4`). The manager defaults to `LANG_CODE=zh`, yet every validator, URL/endpoint check, release-install, source-build, doctor, and self-update message was English-only. Embedded Python diagnostics are intentionally left in English: they are printed just before the bilingual wrapper and name the exact field that failed. (#5)
 
