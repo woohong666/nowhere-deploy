@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.1
+# Nowhere V2 Unified Manager v1.2.2
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.1"
+readonly SCRIPT_VERSION="1.2.2"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.2: validate persisted/manager-supplied values before they reach the unit; warn when a morph=1 config crosses the 2.1.0 wire break.
 # v1.2.1: register --morph-prelude as a CLI override so an existing manager.conf cannot silently discard it.
 # v1.2.0: add Nowhere v2.1.0 support; introduce --morph-prelude and NOW_MORPH_TCP_PRELUDE environment variable.
 # shellcheck disable=SC2034
@@ -246,8 +247,10 @@ validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error|event)$ ]] || die "inva
 validate_rate() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "rate/etar must be non-negative"; }
 validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) || die "keep-releases must be 0-20"; }
 validate_config_mode() { [[ "$1" == ask || "$1" == quick || "$1" == advanced ]] || die "config-mode must be ask|quick|advanced"; }
-validate_memory_profile() { [[ "$1" == memory || "$1" == balanced || "$1" == throughput ]] || die "memory-profile must be memory|balanced|throughput"; }
-validate_morph_prelude() { [[ "$1" == low7 || "$1" == full8 ]] || die "morph-prelude must be low7|full8"; }
+is_valid_memory_profile() { [[ "$1" == memory || "$1" == balanced || "$1" == throughput ]]; }
+is_valid_morph_prelude() { [[ "$1" == low7 || "$1" == full8 ]]; }
+validate_memory_profile() { is_valid_memory_profile "$1" || die "memory-profile must be memory|balanced|throughput"; }
+validate_morph_prelude() { is_valid_morph_prelude "$1" || die "morph-prelude must be low7|full8"; }
 validate_sni() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Za-z0-9.-]+$ ]] || die "sni must be DNS name or none"; }
 validate_pin() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Fa-f0-9]{64}$ ]] || die "pin must be none or 64 hex characters"; }
 validate_version_arg() {
@@ -792,8 +795,15 @@ load_meta() {
   local k v
   while IFS='=' read -r k v; do
     case "$k" in
-      PUBLIC_HOST) PUBLIC_HOST="$v" ;; NODE_NAME) NODE_NAME="$v" ;; MEMORY_PROFILE) MEMORY_PROFILE="$v" ;;
-      MORPH_PRELUDE) MORPH_PRELUDE="$v" ;;
+      PUBLIC_HOST) PUBLIC_HOST="$v" ;; NODE_NAME) NODE_NAME="$v" ;;
+      # Persisted values are written into the systemd unit verbatim, so a corrupted
+      # or hand-edited manager.conf must never reach write_unit unvalidated.
+      MEMORY_PROFILE)
+        if is_valid_memory_profile "$v"; then MEMORY_PROFILE="$v"
+        else warn "$(tr_msg "Ignoring invalid MEMORY_PROFILE in manager.conf: ${v}" "忽略 manager.conf 中非法的 MEMORY_PROFILE: ${v}")"; fi ;;
+      MORPH_PRELUDE)
+        if is_valid_morph_prelude "$v"; then MORPH_PRELUDE="$v"
+        else warn "$(tr_msg "Ignoring invalid MORPH_PRELUDE in manager.conf: ${v}" "忽略 manager.conf 中非法的 MORPH_PRELUDE: ${v}")"; fi ;;
       CLIENT_UP) CLIENT_UP="$v" ;; CLIENT_DOWN) CLIENT_DOWN="$v" ;; CLIENT_MUX) CLIENT_MUX="$v" ;;
       CLIENT_SNI) CLIENT_SNI="$v" ;; CLIENT_PIN) CLIENT_PIN="$v" ;;
     esac
@@ -1154,9 +1164,48 @@ rollback_binary() {
   wait_service 12
 }
 
+installed_core_version() {
+  local info="$CURRENT_LINK/RELEASE-INFO" v=""
+  [[ -r "$info" ]] && v="$(sed -n 's/^tag:[[:space:]]*//p' "$info" | head -1)"
+  if [[ -z "$v" && -r "$META_FILE" ]]; then
+    v="$(sed -n 's/^CORE_VERSION=//p' "$META_FILE" | head -1)"
+  fi
+  printf '%s' "$v"
+}
+
+# Numeric vX.Y.Z comparison, done with zero-padded string compare so it works on
+# busybox (Alpine) where `sort -V` is unavailable.
+version_ge() {
+  local a="${1#v}" b="${2#v}" a1 a2 a3 b1 b2 b3 ap bp
+  [[ "$a" =~ ^[0-9]+(\.[0-9]+)*$ && "$b" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1
+  IFS=. read -r a1 a2 a3 <<<"$a"
+  IFS=. read -r b1 b2 b3 <<<"$b"
+  a1=${a1:-0}; a2=${a2:-0}; a3=${a3:-0}
+  b1=${b1:-0}; b2=${b2:-0}; b3=${b3:-0}
+  ap="$(printf '%05d%05d%05d' "$((10#$a1))" "$((10#$a2))" "$((10#$a3))")"
+  bp="$(printf '%05d%05d%05d' "$((10#$b1))" "$((10#$b2))" "$((10#$b3))")"
+  [[ "$ap" == "$bp" || "$ap" > "$bp" ]]
+}
+
+# Nowhere 2.1.0 changed the Morph wire format; morph-enabled 2.1 peers cannot talk
+# to 2.0.x peers. Warn when this install/upgrade actually crosses that boundary.
+warn_morph_upgrade_requirement() {
+  local old_core="$1" u morph
+  [[ -s "$URL_FILE" ]] || return 0
+  IFS= read -r u <"$URL_FILE" || return 0
+  morph="$(query_get "$u" morph)"; morph="${morph:-0}"
+  [[ "$morph" == 1 ]] || return 0
+  version_ge "$VERSION" v2.1.0 || return 0
+  if [[ -z "$old_core" ]] || ! version_ge "$old_core" v2.1.0; then
+    warn "$(tr_msg \
+      "This config uses morph=1 and is being moved to Nowhere ${VERSION}. The Morph wire format changed in 2.1.0: every peer on this path (Portal, Vector, native next hop, alternate client) must also be on >=2.1.0, or traffic will stop." \
+      "此配置为 morph=1，正在切换到 Nowhere ${VERSION}。Morph 线协议在 2.1.0 有破坏性变更：此链路上的所有对端（Portal / Vector / native next / 其它客户端）都必须同时为 >=2.1.0，否则流量会中断。")"
+  fi
+}
+
 install_action() {
   require_root; require_systemd; ensure_user
-  local had_config=0
+  local had_config=0 old_core=""
   [[ -s "$URL_FILE" ]] && had_config=1
   if [[ "$UPGRADE_MODE" -eq 1 && "$had_config" -eq 0 ]]; then
     die "$(tr_msg "upgrade requires an existing V2 configuration; use 'install' for a fresh deployment" "upgrade 需要已有 V2 配置；首次部署请使用 install")"
@@ -1174,7 +1223,9 @@ install_action() {
   fi
 
   OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+  old_core="$(installed_core_version)"
   if [[ "$INSTALL_METHOD" == source ]]; then install_source; else install_release; fi
+  warn_morph_upgrade_requirement "$old_core"
   write_launcher; write_unit
 
   if [[ "$had_config" -eq 0 || "$FORCE_RECONFIGURE" -eq 1 ]]; then
@@ -1751,7 +1802,7 @@ apply_noninteractive_defaults() {
 
 main() {
   parse_args "$@"
-  validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"; validate_config_mode "$CONFIG_MODE"; validate_memory_profile "$MEMORY_PROFILE"
+  validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"; validate_config_mode "$CONFIG_MODE"; validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
   [[ "$LANG_CODE" == ask && "$ACTION" != menu ]] && resolve_language auto
   # Defaults are only synthesized for a fresh generated configuration. Existing
   # configs are loaded inside configure_action, and imported URLs carry their own key/endpoint.
