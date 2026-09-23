@@ -475,6 +475,24 @@ t_ok "downgrade quiet"              quiet "$(wmu "$U1" v2.0.2 v2.1.0)"
 t_ok "morph=0 quiet"                quiet "$(wmu "$U0" v2.1.0 v2.0.2)"
 
 # ---------------------------------------------------------------------------
+t_section "self-update source"
+
+# SELF_UPDATE_URL is readonly and resolved when the manager is sourced, so each
+# case needs a fresh shell.
+self_update_url() { # self_update_url [NOWHERE_V2_SELF_URL value]
+  if [[ $# -eq 0 ]]; then
+    bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "$SELF_UPDATE_URL"' _ "$PATCHED"
+  else
+    NOWHERE_V2_SELF_URL="$1" bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "$SELF_UPDATE_URL"' _ "$PATCHED"
+  fi
+}
+t_ok "defaults to this repo's main" yes \
+  "$(self_update_url | grep -q 'woohong666/nowhere-deploy/main/nowhere-v2.sh' && echo yes || echo no)"
+t_ok "NOWHERE_V2_SELF_URL overrides" "https://example.test/mgr.sh" \
+  "$(self_update_url 'https://example.test/mgr.sh')"
+t_ok "empty value disables self-update" "" "$(self_update_url '')"
+
+# ---------------------------------------------------------------------------
 printf '\n%s\n' "----------------------------------------"
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

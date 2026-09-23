@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.7
+# Nowhere V2 Unified Manager v1.2.8
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.7"
+readonly SCRIPT_VERSION="1.2.8"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.8: self-update now defaults to this repository's main branch (no NOWHERE_V2_SELF_URL needed); clarify the doctor morph reminder.
 # v1.2.7: serialise installs/release-pruning with the build lock; refresh manager.conf version fields on a binary-only install.
 # v1.2.6: prompt_choice/prompt_key no longer spin forever without a terminal; reject link members in release tars; refuse a backup path inside the config dir.
 # v1.2.5: re-read manager.conf before rewriting the unit (doctor --fix / config restore no longer reset persisted values); refuse manager downgrades; require Rust >= 1.85 for source builds.
@@ -24,7 +25,11 @@ readonly SCRIPT_CHANNEL="v2"
 readonly DEFAULT_CORE_VERSION="latest-v2"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly DEFAULT_REPO_URL="https://github.com/NodePassProject/Nowhere.git"
-readonly SELF_UPDATE_URL="${NOWHERE_V2_SELF_URL:-}"
+# Self-update source. Defaults to this repository's main branch so menu option
+# [18] works out of the box; set NOWHERE_V2_SELF_URL to point at a fork or
+# mirror, or set it empty to disable self-update entirely.
+readonly DEFAULT_SELF_UPDATE_URL="https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v2.sh"
+readonly SELF_UPDATE_URL="${NOWHERE_V2_SELF_URL-$DEFAULT_SELF_UPDATE_URL}"
 
 # V2 is intentionally isolated from the V1 manager.
 readonly SERVICE_NAME="nowhere-v2"
@@ -1489,7 +1494,7 @@ doctor_action() {
     else
       p="$(query_get "$u" socks | sed 's/.*://')"; [[ "$p" =~ ^[0-9]+$ ]] && port_listening_tcp "$p" && ok "$(tr_msg "Vector SOCKS listens on ${p}" "Vector SOCKS 正在监听 ${p}")" || { warn "$(tr_msg "Vector SOCKS listener not detected" "未检测到 Vector SOCKS 监听")"; fail=$((fail+1)); }
     fi
-    [[ "$(query_get "$u" morph)" == 1 ]] && { warn "$(tr_msg "Morph enabled: every peer on this hop must be Nowhere >=2.1.0 with matching morph=1" "Morph 已启用：此跳所有对端必须是 Nowhere >=2.1.0 且同样开启 morph=1")"; warnc=$((warnc+1)); }
+    [[ "$(query_get "$u" morph)" == 1 ]] && { warn "$(tr_msg "Morph is enabled. Peer versions cannot be checked from this host: every peer on this hop must also run Nowhere >=2.1.0 with morph=1." "Morph 已启用（本机无法验证对端版本）：此跳所有对端都必须同样运行 Nowhere >=2.1.0 且开启 morph=1。")"; warnc=$((warnc+1)); }
   fi
   if systemctl list-unit-files --no-legend nowhere.service 2>/dev/null | grep -q '^nowhere\.service'; then
     warn "$(tr_msg "V1 service definition detected. V2 files are isolated, but network ports must not collide." "检测到 V1 服务。V1/V2 文件已隔离，但监听端口不能冲突。")"
@@ -1566,7 +1571,7 @@ check_updates() {
 }
 
 self_update() {
-  [[ -n "$SELF_UPDATE_URL" ]] || { warn "$(tr_msg "Self-update is disabled until NOWHERE_V2_SELF_URL is configured." "在配置 NOWHERE_V2_SELF_URL 之前，自更新功能不可用。")"; return 1; }
+  [[ -n "$SELF_UPDATE_URL" ]] || { warn "$(tr_msg "Self-update is disabled (NOWHERE_V2_SELF_URL is empty)." "自更新已禁用（NOWHERE_V2_SELF_URL 为空）。")"; return 1; }
   require_command curl
   local tmp remote_ver remote_channel self backup staging
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
@@ -1716,6 +1721,7 @@ Nowhere V2 管理器 v${SCRIPT_VERSION}（通道：${SCRIPT_CHANNEL}）
   sudo bash nowhere-v2.sh rollback | clean-releases | clean-build | check-updates
   sudo bash nowhere-v2.sh backup [路径]                   （仅备份配置/TLS）
   sudo bash nowhere-v2.sh uninstall [--purge]
+  sudo bash nowhere-v2.sh self-update                     （默认从本仓库 main 分支更新）
 
 Core 版本策略：
   默认：${DEFAULT_CORE_VERSION}（安装时解析为官网最新稳定 v2.x.y）
@@ -1767,6 +1773,7 @@ Usage:
   sudo bash nowhere-v2.sh rollback | clean-releases | clean-build | check-updates
   sudo bash nowhere-v2.sh backup [PATH]                   (config/TLS only)
   sudo bash nowhere-v2.sh uninstall [--purge]
+  sudo bash nowhere-v2.sh self-update                     (updates from this repo's main by default)
 
 Core version policy:
   Default: ${DEFAULT_CORE_VERSION} (resolved to the newest stable v2.x.y at install time)

@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.7
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.8
 
 #### ✨ Added
 
@@ -37,6 +37,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🔄 Changed
 
+- **Self-update now works out of the box** (`v1.2.8`). `SELF_UPDATE_URL` defaults to this repository's `main` branch, so menu option [18] and `self-update` no longer require `NOWHERE_V2_SELF_URL` to be configured first — previously they just warned and returned. The variable still overrides the source (point it at a fork or mirror), and setting it to an empty string disables self-update deliberately. (#12)
+- The doctor Morph reminder was reworded (`v1.2.8`) to say that peer versions cannot be checked from this host. It fires whenever `morph=1` because the local side genuinely cannot verify the rest of the path, and the old wording read like a detected fault rather than a standing reminder. (#12)
 - Installs and release pruning are now serialised by the existing build lock (`v1.2.7`). `install_action` and `cleanup_old_releases` acquire it, so two concurrent runs can no longer race on the releases directory or the `current` symlink. It is idempotent, so the source-build path (which already held it) is unaffected, and a stale lock from a crashed run is still detected by PID and reclaimed. (#10)
 - `self_update` now refuses to **downgrade** the manager (`v1.2.5`). It previously compared versions with `!=`, so pointing `NOWHERE_V2_SELF_URL` at an older copy prompted an "update" to that older version. It now requires the remote version to be `>=` the local one, and the confirmation prompt is bilingual like the rest of the script. (#8)
 - `ensure_rust` now checks the toolchain version before accepting a system Rust (`v1.2.5`). Upstream is `edition = "2024"` (stabilised in Rust 1.85) and ships no `rust-toolchain` file, so an older distro toolchain failed deep inside `cargo` with a confusing error. It now warns and installs a managed toolchain instead. (#8)
