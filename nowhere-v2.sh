@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.1.3
+# Nowhere V2 Unified Manager v1.2.0
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,12 +9,12 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.1.3"
+readonly SCRIPT_VERSION="1.2.0"
 readonly SCRIPT_CHANNEL="v2"
-# v1.1.3: fix interactive tls=2 certificate copy flow; unreadable PEM can be copied into the managed TLS directory.
+# v1.2.0: add Nowhere v2.1.0 support; introduce --morph-prelude and NOW_MORPH_TCP_PRELUDE environment variable.
 # shellcheck disable=SC2034
 readonly CORE_MAJOR="2"
-readonly DEFAULT_CORE_VERSION="v2.0.0"
+readonly DEFAULT_CORE_VERSION="v2.1.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly DEFAULT_REPO_URL="https://github.com/NodePassProject/Nowhere.git"
 readonly SELF_UPDATE_URL="${NOWHERE_V2_SELF_URL:-}"
@@ -45,6 +45,7 @@ readonly DEFAULT_VECTOR_SOCKS="127.0.0.1:1082"
 readonly DEFAULT_LOG="info"
 readonly DEFAULT_KEEP_RELEASES="3"
 readonly DEFAULT_MEMORY_PROFILE="throughput"
+readonly DEFAULT_MORPH_PRELUDE="low7"
 
 LANG_CODE="${NOWHERE_V2_LANG:-zh}"
 ACTION="menu"
@@ -88,6 +89,7 @@ SNI="${NOWHERE_V2_SNI:-none}"
 PIN="${NOWHERE_V2_PIN:-none}"
 VECTOR_SOCKS="${NOWHERE_V2_VECTOR_SOCKS:-$DEFAULT_VECTOR_SOCKS}"
 MEMORY_PROFILE="${NOWHERE_V2_MEMORY_PROFILE:-$DEFAULT_MEMORY_PROFILE}"
+MORPH_PRELUDE="${NOWHERE_V2_MORPH_PRELUDE:-$DEFAULT_MORPH_PRELUDE}"
 
 CLIENT_UP="${NOWHERE_V2_CLIENT_UP:-auto}"
 CLIENT_DOWN="${NOWHERE_V2_CLIENT_DOWN:-auto}"
@@ -244,6 +246,7 @@ validate_rate() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "rate/etar must be n
 validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) || die "keep-releases must be 0-20"; }
 validate_config_mode() { [[ "$1" == ask || "$1" == quick || "$1" == advanced ]] || die "config-mode must be ask|quick|advanced"; }
 validate_memory_profile() { [[ "$1" == memory || "$1" == balanced || "$1" == throughput ]] || die "memory-profile must be memory|balanced|throughput"; }
+validate_morph_prelude() { [[ "$1" == low7 || "$1" == full8 ]] || die "morph-prelude must be low7|full8"; }
 validate_sni() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Za-z0-9.-]+$ ]] || die "sni must be DNS name or none"; }
 validate_pin() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Fa-f0-9]{64}$ ]] || die "pin must be none or 64 hex characters"; }
 validate_version_arg() {
@@ -713,6 +716,7 @@ advanced_wizard() {
   ETAR="$(prompt "$(tr_msg "Reverse rate Mbps, 0=unlimited" "反向速率 Mbps，0=不限速")" "$ETAR")"
   LOG_LEVEL="$(prompt_choice "$(tr_msg "Log level" "日志等级")" "$LOG_LEVEL" none debug info warn error event)"
   MEMORY_PROFILE="$(prompt_choice "$(tr_msg "Transport memory profile" "传输内存模式")" "$MEMORY_PROFILE" memory balanced throughput)"
+  MORPH_PRELUDE="$(prompt_choice "$(tr_msg "TCP Morph prelude policy (low7=default, full8=unrestricted)" "TCP Morph prelude 策略（low7=默认，full8=无限制）")" "$MORPH_PRELUDE" low7 full8)"
   if [[ "$ROLE" == portal ]]; then
     DIAL="$(prompt "$(tr_msg "Source dial IP or auto" "出站源 IP 或 auto")" "$DIAL")"
     local mode
@@ -772,6 +776,7 @@ ROLE=${ROLE}
 PUBLIC_HOST=${PUBLIC_HOST}
 NODE_NAME=${NODE_NAME}
 MEMORY_PROFILE=${MEMORY_PROFILE}
+MORPH_PRELUDE=${MORPH_PRELUDE}
 CLIENT_UP=${CLIENT_UP}
 CLIENT_DOWN=${CLIENT_DOWN}
 CLIENT_MUX=${CLIENT_MUX}
@@ -787,6 +792,7 @@ load_meta() {
   while IFS='=' read -r k v; do
     case "$k" in
       PUBLIC_HOST) PUBLIC_HOST="$v" ;; NODE_NAME) NODE_NAME="$v" ;; MEMORY_PROFILE) MEMORY_PROFILE="$v" ;;
+      MORPH_PRELUDE) MORPH_PRELUDE="$v" ;;
       CLIENT_UP) CLIENT_UP="$v" ;; CLIENT_DOWN) CLIENT_DOWN="$v" ;; CLIENT_MUX) CLIENT_MUX="$v" ;;
       CLIENT_SNI) CLIENT_SNI="$v" ;; CLIENT_PIN) CLIENT_PIN="$v" ;;
     esac
@@ -859,6 +865,7 @@ Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=10s
 Environment=NOW_TRANSPORT_MEMORY_PROFILE=${MEMORY_PROFILE}
+Environment=NOW_MORPH_TCP_PRELUDE=${MORPH_PRELUDE}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -1366,7 +1373,7 @@ doctor_action() {
     else
       p="$(query_get "$u" socks | sed 's/.*://')"; [[ "$p" =~ ^[0-9]+$ ]] && port_listening_tcp "$p" && ok "Vector SOCKS listens on ${p}" || { warn "Vector SOCKS listener not detected"; fail=$((fail+1)); }
     fi
-    [[ "$(query_get "$u" morph)" == 1 ]] && { warn "Morph enabled: peer must also use morph=1 and UDP path should carry >=1212-byte payloads"; warnc=$((warnc+1)); }
+    [[ "$(query_get "$u" morph)" == 1 ]] && { warn "$(tr_msg "Morph enabled: every peer on this hop must be Nowhere >=2.1.0 with matching morph=1" "Morph 已启用：此跳所有对端必须是 Nowhere >=2.1.0 且同样开启 morph=1")"; warnc=$((warnc+1)); }
   fi
   if systemctl list-unit-files --no-legend nowhere.service 2>/dev/null | grep -q '^nowhere\.service'; then
     warn "$(tr_msg "V1 service definition detected. V2 files are isolated, but network ports must not collide." "检测到 V1 服务。V1/V2 文件已隔离，但监听端口不能冲突。")"
@@ -1601,6 +1608,7 @@ Core 版本策略：
   --out-socks HOST:PORT|none --next KEY@ENDPOINT|none
   --rate Mbps --etar Mbps --dial auto|IP --log LEVEL
   --memory-profile memory|balanced|throughput
+  --morph-prelude low7|full8   TCP Morph 客户端 prelude 策略（默认 low7）
   --config-mode ask|quick|advanced | --quick | --advanced
   --keep-releases N            保留旧 Release 数量（0-20）
   --libc auto|gnu|musl --swap auto|off|MB --keep-source
@@ -1651,6 +1659,7 @@ Important V2 options:
   --out-socks HOST:PORT|none --next KEY@ENDPOINT|none
   --rate Mbps --etar Mbps --dial auto|IP --log LEVEL
   --memory-profile memory|balanced|throughput
+  --morph-prelude low7|full8    TCP Morph client prelude policy (default low7)
   --config-mode ask|quick|advanced | --quick | --advanced
   --keep-releases N (0-20)
   --libc auto|gnu|musl --swap auto|off|MB --keep-source
@@ -1709,6 +1718,7 @@ parse_args() {
       --client-sni) set_cli CLIENT_SNI "${2:?missing --client-sni}"; shift 2 ;;
       --client-pin) set_cli CLIENT_PIN "${2:?missing --client-pin}"; shift 2 ;;
       --memory-profile) set_cli MEMORY_PROFILE "${2:?missing --memory-profile}"; validate_memory_profile "$MEMORY_PROFILE"; shift 2 ;;
+      --morph-prelude) MORPH_PRELUDE="${2:?missing --morph-prelude}"; validate_morph_prelude "$MORPH_PRELUDE"; shift 2 ;;
       --config-mode) CONFIG_MODE="${2:?missing --config-mode}"; validate_config_mode "$CONFIG_MODE"; shift 2 ;;
       --quick) CONFIG_MODE=quick; shift ;;
       --advanced) CONFIG_MODE=advanced; shift ;;
@@ -1728,7 +1738,7 @@ parse_args() {
 apply_noninteractive_defaults() {
   # Never synthesize credentials over an existing/imported configuration.
   [[ -s "$URL_FILE" || -n "$IMPORT_URL" ]] && return 0
-  validate_role "$ROLE"; validate_bool01 morph "$MORPH"; validate_memory_profile "$MEMORY_PROFILE"
+  validate_role "$ROLE"; validate_bool01 morph "$MORPH"; validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
   [[ -n "$KEY" ]] || KEY="$(random_key)"
   if [[ -z "$ENDPOINT" ]]; then
     [[ "$ROLE" == portal ]] && ENDPOINT="*:${DEFAULT_PORT}" || die "Vector non-interactive mode requires --endpoint"
