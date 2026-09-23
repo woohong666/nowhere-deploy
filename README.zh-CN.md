@@ -598,6 +598,23 @@ sudo bash nowhere-v1.sh install \
 
 ---
 
+## 测试
+
+逻辑部分由一套沙箱测试覆盖，**不需要 root、不联网**：
+
+```bash
+bash tests/nowhere-v2.test.sh
+```
+
+它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的
+`/etc/nowhere-v2` 或 systemd**；而且一旦某条声明被改名，测试会**直接中止**，而不是悄悄
+落到真实路径上。CI 每次 push 都会连同 `bash -n` 与 `shellcheck` 一起跑它。
+
+**集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
+在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。
+
+---
+
 ## 许可
 
 本项目采用 [GPL-3.0](LICENSE) 许可，与上游 [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) 保持一致。

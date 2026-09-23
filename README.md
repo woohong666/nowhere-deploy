@@ -598,6 +598,26 @@ They coexist on one VPS as long as their ports do not collide, and neither modif
 
 ---
 
+## Testing
+
+Logic is covered by a sandboxed suite that needs no root and no network:
+
+```bash
+bash tests/nowhere-v2.test.sh
+```
+
+Before sourcing the manager it rewrites its path declarations into a temporary
+directory, so the suite can never touch a real `/etc/nowhere-v2` or systemd — and
+it aborts if a declaration has been renamed rather than silently falling through
+to the real paths. CI runs it on every push together with `bash -n` and
+`shellcheck`.
+
+**Integration is not covered automatically.** The install, upgrade, and systemd
+flows have never been executed by the test suite. Run
+[`ACCEPTANCE.md`](ACCEPTANCE.md) on a throwaway VPS before relying on a release.
+
+---
+
 ## License
 
 [GPL-3.0](LICENSE), matching upstream [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere).

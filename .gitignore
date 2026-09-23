@@ -8,9 +8,10 @@
 .DS_Store
 Thumbs.db
 
-# Test files
-test/
+# Local scratch tests. The tracked suite lives in tests/.
+/test/
 *.test.sh
+!tests/*.test.sh
 
 # Legacy script backups
 *.backup
