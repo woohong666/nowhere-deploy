@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.5
+# Nowhere V2 Unified Manager v1.2.6
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.5"
+readonly SCRIPT_VERSION="1.2.6"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.6: prompt_choice/prompt_key no longer spin forever without a terminal; reject link members in release tars; refuse a backup path inside the config dir.
 # v1.2.5: re-read manager.conf before rewriting the unit (doctor --fix / config restore no longer reset persisted values); refuse manager downgrades; require Rust >= 1.85 for source builds.
 # v1.2.4: translate the remaining operator-facing messages so LANG_CODE=zh no longer shows English errors.
 # v1.2.3: default to latest-v2 instead of a pinned tag; drop dead code; match upstream's single-'@' rule for next=.
@@ -623,7 +624,13 @@ prompt_confirm() {
 prompt_choice() {
   local p="$1" d="$2" input v; shift 2
   while true; do
-    read -r -p "$p [$d]: " input </dev/tty || input=""; input="${input:-$d}"
+    # A failed read means there is no usable terminal. Never spin in that case:
+    # accept a valid default, otherwise stop and say which value was rejected.
+    if ! read -r -p "$p [$d]: " input </dev/tty 2>/dev/null; then
+      for v in "$@"; do [[ "$d" == "$v" ]] && { printf '%s' "$d"; return 0; }; done
+      die "$(tr_msg "No terminal available to answer '${p}', and '${d}' is not a valid choice (allowed: $*)." "无可用终端回答「${p}」，且 '${d}' 不是有效选项（可选: $*）。")"
+    fi
+    input="${input:-$d}"
     for v in "$@"; do [[ "$input" == "$v" ]] && { printf '%s' "$input"; return 0; }; done
     warn "$(tr_msg "Invalid choice. Allowed: $*" "无效选项，可选: $*")"
   done
@@ -631,7 +638,13 @@ prompt_choice() {
 prompt_key() {
   local d="${KEY:-$(random_key)}" v
   while true; do
-    read -r -p "$(tr_msg "Shared key" "共享密钥") [$d]: " v </dev/tty || v=""; v="${v:-$d}"
+    # Same rule as prompt_choice: no terminal must never mean an endless loop.
+    if ! read -r -p "$(tr_msg "Shared key" "共享密钥") [$d]: " v </dev/tty 2>/dev/null; then
+      [[ "$d" =~ ^[A-Za-z0-9._~-]{16,255}$ ]] ||
+        die "$(tr_msg "No terminal available to enter a shared key, and '${d}' is not a valid one." "无可用终端输入共享密钥，且 '${d}' 不是合法密钥。")"
+      KEY="$d"; return 0
+    fi
+    v="${v:-$d}"
     if [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]]; then KEY="$v"; return 0; fi
     warn "$(tr_msg "Key must be 16-255 safe URL characters." "密钥必须为 16-255 位安全 URL 字符。")"
   done
@@ -1051,10 +1064,18 @@ target_triple() {
 }
 
 safe_extract_tar() {
-  local archive="$1" dest="$2" member
+  local archive="$1" dest="$2" member listing line
   while IFS= read -r member; do
     [[ "$member" == /* || "$member" == ../* || "$member" == */../* || "$member" == *'/..' ]] && die "$(tr_msg "Unsafe path in release tar: ${member}" "发布包中存在不安全路径: ${member}")"
   done < <(tar -tzf "$archive")
+  # Release assets only ever contain one regular file. Refuse link members so a
+  # tampered archive cannot redirect the extraction outside $dest.
+  listing="$(tar -tvzf "$archive")" || die "$(tr_msg "Cannot inspect release tar" "无法检查发布包内容")"
+  while IFS= read -r line; do
+    case "${line:0:1}" in
+      l|h) die "$(tr_msg "Unsafe link in release tar: ${line}" "发布包中存在不安全链接: ${line}")" ;;
+    esac
+  done <<<"$listing"
   tar -xzf "$archive" -C "$dest"
 }
 
@@ -1478,6 +1499,14 @@ backup_action() {
   require_root
   local out="${1:-/root/nowhere-v2-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
   [[ -d "$CONFIG_DIR" ]] || { warn "$(tr_msg "No V2 configuration directory found: ${CONFIG_DIR}" "未找到 V2 配置目录: ${CONFIG_DIR}")"; return 1; }
+  # Refuse an output path inside the directory being archived: tar would try to
+  # include its own output and warn about the file changing as it is read.
+  local out_dir cfg_abs
+  out_dir="$(readlink -f "$(dirname -- "$out")" 2>/dev/null || true)"
+  cfg_abs="$(readlink -f "$CONFIG_DIR" 2>/dev/null || true)"
+  if [[ -n "$out_dir" && -n "$cfg_abs" && ( "$out_dir" == "$cfg_abs" || "$out_dir" == "$cfg_abs"/* ) ]]; then
+    die "$(tr_msg "Backup output must be outside ${CONFIG_DIR}." "备份输出不能放在 ${CONFIG_DIR} 目录内。")"
+  fi
   if ! tar -czf "$out" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"; then
     rm -f -- "$out" 2>/dev/null || true
     die "$(tr_msg "Backup failed" "备份失败")"

@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.5
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.6
 
 #### ✨ Added
 
@@ -18,6 +18,9 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🐛 Fixed
 
+- **Critical** (`v1.2.6`): `prompt_choice` and `prompt_key` could spin forever. When `/dev/tty` was unavailable the `read` failed, the default was substituted, and if that default was not in the allowed list the retry loop never terminated — it printed an invalid-choice warning indefinitely. Reproduced: a 3-second run emitted 12,365 lines and never returned. Reachable from `NOWHERE_V2_LOG=loud sudo bash nowhere-v2.sh configure --advanced` (or any invalid `NOWHERE_V2_*` value feeding a wizard prompt) on a host without a controlling terminal. Both now accept a valid default and otherwise stop with a message naming the rejected value and the allowed ones. (#9)
+- `safe_extract_tar` validated member paths but not member types, so a tar containing a symlink or hardlink was extracted unchecked. It now refuses link members, matching the fact that a release asset only ever contains one regular file. (#9)
+- `backup_action` accepted an output path inside `/etc/nowhere-v2`, which made `tar` archive its own output. It now refuses a destination inside the configuration directory. (#9)
 - **Critical** (`v1.2.5`): `doctor --fix` rewrote the systemd unit without re-reading `manager.conf`. Because `write_unit` interpolates `MEMORY_PROFILE` and `MORPH_PRELUDE`, a repair silently reset a configured `memory` / `full8` back to the script defaults while `manager.conf` kept the original — leaving the unit, the service, and the manager metadata disagreeing. `doctor_action` now calls `load_meta` before `write_unit`. (#8)
 - **Critical** (`v1.2.5`): `restore_config_state` restored `manager.conf` from the snapshot but then rewrote the unit from the in-memory globals, which still held the *failed attempt's* values. A failed `configure` therefore left the unit on the values that had just been rolled back. It now re-reads the restored `manager.conf` first. (#8)
 - **Critical** (`v1.2.1`): `--morph-prelude` was assigned directly instead of through `set_cli`, so it never registered as a CLI override. On an existing install, `load_meta` restored the persisted `MORPH_PRELUDE` from `manager.conf` and `apply_cli_overrides` had nothing to re-apply, silently discarding the flag. Fresh installs were unaffected, which hid the bug. (#2)
