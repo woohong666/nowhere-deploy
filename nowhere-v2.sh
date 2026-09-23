@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.0
+# Nowhere V2 Unified Manager v1.2.1
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,9 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.2.1"
 readonly SCRIPT_CHANNEL="v2"
+# v1.2.1: register --morph-prelude as a CLI override so an existing manager.conf cannot silently discard it.
 # v1.2.0: add Nowhere v2.1.0 support; introduce --morph-prelude and NOW_MORPH_TCP_PRELUDE environment variable.
 # shellcheck disable=SC2034
 readonly CORE_MAJOR="2"
@@ -492,7 +493,7 @@ if parsed_port is not None:
 else:
     ep=h+(u.path or '')
 if not ep: fail('missing endpoint')
-# Match Nowhere v2.0.0 exactly: recognized query keys use first occurrence;
+# Match Nowhere v2.1.0 exactly: recognized query keys use first occurrence;
 # later duplicates and unknown keys are ignored by the core.
 q={}
 for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True):
@@ -1718,7 +1719,7 @@ parse_args() {
       --client-sni) set_cli CLIENT_SNI "${2:?missing --client-sni}"; shift 2 ;;
       --client-pin) set_cli CLIENT_PIN "${2:?missing --client-pin}"; shift 2 ;;
       --memory-profile) set_cli MEMORY_PROFILE "${2:?missing --memory-profile}"; validate_memory_profile "$MEMORY_PROFILE"; shift 2 ;;
-      --morph-prelude) MORPH_PRELUDE="${2:?missing --morph-prelude}"; validate_morph_prelude "$MORPH_PRELUDE"; shift 2 ;;
+      --morph-prelude) set_cli MORPH_PRELUDE "${2:?missing --morph-prelude}"; validate_morph_prelude "$MORPH_PRELUDE"; shift 2 ;;
       --config-mode) CONFIG_MODE="${2:?missing --config-mode}"; validate_config_mode "$CONFIG_MODE"; shift 2 ;;
       --quick) CONFIG_MODE=quick; shift ;;
       --advanced) CONFIG_MODE=advanced; shift ;;
