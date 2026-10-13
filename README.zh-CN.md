@@ -155,7 +155,7 @@ curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowh
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key "$(openssl rand -hex 32)" \
   --tls 1
 ```
 
@@ -167,7 +167,7 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key "$(openssl rand -hex 32)" \
   --tls 2 \
   --cert /etc/letsencrypt/live/example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/example.com/privkey.pem \
@@ -183,7 +183,7 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type vector \
   --endpoint 'relay.example.com:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key '<填入 Portal 的 64 位 hex 密钥>' \
   --vector-socks '127.0.0.1:1082'
 ```
 
@@ -193,7 +193,7 @@ sudo bash nowhere-v2.sh install -y \
 
 ```bash
 sudo bash nowhere-v2.sh install -y --type portal \
-  --endpoint '*:2082' --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 2 \
+  --endpoint '*:2082' --key "$(openssl rand -hex 32)" --tls 2 \
   --cert ... --tls-key ... --copy-cert \
   --morph 1
 ```
@@ -368,7 +368,7 @@ sudo bash nowhere-v2.sh upgrade --version v2.2.1
 > `upgrade` **需要已有 V2 配置**；首次部署请用 `install`。
 > 若已有配置，`install` / `upgrade` 默认**只替换二进制**、不动配置。想同时重新应用配置参数，加 `--force-reconfigure`。
 >
-> **已有配置跨越 2.2.0 时注意：** 新核心的准入更严格——Portal / `next=` 密钥不是 32-64 位小写十六进制时会拒绝启动；依赖 `pin=none` 连接自签名 Portal 的 Vector 会握手失败。`install` / `upgrade` 会对这两种情况主动告警；升级前请先用 `nowhere generate-key` 轮换密钥（同步该跳所有对端），并按 [§4.3](#43-客户端证书验证nowhere-220) 补上 pin。
+> **已有配置跨越 2.2.0 时注意：** 新核心的准入更严格——Portal / `next=` 密钥不是 32-64 位小写十六进制时会拒绝启动；依赖 `pin=none` 连接自签名 Portal 的 Vector 会握手失败。`install` / `upgrade` 会对这两种情况主动告警；升级前请先用 `nowhere generate-key` 轮换密钥（同步该跳所有对端），并按 [§4.3](#43-客户端证书验证nowhere-220) 补上 pin。只换密钥、保留其它设置可执行 `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"`，然后同步该跳所有对端。
 
 ### 8.2 秒级无损回滚
 
@@ -571,7 +571,7 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 ### Q7: 报错 `Portal shared key must be 32-64 lowercase hex characters`
 
 * **根因**：配置仍是 2.2 之前的密钥格式，Nowhere 2.2.0+ 会拒绝启动（`nowhere generate-key` 输出即为要求的格式）。
-* **解决**：生成全新密钥，把**同一串文本**配置到该跳的每个对端后重启。旧式 1-255 位密钥仅在 Portal `<=2.1` 上继续可用。
+* **解决**：用 `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"` 只轮换密钥、保留其它设置，然后把**同一串文本**配置到该跳的每个对端。旧式 1-255 位密钥仅在 Portal `<=2.1` 上继续可用。
 
 ---
 
@@ -602,7 +602,7 @@ sudo bash nowhere-v1.sh install \
   --tls 2 \
   --cert /etc/nowhere/tls/fullchain.pem \
   --tls-key /etc/nowhere/tls/privkey.pem \
-  --key 'MyGeneratedKey_12345678'
+  --key "$(openssl rand -hex 16)"
 ```
 
 ### V1 与 V2 的隔离

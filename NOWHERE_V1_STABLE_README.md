@@ -143,7 +143,7 @@ sudo bash nowhere-v1.sh install \
   --port 2077 \
   --net mix \
   --tls 1 \
-  --key 'ChangeThisKey_12345678'
+  --key "$(openssl rand -hex 16)"
 ```
 
 生产环境建议使用真实 PEM 证书。先复制证书到脚本管理的安全目录：
@@ -164,7 +164,7 @@ sudo bash nowhere-v1.sh install \
   --tls 2 \
   --cert /etc/nowhere/tls/fullchain.pem \
   --tls-key /etc/nowhere/tls/privkey.pem \
-  --key 'ChangeThisKey_12345678'
+  --key "$(openssl rand -hex 16)"
 ```
 
 `nowhere-v1.sh` 内部已固定 Nowhere `v1.8.3`，不需要也不允许通过 `--version` 切换到 `latest` 或 V2。

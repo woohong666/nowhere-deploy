@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.3.0
+# Nowhere V2 Unified Manager v1.3.1
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,10 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.3.1"
 readonly SCRIPT_CHANNEL="v2"
+# v1.3.1: keep the other settings of a config whose shared key is pre-2.2, so the
+#   wizard can prefill them and `configure -y --key` can rotate only the key.
 # v1.3.0: align with the Nowhere v2.2.x series: 32-64 lowercase-hex shared keys,
 #   2.2.0 key/certificate upgrade warnings, full8 morph default, drop log=event
 #   (removed in 2.1.1), add --dial4/--dial6, auto-pin generated-cert client links.
@@ -868,10 +870,27 @@ load_q() {
 
 load_existing_config() {
   [[ -s "$URL_FILE" ]] || return 0
-  local u
+  local u probe
   IFS= read -r u <"$URL_FILE" || return 0
-  if ! ( validate_imported_url "$u" ) >/dev/null 2>&1; then return 0; fi
-  ROLE="$(url_role "$u")"; KEY="$(url_key "$u")"; ENDPOINT="$(url_endpoint "$u")"
+  if ! ( validate_imported_url "$u" ) >/dev/null 2>&1; then
+    # The usual reason is a pre-2.2 shared key. Keep the other settings so the
+    # wizard can prefill them, but leave the key unloaded so a new one is entered.
+    # Any other validation failure still loads nothing.
+    probe="$(python3 - "$u" <<'PY'
+import sys,urllib.parse
+u=urllib.parse.urlsplit(sys.argv[1])
+hostport=u.netloc.rsplit('@',1)[-1]
+print(urllib.parse.urlunsplit((u.scheme,'0'*32+'@'+hostport,u.path,u.query,'')),end='')
+PY
+)" || return 0
+    ( validate_imported_url "$probe" ) >/dev/null 2>&1 || return 0
+    warn "$(tr_msg \
+      "The saved shared key is not 32-64 lowercase hex, so it was not loaded; other settings are kept. Enter a new key (Enter generates one) and update every peer on that hop." \
+      "已保存的共享密钥不是 32-64 位小写十六进制，未载入；其它设置已保留。请输入新密钥（回车自动生成），并同步更新该跳的所有对端。")"
+    ROLE="$(url_role "$u")"; ENDPOINT="$(url_endpoint "$u")"
+  else
+    ROLE="$(url_role "$u")"; KEY="$(url_key "$u")"; ENDPOINT="$(url_endpoint "$u")"
+  fi
   load_q "$u" tls TLS
   load_q "$u" morph MORPH
   load_q "$u" rate RATE
@@ -1397,8 +1416,8 @@ warn_22_upgrade_requirements() {
     key="$(url_key "$u")"
     if ! is_valid_key_value "$key"; then
       warn "$(tr_msg \
-        "This Portal (or next-hop) key is not 32-64 lowercase hex. Nowhere 2.2.0+ refuses to start with a legacy key: generate a new one with 'nowhere generate-key' (or re-run configure to let the manager generate it) and update every peer on that hop." \
-        "此 Portal（或 next 跳）密钥不是 32-64 位小写十六进制。Nowhere 2.2.0+ 遇到旧格式密钥会拒绝启动：请用 'nowhere generate-key' 生成新密钥（或重新运行 configure 由管理器生成），并同步更新该跳的所有对端。")"
+        "This Portal (or next-hop) key is not 32-64 lowercase hex. Nowhere 2.2.0+ refuses to start with a legacy key. Rotate only the key and keep every other setting: sudo bash nowhere-v2.sh configure -y --config-mode quick --key <new 64-hex key>. Then update every peer on that hop." \
+        "此 Portal（或 next 跳）密钥不是 32-64 位小写十六进制。Nowhere 2.2.0+ 遇到旧格式密钥会拒绝启动。只轮换密钥、保留其它设置：sudo bash nowhere-v2.sh configure -y --config-mode quick --key <新的 64 位 hex 密钥>，然后同步更新该跳的所有对端。")"
     fi
     next="$(query_get "$u" next)"
     if [[ -n "$next" && "$next" != none ]]; then
@@ -1941,7 +1960,7 @@ Core 版本策略：
   --version v2.x.y|latest-v2   Core 版本
   --type portal|vector         节点角色
   --url 'portal://...' | 'vector://...'
-  --key KEY                    共享密钥
+  --key KEY                    共享密钥：32-64 位小写 hex（Nowhere 2.2.0+）
   --endpoint 'HOST:PORT' | 'HOST/tcp:PORT/udp:PORT'
   --public-host HOST           公网 IP / 域名
   --tls 1|2 --cert FILE --tls-key FILE --copy-cert
@@ -1995,7 +2014,7 @@ Important V2 options:
   --version v2.x.y|latest-v2
   --type portal|vector
   --url 'portal://...' | 'vector://...'
-  --key KEY
+  --key KEY                      Shared key: 32-64 lowercase hex (Nowhere 2.2.0+)
   --endpoint 'HOST:PORT' | 'HOST/tcp:PORT/udp:PORT'
   --public-host HOST
   --tls 1|2 --cert FILE --tls-key FILE --copy-cert

@@ -155,7 +155,7 @@ Add `-y` / `--yes` for non-interactive mode. See [§9](#9-full-cli-reference) fo
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key "$(openssl rand -hex 32)" \
   --tls 1
 ```
 
@@ -167,7 +167,7 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key "$(openssl rand -hex 32)" \
   --tls 2 \
   --cert /etc/letsencrypt/live/example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/example.com/privkey.pem \
@@ -183,7 +183,7 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type vector \
   --endpoint 'relay.example.com:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key '<64-hex key from the Portal>' \
   --vector-socks '127.0.0.1:1082'
 ```
 
@@ -193,7 +193,7 @@ sudo bash nowhere-v2.sh install -y \
 
 ```bash
 sudo bash nowhere-v2.sh install -y --type portal \
-  --endpoint '*:2082' --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 2 \
+  --endpoint '*:2082' --key "$(openssl rand -hex 32)" --tls 2 \
   --cert ... --tls-key ... --copy-cert \
   --morph 1
 ```
@@ -368,7 +368,7 @@ sudo bash nowhere-v2.sh upgrade --version v2.2.1
 > `upgrade` **requires an existing V2 configuration**; use `install` for a first deployment.
 > When a config already exists, `install` / `upgrade` only replace the binary. Add `--force-reconfigure` to re-apply configuration options at the same time.
 >
-> **Crossing 2.2.0 with an existing config:** admission got stricter. If the Portal / `next=` key is not 32-64 lowercase hex, the new core refuses to start; and a Vector that relied on `pin=none` against a self-signed Portal fails the handshake. `install` / `upgrade` warns about both — rotate keys with `nowhere generate-key` (update every peer of that hop) and add the pin (see [§4.3](#43-certificate-verification-nowhere-220)) before upgrading.
+> **Crossing 2.2.0 with an existing config:** admission got stricter. If the Portal / `next=` key is not 32-64 lowercase hex, the new core refuses to start; and a Vector that relied on `pin=none` against a self-signed Portal fails the handshake. `install` / `upgrade` warns about both — rotate keys with `nowhere generate-key` (update every peer of that hop) and add the pin (see [§4.3](#43-certificate-verification-nowhere-220)) before upgrading. To rotate only the key and keep every other setting, run `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"`, then update every peer.
 
 ### 8.2 Zero-downtime rollback
 
@@ -571,7 +571,7 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 ### Q7: `Portal shared key must be 32-64 lowercase hex characters`
 
 * **Cause:** the config still uses a pre-2.2 key format. Nowhere 2.2.0+ refuses to start with it (`nowhere generate-key` outputs the required form).
-* **Fix:** generate a fresh key, configure the **same** text on every peer of that hop, and restart. Legacy 1-255 byte keys keep working only against Portals `<=2.1`.
+* **Fix:** rotate only the key, keeping the other settings, with `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"`. Then configure the **same** text on every peer of that hop. Legacy 1-255 byte keys keep working only against Portals `<=2.1`.
 
 ---
 
@@ -602,7 +602,7 @@ sudo bash nowhere-v1.sh install \
   --tls 2 \
   --cert /etc/nowhere/tls/fullchain.pem \
   --tls-key /etc/nowhere/tls/privkey.pem \
-  --key 'MyGeneratedKey_12345678'
+  --key "$(openssl rand -hex 16)"
 ```
 
 ### V1 / V2 isolation

@@ -572,6 +572,34 @@ t_ok "explicit --client-pin wins"   0 "$(printf '%s' "$link" | grep -q "pin=${PI
 CLIENT_PIN=none
 
 # ---------------------------------------------------------------------------
+t_section "legacy shared key: keep settings, rotate only the key"
+
+LEGACY_URL="portal://LegacyKey_1234567890@*:2099?tls=1&morph=1&log=debug&dial4=192.0.2.10"
+reset_portal
+printf '%s\n' "$LEGACY_URL" > "$URL_FILE"
+KEY=""
+load_existing_config >/dev/null 2>"$SANDBOX/legacy.err"
+t_ok "legacy: key not loaded"        ""           "$KEY"
+t_ok "legacy: endpoint kept"         "*:2099"     "$ENDPOINT"
+t_ok "legacy: morph kept"            1            "$MORPH"
+t_ok "legacy: log kept"              debug        "$LOG_LEVEL"
+t_ok "legacy: dial4 kept"            192.0.2.10   "$DIAL4"
+t_ok "legacy: warns about the key"   warn "$([[ -s "$SANDBOX/legacy.err" ]] && echo warn || echo quiet)"
+KEY="$(printf 'c%.0s' $(seq 1 64))"
+u="$(build_portal_url)"
+t_ok "rotation: URL validates"       0            "$(t_rc validate_imported_url "$u")"
+t_ok "rotation: endpoint unchanged"  "*:2099"     "$(url_endpoint "$u")"
+t_ok "rotation: morph unchanged"     1            "$(query_get "$u" morph)"
+t_ok "rotation: new key used"        "$KEY"       "$(url_key "$u")"
+
+reset_portal
+printf 'portal://%s@*:2099?tls=1&pin=abcd\n' "$(printf 'a%.0s' $(seq 1 32))" > "$URL_FILE"
+ENDPOINT=sentinel; KEY=keep
+load_existing_config >/dev/null 2>&1
+t_ok "other invalid config loads nothing" sentinel "$ENDPOINT"
+t_ok "other invalid config keeps the key" keep     "$KEY"
+
+# ---------------------------------------------------------------------------
 t_section "self-update source"
 
 # SELF_UPDATE_URL is readonly and resolved when the manager is sourced, so each

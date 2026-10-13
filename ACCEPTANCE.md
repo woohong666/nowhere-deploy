@@ -29,9 +29,10 @@ bash -n nowhere-v2.sh && echo "syntax OK"
 ## 1. 全新安装（release + portal + TLS 1）
 
 ```bash
+KEY=$(openssl rand -hex 32)   # 记下这个值：§4 的 Vector 必须使用同一个密钥
 sudo bash nowhere-v2.sh install -y \
   --type portal --endpoint '*:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 1
+  --key "$KEY" --tls 1
 ```
 
 | # | 检查 | 期望 |
@@ -113,7 +114,7 @@ PIN=$(sudo bash nowhere-v2.sh fingerprint)   # 在 Portal 主机执行
 ```bash
 sudo bash nowhere-v2.sh install -y \
   --type vector --endpoint '<portal-ip>:2082' \
-  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --key '<填入 §1 的 64 位 hex 密钥>' \
   --vector-socks '127.0.0.1:1082' \
   --pin "$PIN"
 ```
@@ -183,7 +184,7 @@ sudo bash nowhere-v2.sh rollback
 
 > **7.2 是回归重点**：早期版本"仅换二进制"的升级不会刷新 `manager.conf`。
 >
-> **跨 2.2.0 升级告警（可选回归）**：先 `install --version v2.1.2` 并手工把 url.conf 的密钥改成旧格式（如 `LegacyKey_1234567890`），再 `upgrade` 到最新版：应看到密钥轮换告警（若角色是 vector 且无 pin，还应看到证书验证告警），且 `doctor` 会点名旧格式密钥。
+> **跨 2.2.0 升级告警（可选回归）**：先 `install --version v2.1.2` 并手工把 url.conf 的密钥改成旧格式（如 `LegacyKey_1234567890`），再 `upgrade` 到最新版：应看到密钥轮换告警（若角色是 vector 且无 pin，还应看到证书验证告警），且 `doctor` 会点名旧格式密钥。随后执行 `configure -y --config-mode quick --key <新的 64 位 hex>`，应只更换密钥，端点、模式等设置保持不变（回归点）。
 
 ---
 
@@ -230,7 +231,7 @@ sudo bash nowhere-v2.sh check-updates
 
 ```bash
 sudo bash nowhere-v2.sh install -y --method source --version latest-v2 \
-  --type portal --endpoint '*:2082' --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 1
+  --type portal --endpoint '*:2082' --key "$(openssl rand -hex 32)" --tls 1
 ```
 
 | # | 检查 | 期望 |

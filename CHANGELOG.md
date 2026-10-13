@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.3.0
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.3.1
 
 #### ✨ Added
 
@@ -25,6 +25,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - **Critical** (`v1.3.0`): `tls=1` client links could never connect on 2.2.0+. Native clients now always verify the peer certificate against the system CA and the endpoint hostname, and `pin=none` no longer disables verification, so a generated certificate requires an explicit pin. `links` auto-fills it (above) and `fingerprint` remains the documented way to obtain it through a trusted channel.
 - (`v1.3.0`): `log=event` was still accepted by the validator, the advanced wizard, and the imported-URL checker although Nowhere 2.1.1 removed it and the core now refuses to start with it.
 - (`v1.3.0`): `doctor` now reports a legacy Portal / next-hop key on a `>=2.2.0` core instead of leaving only "service not active".
+- (`v1.3.1`): a saved configuration whose shared key was pre-2.2 failed validation as a whole, so `configure` could not prefill the endpoint, TLS, or Morph settings. Only the key is now left out; everything else loads, and `configure -y --config-mode quick --key <new 64-hex key>` rotates just the key.
+- (`v1.3.1`): the example commands in the README, ACCEPTANCE checklist, and V1 guide shipped fixed keys. A copy-pasted key like that would authenticate against a production Portal, so the examples now generate a key with `openssl rand -hex`, and the Vector placeholder fails validation until it is replaced.
 - `manager.conf` kept the pre-upgrade `CORE_VERSION` after a binary-only `install`/`upgrade` (`v1.2.7`). That path only replaces the binary and never rewrites the metadata, so the recorded version drifted from the installed one. The file's version fields are now refreshed in place — deliberately *not* by rewriting the whole file, because `load_meta` does not restore every field (`ROLE`, for instance) and the defaults would be written instead. (#10)
 - **Critical** (`v1.2.6`): `prompt_choice` and `prompt_key` could spin forever. When `/dev/tty` was unavailable the `read` failed, the default was substituted, and if that default was not in the allowed list the retry loop never terminated — it printed an invalid-choice warning indefinitely. Reproduced: a 3-second run emitted 12,365 lines and never returned. Reachable from `NOWHERE_V2_LOG=loud sudo bash nowhere-v2.sh configure --advanced` (or any invalid `NOWHERE_V2_*` value feeding a wizard prompt) on a host without a controlling terminal. Both now accept a valid default and otherwise stop with a message naming the rejected value and the allowed ones. (#9)
 - `safe_extract_tar` validated member paths but not member types, so a tar containing a symlink or hardlink was extracted unchecked. It now refuses link members, matching the fact that a release asset only ever contains one regular file. (#9)
