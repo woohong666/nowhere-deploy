@@ -7,6 +7,7 @@
 > **✅ 主通道：V2** —— `nowhere-v2.sh`，面向 Nowhere `v2.x`。**新部署请优先使用它。**
 > 默认跟随官网最新稳定版（`latest-v2`，安装时自动解析为最新的 `v2.x.y`），也可用 `--version v2.x.y` 精确锁定。
 > 使用独立路径与服务（`/opt/nowhere-v2`、`/etc/nowhere-v2`、`nowhere-v2.service`），不会触碰任何 V1 安装。
+> `v2.x` 线目前仍然完整可用：官方最新的 v2 正式版为 **v2.2.1**。官方同时已发布 **v3.0.0（NW3）**，其线协议与 NW2 **不兼容**——**本管理器不管理 v3 / NW3**，并会明确拒绝 `v3.x` 版本标签。
 >
 > **🔒 V1 稳定通道：** `nowhere-v1.sh`，固定 Nowhere `v1.8.3`，不跟随 `latest`，也不支持 V2。
 > 仅用于已有 V1 节点或需要俄文界面的场景，部署方式见 [§12](#12-v1-稳定通道仅部署)。
@@ -57,6 +58,10 @@ V2 管理器融合了官方 Release 二进制 SHA-256 强校验、本地 Rust �
 > 不要把 V1 Portal / Vector / native-next 客户端指向 V2 服务，反之亦然。
 >
 > 另外，**Morph 在 Nowhere 2.1.0 有破坏性变更**：开启 `morph=1` 的 2.1 节点与 2.0.x 节点不兼容，整条链路上的所有对端必须一起升级到 `>=2.1.0`。管理器在升级跨越该边界时会主动告警。
+>
+> **Nowhere 2.2.0 准入新规**：Portal 监听密钥与 native `next` 密钥必须为 **32-64 位小写十六进制**（`nowhere generate-key` 输出 32 位；本管理器生成 64 位）。native 客户端（Vector、`probe`、链式 Portal 的 `next`）现在**始终验证对端证书**（系统 CA + 端点主机名），`pin=none` 不再关闭验证。因此自签名（`tls=1`）Portal 必须配置 `pin=<sha256>`，且生成的证书每次重启都会变化——生产环境请优先 `tls=2`。管理器会按新规生成/校验密钥、为 `links` 自动填充 pin，并在升级跨越 2.1.1 / 2.2.0 边界时主动告警。
+>
+> **NW3 是另一种协议**：Nowhere **v3.0.0** 引入了 NW3（`nw3` ALPN、远端 Egress 角色、`egress://`），与 NW2 线协议不兼容，且没有协议协商或回落。本管理器只面向 **v2.x 线**；`latest-v2` 仍解析为最新的稳定 v2 版本（当前为 `v2.2.1`）。
 
 ---
 
@@ -150,11 +155,11 @@ curl -fsSL https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowh
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'MyGeneratedKey_12345678' \
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
   --tls 1
 ```
 
-> `--tls 1` 使用自签名证书，仅适合快速验证。客户端需信任该证书，或用 `sudo bash nowhere-v2.sh fingerprint` 取指纹后固定。
+> 密钥为 32-64 位小写十六进制（Nowhere 2.2.0+ 规则）；省略 `--key` 时管理器会自动生成。`--tls 1` 使用生成的自签名证书，仅适合快速验证：在 2.2.0+ 上客户端必须固定 pin（`sudo bash nowhere-v2.sh fingerprint`），且该 pin 会随 Portal 每次重启而变化。长期使用请选择 `--tls 2`。
 
 #### 场景 B：服务端（Portal），生产环境 ⭐ 推荐
 
@@ -162,7 +167,7 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'MyGeneratedKey_12345678' \
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
   --tls 2 \
   --cert /etc/letsencrypt/live/example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/example.com/privkey.pem \
@@ -178,22 +183,22 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type vector \
   --endpoint 'relay.example.com:2082' \
-  --key 'MyGeneratedKey_12345678' \
-  --vector-socks '127.0.0.1:1082' \
-  --tls 2
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --vector-socks '127.0.0.1:1082'
 ```
+
+> 在 Nowhere 2.2.0+ 上，Vector 会**验证 Portal 证书**：使用受信任 CA 签发且主机名匹配的 `tls=2` 证书即可直接连通；若 Portal 使用自签名证书，需要加 `--pin <sha256>`（可从 Portal 主机的 `links` 输出或 `fingerprint` 获取）。
 
 #### 场景 D：开启 Morph 线路伪装
 
 ```bash
 sudo bash nowhere-v2.sh install -y --type portal \
-  --endpoint '*:2082' --key 'MyGeneratedKey_12345678' --tls 2 \
+  --endpoint '*:2082' --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 2 \
   --cert ... --tls-key ... --copy-cert \
-  --morph 1 \
-  --morph-prelude low7
+  --morph 1
 ```
 
-> **注意**：`morph` 必须在同一条链路的两端**同时开启**且共享密钥一致。另外 Morph 线协议在 Nowhere **2.1.0** 有破坏性变更，`morph=1` 的路径上所有节点必须一起升到 `>=2.1.0`。
+> **注意**：`morph` 必须在同一条链路的两端**同时开启**且共享密钥一致。另外 Morph 线协议在 Nowhere **2.1.0** 有破坏性变更，`morph=1` 的路径上所有节点必须一起升到 `>=2.1.0`。客户端 TCP prelude 策略自 2.2.0 起默认 `full8`；仍可显式指定 `--morph-prelude low7`。
 
 ---
 
@@ -226,6 +231,18 @@ systemctl restart nowhere-v2
 ```
 
 赋予权限：`chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere-v2.sh`。
+
+### 4.3 客户端证书验证（Nowhere 2.2.0+）
+
+native 客户端（Vector、`probe`、链式 Portal 的 `next`）**始终**验证对端证书：系统 CA 信任 + 端点主机名/IP。`sni=` 可覆盖被验证的名称；`pin=none` **不会**关闭验证。
+
+| Portal 证书 | 客户端需要什么 |
+|---|---|
+| CA 签发（`tls=2`，如 Let's Encrypt） | 客户端通过证书覆盖的域名访问时无需额外配置；否则设置 `sni=` 或 `pin=` |
+| 自管理 / 自签名（`tls=2`） | `pin=<sha256>`——只要证书不换就一直有效 |
+| 生成的自签名（`tls=1`） | `pin=<sha256>`；生成的证书**每次 Portal 重启都会变化**，pin 必须同步更新——仅适合测试 |
+
+在 Portal 主机上用 `sudo bash nowhere-v2.sh fingerprint` 获取指纹（也可从证书日志获取）；远程拿到的指纹在与你 Portal 主机核对之前都应视为不可信。`tls=1` 时 `links` 会自动把 pin 填进生成的 Vector 链接。
 
 ---
 
@@ -293,7 +310,7 @@ Portal 上会输出：
 ### 6.3 安全警告
 
 * 连接链接**包含共享密钥**。任何人拿到链接都能把你的 VPS 当出口代理。**严禁发到公共群组或上传公开仓库！**
-* `--tls 1`（自签名）需要客户端信任或固定指纹才能连接。
+* `--tls 1`（生成的自签名证书）在 2.2.0+ 上需要客户端固定 pin；`links` 会自动填入，但 pin 随 Portal 每次重启变化——生产环境请用 `tls=2`（见 [§4.3](#43-客户端证书验证nowhere-220)）。
 * `morph` 只在两端配置一致时才能通信。
 
 ### 6.4 查看服务端配置（高级）
@@ -345,11 +362,13 @@ sudo systemctl restart nowhere-v2
 sudo bash nowhere-v2.sh upgrade
 
 # 或锁定到指定版本
-sudo bash nowhere-v2.sh upgrade --version v2.1.0
+sudo bash nowhere-v2.sh upgrade --version v2.2.1
 ```
 
 > `upgrade` **需要已有 V2 配置**；首次部署请用 `install`。
 > 若已有配置，`install` / `upgrade` 默认**只替换二进制**、不动配置。想同时重新应用配置参数，加 `--force-reconfigure`。
+>
+> **已有配置跨越 2.2.0 时注意：** 新核心的准入更严格——Portal / `next=` 密钥不是 32-64 位小写十六进制时会拒绝启动；依赖 `pin=none` 连接自签名 Portal 的 Vector 会握手失败。`install` / `upgrade` 会对这两种情况主动告警；升级前请先用 `nowhere generate-key` 轮换密钥（同步该跳所有对端），并按 [§4.3](#43-客户端证书验证nowhere-220) 补上 pin。
 
 ### 8.2 秒级无损回滚
 
@@ -418,7 +437,7 @@ sudo bash nowhere-v2.sh uninstall --purge
 | `check-updates` | 查询官网最新稳定版本 |
 | `backup [路径]` | 备份配置与证书 |
 | `uninstall` / `remove` | 卸载（`--purge` 彻底删除） |
-| `self-update` | 更新管理脚本本身（需配置 `NOWHERE_V2_SELF_URL`） |
+| `self-update` | 更新管理脚本本身（默认从本仓库 `main` 分支拉取） |
 | `help` | 帮助 |
 
 ### 9.2 参数
@@ -427,10 +446,10 @@ sudo bash nowhere-v2.sh uninstall --purge
 | --- | --- | --- |
 | `-y`, `--yes` | 关 | 非交互模式 |
 | `--method MODE` | `release` | `release`（预编译）或 `source`（本地编译） |
-| `--version TAG` | `latest-v2` | `latest-v2`（跟随官网最新稳定版）或精确 `v2.x.y` |
+| `--version TAG` | `latest-v2` | `latest-v2`（跟随官网最新稳定 v2 版）或精确 `v2.x.y`；`v3.x` / NW3 会被拒绝 |
 | `--type`, `--role` | `portal` | 节点角色：`portal` / `vector` |
 | `--url URL` | 无 | 直接导入 `portal://` / `vector://` 配置（优先于其它配置参数） |
-| `--key KEY` | 自动生成 | 共享密钥（16–255 字符，仅限字母数字及 `._~-`） |
+| `--key KEY` | 自动生成（64 位小写 hex） | 共享密钥：32-64 位小写十六进制（Nowhere 2.2.0+ 规则）。旧式 1-255 位安全字符仅 Vector 角色可用 |
 | `--endpoint EP` | `*:2082`（Portal） | 端点：`HOST:PORT` 或 `HOST/tcp:PORT/udp:PORT` |
 | `--public-host HOST` | 自动探测 | 用于生成客户端链接的公网域名 / IP |
 | `--name NAME` | `Nowhere-V2` | 节点显示名称 |
@@ -439,18 +458,19 @@ sudo bash nowhere-v2.sh uninstall --purge
 | `--tls-key` PATH | 无 | 私钥路径，TLS 2 必填 |
 | `--copy-cert` | 关 | 复制证书到 `/etc/nowhere-v2/tls/` 并设为服务账户可读 |
 | `--morph 0\|1` | `0` | 线路伪装开关，两端必须一致 |
-| `--morph-prelude` | `low7` | TCP Morph 客户端 prelude 策略：`low7`（默认）或 `full8` |
+| `--morph-prelude` | `full8` | TCP Morph 客户端 prelude 策略：`full8`（2.2.0 起为官方默认）或 `low7` |
 | `--up` / `--down` | `auto` | 载波策略：`auto` / `tcp` / `udp` / `mix` |
 | `--mux 0\|1` | `0` | TLS 多路复用 |
 | `--sni NAME\|none` | `none` | 证书校验用域名 |
-| `--pin SHA256\|none` | `none` | 证书 SHA-256 指纹固定 |
+| `--pin SHA256\|none` | `none` | 证书 SHA-256 指纹固定；2.2.0+ 起 `none` 不再关闭验证（见 [§4.3](#43-客户端证书验证nowhere-220)） |
 | `--out-socks HOST:PORT\|none` | `none` | 出站 SOCKS5（与 `next` 互斥） |
 | `--next KEY@EP` | `none` | 原生 V2 下一跳 Portal |
 | `--vector-socks` | `127.0.0.1:1082` | Vector 本地 SOCKS5 监听地址 |
 | `--client-up/down/mux/sni/pin` | 自动 | 生成客户端链接时使用的参数 |
 | `--rate` / `--etar` | `0` | 正向 / 反向限速（Mbps，0 为不限） |
-| `--dial` | `auto` | 出站源 IP |
-| `--log LEVEL` | `info` | `none` / `debug` / `info` / `warn` / `error` / `event` |
+| `--dial` | `auto` | 出站源 IP（单地址族）；与 `--dial4` / `--dial6` 互斥 |
+| `--dial4` / `--dial6` | `auto` | Nowhere 2.2.0+ 双栈出站源：`auto` 或裸 IPv4 / IPv6 字面量 |
+| `--log LEVEL` | `info` | `none` / `debug` / `info` / `warn` / `error`（`event` 已在 2.1.1 移除） |
 | `--memory-profile` | `throughput` | 传输内存模式：`memory` / `balanced` / `throughput` |
 | `--config-mode` | `ask` | `ask` / `quick` / `advanced`；亦可 `--quick` / `--advanced` |
 | `--keep-releases N` | `3` | 保留的旧 Release 数量（0–20） |
@@ -464,7 +484,7 @@ sudo bash nowhere-v2.sh uninstall --purge
 
 ### 9.3 环境变量
 
-所有配置项都有对应的 `NOWHERE_V2_*` 环境变量，例如 `NOWHERE_V2_LANG`（`zh` / `en`）、`NOWHERE_V2_KEY`、`NOWHERE_V2_TLS`、`NOWHERE_V2_MORPH`、`NOWHERE_V2_MEMORY_PROFILE`、`NOWHERE_V2_MORPH_PRELUDE`、`NOWHERE_V2_VERSION` 等。
+所有配置项都有对应的 `NOWHERE_V2_*` 环境变量，例如 `NOWHERE_V2_LANG`（`zh` / `en`）、`NOWHERE_V2_KEY`、`NOWHERE_V2_TLS`、`NOWHERE_V2_MORPH`、`NOWHERE_V2_MEMORY_PROFILE`、`NOWHERE_V2_MORPH_PRELUDE`、`NOWHERE_V2_DIAL4` / `NOWHERE_V2_DIAL6`、`NOWHERE_V2_VERSION` 等。
 
 > 注意：`manager.conf` 中的持久化值优先于环境变量；命令行参数优先级最高。
 
@@ -475,10 +495,10 @@ sudo bash nowhere-v2.sh uninstall --purge
 ```text
 /opt/nowhere-v2/
 ├── releases/
-│   ├── v2.1.0-release-xxxxxxxxxxxx/          # 官方预编译二进制发布目录
+│   ├── v2.2.1-release-xxxxxxxxxxxx/          # 官方预编译二进制发布目录
 │   │   ├── nowhere
 │   │   └── RELEASE-INFO                      # tag / asset / SHA-256 审计凭据
-│   └── v2.1.0-source-aaaa-bbbbbbbbbbbb/      # 本地源码编译发布目录
+│   └── v2.2.1-source-aaaa-bbbbbbbbbbbb/      # 本地源码编译发布目录
 │       ├── nowhere
 │       └── BUILD-INFO                        # commit / SHA-256 溯源凭据
 └── current -> releases/...                   # 原子软链，指向当前激活目录
@@ -532,8 +552,11 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 
 ### Q5: 升级后流量中断（尤其开了 `morph`）
 
-* **根因**：Nowhere **2.1.0** 修改了 Morph 线协议，`morph=1` 的 2.1 节点与 2.0.x 节点不兼容。
-* **解决**：把**整条链路上**的所有节点（Portal / Vector / native next / 其它客户端）一起升级到 `>=2.1.0`。
+* **根因（2.1.0）**：Morph 线协议变更，`morph=1` 的 2.1 节点与 2.0.x 节点不兼容。
+  * **解决**：把**整条链路上**的所有节点（Portal / Vector / native next / 其它客户端）一起升级到 `>=2.1.0`。
+* **根因（2.2.0）**：准入更严格——旧格式共享密钥会让 Portal 拒绝启动；native 客户端开始强制验证证书，自签名 Portal 没有 `pin=` 会握手失败。
+  * **解决**：把该跳所有对端都换成 32-64 位小写十六进制密钥（`nowhere generate-key`），并按 [§4.3](#43-客户端证书验证nowhere-220) 添加 `pin=<sha256>` 或改用受信任 CA 证书。
+* 可查看 `journalctl -u nowhere-v2 -n 50`——2.2.x 会指明出问题的端点且不会打印密钥。
 
 ### Q6: 客户端无法连接或握手超时
 
@@ -542,7 +565,13 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 3. 检查防火墙（UFW / Firewalld）是否放行了对应端口与协议
 4. 检查云厂商**安全组入站规则**
 5. 确认域名解析生效且未开启 CDN 代理（需直连）
-6. 运行 `sudo bash nowhere-v2.sh doctor` 做一次完整体检
+6. 2.2.0+ 请确认证书信任：CA 签发且主机名匹配，或自签名 Portal 配置 `pin=<sha256>`（见 [§4.3](#43-客户端证书验证nowhere-220)）
+7. 运行 `sudo bash nowhere-v2.sh doctor` 做一次完整体检
+
+### Q7: 报错 `Portal shared key must be 32-64 lowercase hex characters`
+
+* **根因**：配置仍是 2.2 之前的密钥格式，Nowhere 2.2.0+ 会拒绝启动（`nowhere generate-key` 输出即为要求的格式）。
+* **解决**：生成全新密钥，把**同一串文本**配置到该跳的每个对端后重启。旧式 1-255 位密钥仅在 Portal `<=2.1` 上继续可用。
 
 ---
 

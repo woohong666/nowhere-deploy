@@ -31,7 +31,7 @@ bash -n nowhere-v2.sh && echo "syntax OK"
 ```bash
 sudo bash nowhere-v2.sh install -y \
   --type portal --endpoint '*:2082' \
-  --key 'AcceptanceKey_1234567890' --tls 1
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 1
 ```
 
 | # | 检查 | 期望 |
@@ -45,8 +45,9 @@ sudo bash nowhere-v2.sh install -y \
 | 1.7 | `ls -l /etc/nowhere-v2/url.conf` | `640 root:nowhere-v2` |
 | 1.8 | `ss -lntup \| grep 2082` | TCP 与 UDP 都在监听 |
 | 1.9 | `journalctl -u nowhere-v2 -n 20 --no-pager` | 无 panic / 无 `must be low7 or full8` 之类错误 |
+| 1.10 | `grep -oE 'portal://[0-9a-f]{32,64}@' /etc/nowhere-v2/url.conf` | 匹配成功（2.2.x 密钥格式，回归点） |
 
-> **1.10（重点回归）** 安装的 core 版本应等于官网最新稳定版：
+> **1.11（重点回归）** 安装的 core 版本应等于官网最新稳定版：
 > ```bash
 > curl -s https://api.github.com/repos/NodePassProject/Nowhere/releases \
 >   | python3 -c 'import json,sys,re;t=[r["tag_name"] for r in json.load(sys.stdin) if re.fullmatch(r"v2\.\d+\.\d+",r["tag_name"]) and not r["prerelease"] and not r["draft"]];print(max(t,key=lambda s:tuple(map(int,s[1:].split(".")))))'
@@ -72,6 +73,7 @@ sudo bash nowhere-v2.sh fingerprint
 | 2.3 | `links` 里的 host | 是你指定的公网 IP |
 | 2.4 | `fingerprint` | 输出 64 位十六进制 SHA-256 |
 | 2.5 | `ss -lntup \| grep 2082` | 端口未因 configure 而改变 |
+| 2.6 | `links` 输出的 Vector URL | 含 `pin=<64 位 hex>`（tls=1 自动 pin，2.2.0+ 回归点） |
 
 ---
 
@@ -102,11 +104,18 @@ sudo bash nowhere-v2.sh configure \
 
 ## 4. Vector 客户端（第二台机器或本机）
 
+先在 Portal 上取指纹（此时 Portal 是第 3 步的自签证书，2.2.0+ 客户端必须 pin）：
+
+```bash
+PIN=$(sudo bash nowhere-v2.sh fingerprint)   # 在 Portal 主机执行
+```
+
 ```bash
 sudo bash nowhere-v2.sh install -y \
   --type vector --endpoint '<portal-ip>:2082' \
-  --key 'AcceptanceKey_1234567890' \
-  --vector-socks '127.0.0.1:1082' --tls 2
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --vector-socks '127.0.0.1:1082' \
+  --pin "$PIN"
 ```
 
 | # | 检查 | 期望 |
@@ -115,6 +124,7 @@ sudo bash nowhere-v2.sh install -y \
 | 4.2 | `ss -lntp \| grep 1082` | 本地 SOCKS5 在监听 |
 | 4.3 | `curl -x socks5h://127.0.0.1:1082 -s https://api.ipify.org` | 返回 **Portal 的**公网 IP |
 | 4.4 | `journalctl -u nowhere-v2 -n 30 --no-pager` | 无 TLS/ALPN 报错 |
+| 4.5 |（负向，可选）`configure --pin none` 后重启 | 连接**失败**（2.2.0+ 强制验证，回归点）；改回 `--pin "$PIN"` 恢复 |
 
 ---
 
@@ -172,6 +182,8 @@ sudo bash nowhere-v2.sh rollback
 | 7.5 | `ls -1d /opt/nowhere-v2/releases/*` | 数量 ≤ `keep-releases`（默认 3）+1 |
 
 > **7.2 是回归重点**：早期版本"仅换二进制"的升级不会刷新 `manager.conf`。
+>
+> **跨 2.2.0 升级告警（可选回归）**：先 `install --version v2.1.2` 并手工把 url.conf 的密钥改成旧格式（如 `LegacyKey_1234567890`），再 `upgrade` 到最新版：应看到密钥轮换告警（若角色是 vector 且无 pin，还应看到证书验证告警），且 `doctor` 会点名旧格式密钥。
 
 ---
 
@@ -218,7 +230,7 @@ sudo bash nowhere-v2.sh check-updates
 
 ```bash
 sudo bash nowhere-v2.sh install -y --method source --version latest-v2 \
-  --type portal --endpoint '*:2082' --key 'AcceptanceKey_1234567890' --tls 1
+  --type portal --endpoint '*:2082' --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 1
 ```
 
 | # | 检查 | 期望 |

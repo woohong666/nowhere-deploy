@@ -7,6 +7,7 @@ Production-grade one-click deployment and operations scripts built on the offici
 > **✅ Primary channel: V2** — `nowhere-v2.sh`, targeting Nowhere `v2.x`. **Use this for new deployments.**
 > It follows the newest official stable release by default (`latest-v2`, resolved to the latest `v2.x.y` at install time); pin an exact tag with `--version v2.x.y` when you need reproducibility.
 > It uses its own paths and service (`/opt/nowhere-v2`, `/etc/nowhere-v2`, `nowhere-v2.service`) and never touches a V1 install.
+> The `v2.x` line is current and fully supported: the newest official v2 release is **v2.2.1**. The upstream project has also shipped **v3.0.0 (NW3)**, which is wire-incompatible with NW2 — **this manager does not manage v3 / NW3** and refuses `v3.x` tags on purpose.
 >
 > **🔒 V1 stable channel:** `nowhere-v1.sh`, pinned to Nowhere `v1.8.3`. It does not follow `latest` and does not install V2.
 > Intended only for existing V1 nodes or when you need the Russian interface. See [§12](#12-v1-stable-channel-deployment-only).
@@ -57,6 +58,10 @@ This repository contains four scripts. **V2 is the recommended default:**
 > Do not point a V1 Portal / Vector / native-next client at a V2 service, or vice versa.
 >
 > Also note: **Morph changed its wire format in Nowhere 2.1.0.** Morph-enabled 2.1 peers cannot talk to 2.0.x peers, so every peer on a `morph=1` path must be upgraded to `>=2.1.0` together. The manager warns when an upgrade crosses that boundary.
+>
+> **Nowhere 2.2.0 admission changes:** Portal listener and native `next` keys must be **32-64 lowercase hex characters** (`nowhere generate-key` prints 32; the manager generates 64). Native clients (Vector, `probe`, chained Portal `next`) now **always verify the peer certificate** against the system CA and the endpoint hostname — `pin=none` no longer disables verification. A self-signed (`tls=1`) Portal therefore requires `pin=<sha256>`, and generated certificates change on every restart, so prefer `tls=2` in production. The manager generates/validates keys accordingly, auto-pins `links`, and warns when an upgrade crosses the 2.1.1 / 2.2.0 boundaries.
+>
+> **NW3 is a different protocol:** Nowhere **v3.0.0** introduced NW3 (`nw3` ALPN, remote Egress role, `egress://`). It is wire-incompatible with NW2, and there is no protocol negotiation or fallback. This manager targets the **v2.x line only**; `latest-v2` keeps resolving to the newest stable v2 release (currently `v2.2.1`).
 
 ---
 
@@ -150,11 +155,11 @@ Add `-y` / `--yes` for non-interactive mode. See [§9](#9-full-cli-reference) fo
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'MyGeneratedKey_12345678' \
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
   --tls 1
 ```
 
-> `--tls 1` uses a self-signed certificate and is only suitable for a quick check. Clients must trust it, or you can pin the fingerprint from `sudo bash nowhere-v2.sh fingerprint`.
+> Keys are 32-64 lowercase hex characters (Nowhere 2.2.0+); omit `--key` and the manager generates one. `--tls 1` uses a generated self-signed certificate and is only suitable for a quick check: on 2.2.0+ clients must pin it via `sudo bash nowhere-v2.sh fingerprint`, and that pin changes on every Portal restart. Prefer `--tls 2` for anything long-lived.
 
 #### Case B: Portal in production ⭐ Recommended
 
@@ -162,7 +167,7 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type portal \
   --endpoint '*:2082' \
-  --key 'MyGeneratedKey_12345678' \
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
   --tls 2 \
   --cert /etc/letsencrypt/live/example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/example.com/privkey.pem \
@@ -178,22 +183,22 @@ sudo bash nowhere-v2.sh install -y \
 sudo bash nowhere-v2.sh install -y \
   --type vector \
   --endpoint 'relay.example.com:2082' \
-  --key 'MyGeneratedKey_12345678' \
-  --vector-socks '127.0.0.1:1082' \
-  --tls 2
+  --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' \
+  --vector-socks '127.0.0.1:1082'
 ```
+
+> On Nowhere 2.2.0+ the Vector **verifies the Portal certificate**. With a CA-trusted `tls=2` certificate behind a matching hostname this just works; with a self-signed Portal add `--pin <sha256>` (copy it from `links` on the Portal host or `fingerprint`).
 
 #### Case D: Enable Morph
 
 ```bash
 sudo bash nowhere-v2.sh install -y --type portal \
-  --endpoint '*:2082' --key 'MyGeneratedKey_12345678' --tls 2 \
+  --endpoint '*:2082' --key 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' --tls 2 \
   --cert ... --tls-key ... --copy-cert \
-  --morph 1 \
-  --morph-prelude low7
+  --morph 1
 ```
 
-> **Note:** `morph` must be enabled on **both** ends of a hop with the same shared key. The Morph wire format also changed in Nowhere **2.1.0**, so every node on a `morph=1` path must be on `>=2.1.0`.
+> **Note:** `morph` must be enabled on **both** ends of a hop with the same shared key. The Morph wire format also changed in Nowhere **2.1.0**, so every node on a `morph=1` path must be on `>=2.1.0`. The client TCP prelude policy now defaults to `full8` (upstream default since 2.2.0); `--morph-prelude low7` remains available as an explicit choice.
 
 ---
 
@@ -226,6 +231,18 @@ systemctl restart nowhere-v2
 ```
 
 Then `chmod +x /etc/letsencrypt/renewal-hooks/deploy/nowhere-v2.sh`.
+
+### 4.3 Certificate verification (Nowhere 2.2.0+)
+
+Native clients (Vector, `probe`, and a chained Portal's `next`) **always** verify the peer certificate: system CA trust plus the endpoint hostname/IP. `sni=` overrides the verified name, and `pin=none` does **not** disable verification.
+
+| Portal certificate | What the client needs |
+|---|---|
+| CA-signed (`tls=2`, e.g. Let's Encrypt) | Nothing extra when clients reach the Portal by a name the certificate covers; otherwise set `sni=` or `pin=` |
+| Self-managed / self-signed (`tls=2`) | `pin=<sha256>` — stable as long as you keep the certificate |
+| Generated (`tls=1`) | `pin=<sha256>`; the generated certificate **changes on every Portal restart**, so the pin must be refreshed — testing only |
+
+Get the fingerprint on the Portal host with `sudo bash nowhere-v2.sh fingerprint` (or from the certificate log), and treat a remotely fetched fingerprint as untrusted until it matches the Portal host. On a `tls=1` Portal, `links` auto-fills the pin into generated Vector URLs.
 
 ---
 
@@ -293,7 +310,7 @@ On a Portal this prints:
 ### 6.3 Security notes
 
 * A link **contains the shared key**. Anyone who has it can use your VPS as an egress proxy. **Never post it publicly or commit it to a repository.**
-* `--tls 1` (self-signed) requires the client to trust or pin the certificate.
+* `--tls 1` (generated self-signed) requires the client to pin the certificate on 2.2.0+; `links` auto-fills the pin, but it changes on every Portal restart — use `tls=2` for production (see [§4.3](#43-certificate-verification-nowhere-220)).
 * `morph` only works when both ends are configured identically.
 
 ### 6.4 Inspecting the server configuration
@@ -345,11 +362,13 @@ sudo systemctl restart nowhere-v2
 sudo bash nowhere-v2.sh upgrade
 
 # Or pin an exact version
-sudo bash nowhere-v2.sh upgrade --version v2.1.0
+sudo bash nowhere-v2.sh upgrade --version v2.2.1
 ```
 
 > `upgrade` **requires an existing V2 configuration**; use `install` for a first deployment.
 > When a config already exists, `install` / `upgrade` only replace the binary. Add `--force-reconfigure` to re-apply configuration options at the same time.
+>
+> **Crossing 2.2.0 with an existing config:** admission got stricter. If the Portal / `next=` key is not 32-64 lowercase hex, the new core refuses to start; and a Vector that relied on `pin=none` against a self-signed Portal fails the handshake. `install` / `upgrade` warns about both — rotate keys with `nowhere generate-key` (update every peer of that hop) and add the pin (see [§4.3](#43-certificate-verification-nowhere-220)) before upgrading.
 
 ### 8.2 Zero-downtime rollback
 
@@ -418,7 +437,7 @@ sudo bash nowhere-v2.sh uninstall --purge
 | `check-updates` | Query the newest official stable version |
 | `backup [PATH]` | Back up config and certificates |
 | `uninstall` / `remove` | Uninstall (`--purge` deletes everything) |
-| `self-update` | Update the manager itself (needs `NOWHERE_V2_SELF_URL`) |
+| `self-update` | Update the manager itself (defaults to this repository's `main`) |
 | `help` | Usage |
 
 ### 9.2 Options
@@ -427,10 +446,10 @@ sudo bash nowhere-v2.sh uninstall --purge
 | --- | --- | --- |
 | `-y`, `--yes` | off | Non-interactive mode |
 | `--method MODE` | `release` | `release` (prebuilt) or `source` (local build) |
-| `--version TAG` | `latest-v2` | `latest-v2` (newest official stable) or an exact `v2.x.y` |
+| `--version TAG` | `latest-v2` | `latest-v2` (newest official stable v2) or an exact `v2.x.y`; `v3.x` / NW3 is rejected |
 | `--type`, `--role` | `portal` | Node role: `portal` / `vector` |
 | `--url URL` | — | Import a `portal://` / `vector://` config (takes precedence over other config options) |
-| `--key KEY` | generated | Shared key (16–255 chars, alphanumerics plus `._~-`) |
+| `--key KEY` | generated (64 lowercase hex) | Shared key: 32-64 lowercase hex (Nowhere 2.2.0+). Legacy 1-255 safe keys are accepted for the Vector role only |
 | `--endpoint EP` | `*:2082` (Portal) | `HOST:PORT` or `HOST/tcp:PORT/udp:PORT` |
 | `--public-host HOST` | auto-detected | Public domain / IP used to build client links |
 | `--name NAME` | `Nowhere-V2` | Node display name |
@@ -439,18 +458,19 @@ sudo bash nowhere-v2.sh uninstall --purge
 | `--tls-key` PATH | — | Private key path, required for TLS 2 |
 | `--copy-cert` | off | Copy the certificate into `/etc/nowhere-v2/tls/` with service-readable permissions |
 | `--morph 0\|1` | `0` | Wire masking; must match on both ends |
-| `--morph-prelude` | `low7` | Client TCP Morph prelude policy: `low7` (default) or `full8` |
+| `--morph-prelude` | `full8` | Client TCP Morph prelude policy: `full8` (upstream default since 2.2.0) or `low7` |
 | `--up` / `--down` | `auto` | Carrier policy: `auto` / `tcp` / `udp` / `mix` |
 | `--mux 0\|1` | `0` | TLS multiplexing |
 | `--sni NAME\|none` | `none` | DNS name for certificate verification |
-| `--pin SHA256\|none` | `none` | Pinned certificate SHA-256 |
+| `--pin SHA256\|none` | `none` | Pinned certificate SHA-256; on 2.2.0+ `none` no longer disables verification (see [§4.3](#43-certificate-verification-nowhere-220)) |
 | `--out-socks HOST:PORT\|none` | `none` | Outbound SOCKS5 (mutually exclusive with `next`) |
 | `--next KEY@EP` | `none` | Native V2 next-hop Portal |
 | `--vector-socks` | `127.0.0.1:1082` | Vector local SOCKS5 listener |
 | `--client-up/down/mux/sni/pin` | auto | Options used when generating client links |
 | `--rate` / `--etar` | `0` | Forward / reverse rate limit in Mbps (0 = unlimited) |
-| `--dial` | `auto` | Outbound source IP |
-| `--log LEVEL` | `info` | `none` / `debug` / `info` / `warn` / `error` / `event` |
+| `--dial` | `auto` | Outbound source IP (single family); mutually exclusive with `--dial4` / `--dial6` |
+| `--dial4` / `--dial6` | `auto` | Nowhere 2.2.0+ dual-stack outbound sources: `auto` or a bare IPv4 / IPv6 literal |
+| `--log LEVEL` | `info` | `none` / `debug` / `info` / `warn` / `error` (`event` was removed in 2.1.1) |
 | `--memory-profile` | `throughput` | Transport memory profile: `memory` / `balanced` / `throughput` |
 | `--config-mode` | `ask` | `ask` / `quick` / `advanced`; also `--quick` / `--advanced` |
 | `--keep-releases N` | `3` | Releases to retain (0–20) |
@@ -464,7 +484,7 @@ sudo bash nowhere-v2.sh uninstall --purge
 
 ### 9.3 Environment variables
 
-Every configuration value has a matching `NOWHERE_V2_*` variable, for example `NOWHERE_V2_LANG` (`zh` / `en`), `NOWHERE_V2_KEY`, `NOWHERE_V2_TLS`, `NOWHERE_V2_MORPH`, `NOWHERE_V2_MEMORY_PROFILE`, `NOWHERE_V2_MORPH_PRELUDE`, and `NOWHERE_V2_VERSION`.
+Every configuration value has a matching `NOWHERE_V2_*` variable, for example `NOWHERE_V2_LANG` (`zh` / `en`), `NOWHERE_V2_KEY`, `NOWHERE_V2_TLS`, `NOWHERE_V2_MORPH`, `NOWHERE_V2_MEMORY_PROFILE`, `NOWHERE_V2_MORPH_PRELUDE`, `NOWHERE_V2_DIAL4` / `NOWHERE_V2_DIAL6`, and `NOWHERE_V2_VERSION`.
 
 > Persisted values in `manager.conf` take precedence over environment variables; command-line options take precedence over both.
 
@@ -475,10 +495,10 @@ Every configuration value has a matching `NOWHERE_V2_*` variable, for example `N
 ```text
 /opt/nowhere-v2/
 ├── releases/
-│   ├── v2.1.0-release-xxxxxxxxxxxx/          # official prebuilt release
+│   ├── v2.2.1-release-xxxxxxxxxxxx/          # official prebuilt release
 │   │   ├── nowhere
 │   │   └── RELEASE-INFO                      # tag / asset / SHA-256 audit record
-│   └── v2.1.0-source-aaaa-bbbbbbbbbbbb/      # local source build
+│   └── v2.2.1-source-aaaa-bbbbbbbbbbbb/      # local source build
 │       ├── nowhere
 │       └── BUILD-INFO                        # commit / SHA-256 provenance
 └── current -> releases/...                   # atomic symlink to the active release
@@ -532,8 +552,11 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 
 ### Q5: Traffic breaks after an upgrade (especially with `morph`)
 
-* **Cause:** Nowhere **2.1.0** changed the Morph wire format; morph-enabled 2.1 peers are incompatible with 2.0.x peers.
-* **Fix:** upgrade **every** node on the path (Portal / Vector / native next / other clients) to `>=2.1.0`.
+* **Cause (2.1.0):** the Morph wire format changed; morph-enabled 2.1 peers are incompatible with 2.0.x peers.
+  * **Fix:** upgrade **every** node on the path (Portal / Vector / native next / other clients) to `>=2.1.0`.
+* **Cause (2.2.0):** admission got stricter — a legacy shared key makes the Portal refuse to start, and native clients now verify certificates, so a self-signed Portal without `pin=` fails the handshake.
+  * **Fix:** rotate to 32-64 lowercase hex keys on every peer of the hop (`nowhere generate-key`), and add `pin=<sha256>` or switch to a CA-trusted certificate (see [§4.3](#43-certificate-verification-nowhere-220)).
+* Check `journalctl -u nowhere-v2 -n 50` — 2.2.x names the offending endpoint without printing the key.
 
 ### Q6: Clients cannot connect or handshakes time out
 
@@ -542,7 +565,13 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 3. Check the host firewall (UFW / Firewalld) for the right ports and protocols
 4. Check your cloud provider's **security group** inbound rules
 5. Confirm DNS resolves and is not proxied by a CDN (a direct connection is required)
-6. Run `sudo bash nowhere-v2.sh doctor` for a full check
+6. On 2.2.0+, confirm certificate trust: CA-signed certificate with a matching name, or `pin=<sha256>` for a self-signed Portal (see [§4.3](#43-certificate-verification-nowhere-220))
+7. Run `sudo bash nowhere-v2.sh doctor` for a full check
+
+### Q7: `Portal shared key must be 32-64 lowercase hex characters`
+
+* **Cause:** the config still uses a pre-2.2 key format. Nowhere 2.2.0+ refuses to start with it (`nowhere generate-key` outputs the required form).
+* **Fix:** generate a fresh key, configure the **same** text on every peer of that hop, and restart. Legacy 1-255 byte keys keep working only against Portals `<=2.1`.
 
 ---
 

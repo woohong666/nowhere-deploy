@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.2.8
+# Nowhere V2 Unified Manager v1.3.0
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,11 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.2.8"
+readonly SCRIPT_VERSION="1.3.0"
 readonly SCRIPT_CHANNEL="v2"
+# v1.3.0: align with the Nowhere v2.2.x series: 32-64 lowercase-hex shared keys,
+#   2.2.0 key/certificate upgrade warnings, full8 morph default, drop log=event
+#   (removed in 2.1.1), add --dial4/--dial6, auto-pin generated-cert client links.
 # v1.2.8: self-update now defaults to this repository's main branch (no NOWHERE_V2_SELF_URL needed); clarify the doctor morph reminder.
 # v1.2.7: serialise installs/release-pruning with the build lock; refresh manager.conf version fields on a binary-only install.
 # v1.2.6: prompt_choice/prompt_key no longer spin forever without a terminal; reject link members in release tars; refuse a backup path inside the config dir.
@@ -57,7 +60,9 @@ readonly DEFAULT_VECTOR_SOCKS="127.0.0.1:1082"
 readonly DEFAULT_LOG="info"
 readonly DEFAULT_KEEP_RELEASES="3"
 readonly DEFAULT_MEMORY_PROFILE="throughput"
-readonly DEFAULT_MORPH_PRELUDE="low7"
+# Upstream switched the TCP Morph prelude default to full8 in Nowhere 2.2.0;
+# low7 remains supported as an explicit choice (morph=1 paths only).
+readonly DEFAULT_MORPH_PRELUDE="full8"
 
 LANG_CODE="${NOWHERE_V2_LANG:-zh}"
 ACTION="menu"
@@ -91,6 +96,8 @@ MORPH="${NOWHERE_V2_MORPH:-0}"
 RATE="${NOWHERE_V2_RATE:-0}"
 ETAR="${NOWHERE_V2_ETAR:-0}"
 DIAL="${NOWHERE_V2_DIAL:-auto}"
+DIAL4="${NOWHERE_V2_DIAL4:-auto}"
+DIAL6="${NOWHERE_V2_DIAL6:-auto}"
 LOG_LEVEL="${NOWHERE_V2_LOG:-$DEFAULT_LOG}"
 OUT_SOCKS="${NOWHERE_V2_OUT_SOCKS:-none}"
 NEXT="${NOWHERE_V2_NEXT:-none}"
@@ -244,15 +251,31 @@ install_build_deps() {
 validate_port() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )) || die "$(tr_msg "Port must be 1-65535." "端口必须为 1-65535。")"
 }
+# Nowhere 2.2.x Portal listener / native next shared-key policy: 32-64 lowercase
+# hex characters. 64 characters stays valid on an exact v2.2.0 pin as well,
+# which is why random_key() generates 64; v2.2.1+ accepts 32-64.
+is_valid_key_value() { [[ "$1" =~ ^[0-9a-f]{32,64}$ ]]; }
 validate_key() {
-  local v="$1" LC_ALL=C
-  [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]] || die "$(tr_msg "Generated/CLI key must be 16-255 safe URL characters." "生成/命令行密钥必须为 16-255 位安全 URL 字符。")"
+  is_valid_key_value "$1" || die "$(tr_msg "Portal/shared key must be 32-64 lowercase hex characters (Nowhere 2.2.0+; see 'nowhere generate-key')." "Portal/共享密钥必须为 32-64 位小写十六进制字符（Nowhere 2.2.0+ 规则；可用 'nowhere generate-key' 生成）。")"
+}
+# Vector is a client: upstream keeps accepting legacy 1-255 byte keys so a
+# Vector can still reach a Portal that runs <=2.1. Keep that leniency for the
+# Vector role, but never generate such keys here.
+is_legacy_safe_key() { [[ "$1" =~ ^[A-Za-z0-9._~-]{1,255}$ ]]; }
+validate_vector_key() {
+  is_valid_key_value "$1" && return 0
+  if is_legacy_safe_key "$1"; then
+    warn "$(tr_msg "Non-hex Vector key accepted for compatibility with Nowhere <=2.1 Portals only; a 2.2.0+ Portal requires 32-64 lowercase hex characters." "已接受非十六进制 Vector 密钥，但仅兼容 Nowhere <=2.1 的 Portal；2.2.0+ Portal 要求 32-64 位小写十六进制字符。")"
+    return 0
+  fi
+  die "$(tr_msg "Vector key must be 32-64 lowercase hex, or a legacy 1-255 safe URL key (<=2.1 Portal only)." "Vector 密钥必须为 32-64 位小写十六进制，或兼容 <=2.1 Portal 的 1-255 位安全 URL 字符。")"
 }
 validate_role() { [[ "$1" == portal || "$1" == vector ]] || die "$(tr_msg "role must be portal|vector" "role 必须为 portal|vector")"; }
 validate_bool01() { [[ "$2" == 0 || "$2" == 1 ]] || die "$(tr_msg "${1} must be 0|1" "${1} 必须为 0|1")"; }
 validate_mux() { [[ "$1" == 0 || "$1" == 1 ]] || die "$(tr_msg "mux must be 0|1" "mux 必须为 0|1")"; }
 validate_tls() { [[ "$1" == 1 || "$1" == 2 ]] || die "$(tr_msg "tls must be 1|2" "tls 必须为 1|2")"; }
-validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error|event)$ ]] || die "$(tr_msg "invalid log level: ${1}" "无效的日志等级: ${1}")"; }
+# 'event' was removed in Nowhere 2.1.1 and now fails service startup.
+validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error)$ ]] || die "$(tr_msg "invalid log level: ${1} (allowed: none|debug|info|warn|error; 'event' was removed in 2.1.1)" "无效的日志等级: ${1}（可选: none|debug|info|warn|error；'event' 已在 2.1.1 移除）")"; }
 validate_rate() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "$(tr_msg "rate/etar must be non-negative" "rate/etar 必须为非负数")"; }
 validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) || die "$(tr_msg "keep-releases must be 0-20" "keep-releases 必须为 0-20")"; }
 validate_config_mode() { [[ "$1" == ask || "$1" == quick || "$1" == advanced ]] || die "$(tr_msg "config-mode must be ask|quick|advanced" "config-mode 必须为 ask|quick|advanced")"; }
@@ -264,12 +287,43 @@ validate_sni() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Za-z0-9.-]+$ ]] || di
 validate_pin() { [[ "$1" == none || -z "$1" || "$1" =~ ^[A-Fa-f0-9]{64}$ ]] || die "$(tr_msg "pin must be none or 64 hex characters" "pin 必须为 none 或 64 位十六进制")"; }
 validate_version_arg() {
   local v="$1"
-  [[ "$v" == latest-v2 || "$v" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "Version must be latest-v2 or an exact stable v2.x.y tag." "版本必须为 latest-v2 或明确的稳定版 v2.x.y 标签。")"
+  [[ "$v" == latest-v2 || "$v" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "Version must be latest-v2 or an exact stable v2.x.y tag; v3.x (NW3) is not supported by this manager." "版本必须为 latest-v2 或明确的稳定版 v2.x.y 标签；v3.x（NW3 协议）不在本管理器支持范围内。")"
 }
 
+# Outbound source binding (Nowhere 2.2.0+): dial is mutually exclusive with
+# dial4/dial6, and each value is 'auto' or a bare IP literal of its family.
+is_valid_dial_ip() { # is_valid_dial_ip <any|4|6> <value>
+  python3 - "$1" "$2" <<'PY' >/dev/null 2>&1
+import ipaddress,sys
+fam,v=sys.argv[1],sys.argv[2]
+if not v or any(c in v for c in '%[]/ '): sys.exit(1)
+try:
+    if fam=='4': ipaddress.IPv4Address(v)
+    elif fam=='6':
+        a=ipaddress.IPv6Address(v)
+        if a.ipv4_mapped is not None: sys.exit(1)
+    else: ipaddress.ip_address(v)
+except Exception: sys.exit(1)
+PY
+}
+validate_dial_value() {
+  local fam="$1" v="$2" name
+  [[ "$v" == auto ]] && return 0
+  case "$fam" in 4) name=dial4 ;; 6) name=dial6 ;; *) name=dial ;; esac
+  is_valid_dial_ip "$fam" "$v" || die "$(tr_msg "${name} must be 'auto' or a bare IP literal of the matching family." "${name} 必须为 'auto' 或与地址族匹配的裸 IP 字面量。")"
+}
+validate_dial_settings() {
+  validate_dial_value any "$DIAL"; validate_dial_value 4 "$DIAL4"; validate_dial_value 6 "$DIAL6"
+  if [[ "$DIAL" != auto && -n "$DIAL" ]] && { [[ "$DIAL4" != auto && -n "$DIAL4" ]] || [[ "$DIAL6" != auto && -n "$DIAL6" ]]; }; then
+    die "$(tr_msg "dial is mutually exclusive with dial4/dial6 (Nowhere 2.2.0+)." "dial 与 dial4/dial6 互斥（Nowhere 2.2.0+）。")"
+  fi
+}
+
+# 64 hex characters so the key also satisfies an exact v2.2.0 pin (64 only);
+# Nowhere v2.2.1+ accepts 32-64.
 random_key() {
-  if has_cmd openssl; then openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n';
-  else LC_ALL=C tr -dc 'A-Za-z0-9._~-' </dev/urandom | head -c 32; printf '\n'; fi
+  if has_cmd openssl; then openssl rand -hex 32;
+  else LC_ALL=C tr -dc '0-9a-f' </dev/urandom | head -c 64; printf '\n'; fi
 }
 
 urlencode() {
@@ -454,8 +508,9 @@ validate_next_endpoint() {
   [[ "$v" != *@*@* ]] || die "$(tr_msg "next must contain exactly one '@'; percent-encode '@' in the shared key as %40" "next 必须只包含一个 '@'；共享密钥中的 '@' 请编码为 %40")"
   [[ "$v" == *@* ]] || die "$(tr_msg "next must be KEY@ENDPOINT" "next 必须为 KEY@ENDPOINT")"
   keypart="${v%@*}"; ep="${v##*@}"
-  (( ${#keypart} >= 1 && ${#keypart} <= 255 )) || die "$(tr_msg "next key must be 1-255 bytes" "next 密钥必须为 1-255 字节")"
-  [[ "$keypart" != *$'\n'* && "$keypart" != *$'\r'* ]] || die "$(tr_msg "next key contains newline" "next 密钥包含换行符")"
+  # Nowhere 2.2.0+ validates the nested key like the Portal listener key; a
+  # legacy character set would make the outer Portal refuse to start.
+  is_valid_key_value "$keypart" || die "$(tr_msg "next key must be 32-64 lowercase hex characters (Nowhere 2.2.0+)." "next 密钥必须为 32-64 位小写十六进制字符（Nowhere 2.2.0+）。")"
   endpoint_info vector "$ep" >/dev/null || die "$(tr_msg "Invalid next endpoint" "无效的 next 端点")"
 }
 
@@ -487,7 +542,14 @@ if u.fragment: fail('fragments are not valid run configuration')
 if u.password is not None: fail('password userinfo is invalid')
 try: key=urllib.parse.unquote_to_bytes(u.username or '')
 except Exception: fail('bad shared-key encoding')
-if not (1<=len(key)<=255): fail('shared key must be 1..255 bytes')
+# Portal listener keys follow the strict 2.2.x policy; Vector keeps the
+# documented 1-255 byte client leniency so it can still reach <=2.1 Portals.
+if u.scheme=='portal':
+    try: key_text=key.decode('ascii')
+    except Exception: fail('Portal shared key must be 32-64 lowercase hex characters')
+    if not re.fullmatch(r'[0-9a-f]{32,64}',key_text): fail('Portal shared key must be 32-64 lowercase hex characters')
+else:
+    if not (1<=len(key)<=255): fail('shared key must be 1..255 bytes')
 if b'\n' in key or b'\r' in key or b'\x00' in key: fail('shared key contains unsafe control bytes')
 try:
     h=u.hostname or ''
@@ -501,12 +563,11 @@ if parsed_port is not None:
 else:
     ep=h+(u.path or '')
 if not ep: fail('missing endpoint')
-# Match Nowhere v2.1.0 exactly: recognized query keys use first occurrence;
+# Match Nowhere v2.2.x exactly: recognized query keys use first occurrence;
 # later duplicates and unknown keys are ignored by the core.
 q={}
 for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True):
     q.setdefault(k,v)
-allowed={'tls','crt','key','rate','etar','dial','morph','socks','next','up','down','mux','sni','pin','log'} if u.scheme=='portal' else {'up','down','mux','sni','pin','rate','etar','morph','socks','log'}
 # Unknown query keys follow upstream first-wins/ignore semantics.
 # Preserve them so a newer V2 core can remain forward-compatible.
 def oneof(k,vals,default=None):
@@ -518,8 +579,23 @@ def rate(k):
     try: x=float(v)
     except: fail(f'invalid {k}')
     if x<0: fail(f'invalid {k}')
+def dialval(k,fam):
+    v=q.get(k)
+    if v is None or v=='auto': return
+    if any(c in v for c in '%[]/ '): fail(f'invalid {k}')
+    try:
+        if fam=='4': ipaddress.IPv4Address(v)
+        elif fam=='6':
+            a=ipaddress.IPv6Address(v)
+            if a.ipv4_mapped is not None: fail(f'invalid {k}')
+        else: ipaddress.ip_address(v)
+    except Exception: fail(f'invalid {k}')
 rate('rate'); rate('etar')
-oneof('morph',{'0','1'},'0'); oneof('mux',{'0','1'},'0'); oneof('log',{'none','debug','info','warn','error','event'},'info')
+# 'event' was removed in Nowhere 2.1.1 and now fails service startup.
+oneof('morph',{'0','1'},'0'); oneof('mux',{'0','1'},'0'); oneof('log',{'none','debug','info','warn','error'},'info')
+# Nowhere 2.2.0: dial is mutually exclusive with dial4/dial6.
+dialval('dial','any'); dialval('dial4','4'); dialval('dial6','6')
+if 'dial' in q and ('dial4' in q or 'dial6' in q): fail('dial conflicts with dial4/dial6')
 for k in ('up','down'):
     if k in q and q[k] not in ('tcp','udp','mix'): fail(f'invalid {k}')
 pin=q.get('pin','none')
@@ -535,6 +611,7 @@ if u.scheme=='portal':
         if '@' not in nv: fail('next must be KEY@ENDPOINT')
         nk,ne=nv.rsplit('@',1)
         if not nk or not ne or '*' in ne: fail('invalid next endpoint')
+        if not re.fullmatch(r'[0-9a-f]{32,64}',nk): fail('next shared key must be 32-64 lowercase hex characters')
 else:
     if not q.get('socks'): fail('Vector requires socks=')
 PY
@@ -561,11 +638,19 @@ PY
 
 build_portal_url() {
   validate_key "$KEY"; validate_tls "$TLS"; validate_bool01 morph "$MORPH"; validate_rate "$RATE"; validate_rate "$ETAR"; validate_log "$LOG_LEVEL"
+  validate_dial_settings
   ENDPOINT="$(endpoint_canonical portal "$ENDPOINT")"
   local q="tls=${TLS}&morph=${MORPH}" eff_up eff_down eff_mux
   [[ "$RATE" == 0 ]] || q+="&rate=${RATE}"
   [[ "$ETAR" == 0 ]] || q+="&etar=${ETAR}"
-  [[ "$DIAL" == auto || -z "$DIAL" ]] || q+="&dial=$(urlencode "$DIAL")"
+  # Nowhere 2.2.0+ dual-stack source binding: emit dial4/dial6 only; a
+  # non-auto dial already excludes them (validated above). 'auto' stays omitted.
+  if [[ "$DIAL" == auto || -z "$DIAL" ]]; then
+    [[ "$DIAL4" == auto || -z "$DIAL4" ]] || q+="&dial4=$(urlencode "$DIAL4")"
+    [[ "$DIAL6" == auto || -z "$DIAL6" ]] || q+="&dial6=$(urlencode "$DIAL6")"
+  else
+    q+="&dial=$(urlencode "$DIAL")"
+  fi
   [[ "$LOG_LEVEL" == info ]] || q+="&log=${LOG_LEVEL}"
   if [[ "$TLS" == 2 ]]; then
     [[ -f "$CERT" && -f "$TLS_KEY" ]] || die "$(tr_msg "tls=2 requires existing cert/key files" "tls=2 需要已存在的证书/私钥文件")"
@@ -592,7 +677,7 @@ build_portal_url() {
 }
 
 build_vector_url() {
-  validate_key "$KEY"; validate_bool01 morph "$MORPH"; validate_rate "$RATE"; validate_rate "$ETAR"; validate_log "$LOG_LEVEL"
+  validate_vector_key "$KEY"; validate_bool01 morph "$MORPH"; validate_rate "$RATE"; validate_rate "$ETAR"; validate_log "$LOG_LEVEL"
   validate_mux "$MUX"; validate_sni "$SNI"; validate_pin "$PIN"; validate_socks_endpoint "$VECTOR_SOCKS"
   ENDPOINT="$(endpoint_canonical vector "$ENDPOINT")"
   local eup="$UP" edown="$DOWN" emux="$MUX" q
@@ -641,18 +726,29 @@ prompt_choice() {
     warn "$(tr_msg "Invalid choice. Allowed: $*" "无效选项，可选: $*")"
   done
 }
+# A 2.2.x policy key is always accepted. Legacy safe keys are accepted only for
+# the Vector role (client-side leniency, matching upstream), with a warning.
+key_acceptable() {
+  local v="$1"
+  is_valid_key_value "$v" && return 0
+  if [[ "$ROLE" == vector ]] && [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]]; then
+    warn "$(tr_msg "Non-hex key accepted for the Vector role only; a 2.2.0+ Portal requires 32-64 lowercase hex characters." "非十六进制密钥仅在 Vector 角色下被接受；2.2.0+ Portal 要求 32-64 位小写十六进制字符。")"
+    return 0
+  fi
+  return 1
+}
 prompt_key() {
   local d="${KEY:-$(random_key)}" v
   while true; do
     # Same rule as prompt_choice: no terminal must never mean an endless loop.
     if ! read -r -p "$(tr_msg "Shared key" "共享密钥") [$d]: " v </dev/tty 2>/dev/null; then
-      [[ "$d" =~ ^[A-Za-z0-9._~-]{16,255}$ ]] ||
+      key_acceptable "$d" ||
         die "$(tr_msg "No terminal available to enter a shared key, and '${d}' is not a valid one." "无可用终端输入共享密钥，且 '${d}' 不是合法密钥。")"
       KEY="$d"; return 0
     fi
     v="${v:-$d}"
-    if [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]]; then KEY="$v"; return 0; fi
-    warn "$(tr_msg "Key must be 16-255 safe URL characters." "密钥必须为 16-255 位安全 URL 字符。")"
+    if key_acceptable "$v"; then KEY="$v"; return 0; fi
+    warn "$(tr_msg "Key must be 32-64 lowercase hex characters (Portal), or 16-255 safe URL characters for the Vector role." "密钥必须为 32-64 位小写十六进制字符（Portal）；Vector 角色也可用 16-255 位安全 URL 字符。")"
   done
 }
 
@@ -735,11 +831,18 @@ advanced_wizard() {
   quick_wizard
   RATE="$(prompt "$(tr_msg "Rate Mbps, 0=unlimited" "正向速率 Mbps，0=不限速")" "$RATE")"
   ETAR="$(prompt "$(tr_msg "Reverse rate Mbps, 0=unlimited" "反向速率 Mbps，0=不限速")" "$ETAR")"
-  LOG_LEVEL="$(prompt_choice "$(tr_msg "Log level" "日志等级")" "$LOG_LEVEL" none debug info warn error event)"
+  LOG_LEVEL="$(prompt_choice "$(tr_msg "Log level" "日志等级")" "$LOG_LEVEL" none debug info warn error)"
   MEMORY_PROFILE="$(prompt_choice "$(tr_msg "Transport memory profile" "传输内存模式")" "$MEMORY_PROFILE" memory balanced throughput)"
-  MORPH_PRELUDE="$(prompt_choice "$(tr_msg "TCP Morph prelude policy (low7=default, full8=unrestricted)" "TCP Morph prelude 策略（low7=默认，full8=无限制）")" "$MORPH_PRELUDE" low7 full8)"
+  MORPH_PRELUDE="$(prompt_choice "$(tr_msg "TCP Morph prelude policy (full8=default, low7=7-bit)" "TCP Morph prelude 策略（full8=默认，low7=7 位）")" "$MORPH_PRELUDE" low7 full8)"
   if [[ "$ROLE" == portal ]]; then
     DIAL="$(prompt "$(tr_msg "Source dial IP or auto" "出站源 IP 或 auto")" "$DIAL")"
+    if [[ "$DIAL" == auto || -z "$DIAL" ]]; then
+      # Nowhere 2.2.0+ dual-stack source binding; dial is mutually exclusive.
+      DIAL4="$(prompt "$(tr_msg "IPv4 source dial4 (auto or IPv4)" "IPv4 出站源 dial4（auto 或 IPv4）")" "$DIAL4")"
+      DIAL6="$(prompt "$(tr_msg "IPv6 source dial6 (auto or IPv6)" "IPv6 出站源 dial6（auto 或 IPv6）")" "$DIAL6")"
+    else
+      DIAL4=auto; DIAL6=auto
+    fi
     local mode
     printf '\n1) %s\n2) %s\n3) %s\n' "$(tr_msg "Direct outbound" "直接出站")" "$(tr_msg "SOCKS5 outbound" "通过 SOCKS5 出站")" "$(tr_msg "Native V2 next Portal" "原生 V2 next Portal")"
     mode="$(prompt_choice "$(tr_msg "Outbound" "出站方式")" 1 1 2 3)"
@@ -774,6 +877,8 @@ load_existing_config() {
   load_q "$u" rate RATE
   load_q "$u" etar ETAR
   load_q "$u" dial DIAL
+  load_q "$u" dial4 DIAL4
+  load_q "$u" dial6 DIAL6
   load_q "$u" log LOG_LEVEL
   load_q "$u" crt CERT
   load_q "$u" key TLS_KEY
@@ -865,7 +970,7 @@ warn_import_url_overrides() {
   local -a ignored=()
   # These values are encoded by --url itself and therefore cannot override it.
   # Meta-only options such as PUBLIC_HOST/NODE_NAME/MEMORY_PROFILE/CLIENT_* remain useful.
-  for k in ROLE KEY ENDPOINT TLS CERT TLS_KEY MORPH RATE ETAR DIAL LOG_LEVEL OUT_SOCKS NEXT UP DOWN MUX SNI PIN VECTOR_SOCKS; do
+  for k in ROLE KEY ENDPOINT TLS CERT TLS_KEY MORPH RATE ETAR DIAL DIAL4 DIAL6 LOG_LEVEL OUT_SOCKS NEXT UP DOWN MUX SNI PIN VECTOR_SOCKS; do
     [[ -n "${CLI_SET[$k]+x}" ]] && ignored+=("$k")
   done
   if (( ${#ignored[@]} > 0 )); then
@@ -1264,6 +1369,66 @@ warn_morph_upgrade_requirement() {
   fi
 }
 
+# Nowhere 2.1.1/2.2.0 admission changes: warn when an existing config is about
+# to move onto a core that will refuse it. Old cores are unaffected, so these
+# fire only when the upgrade actually crosses a boundary.
+warn_22_upgrade_requirements() {
+  local old_core="$1" u role key next nk pin logv
+  [[ -s "$URL_FILE" ]] || return 0
+  IFS= read -r u <"$URL_FILE" || return 0
+  role="$(url_role "$u")"
+
+  # 2.1.1 removed the 'event' log level; the core refuses to start with it.
+  if version_ge "$VERSION" v2.1.1 && { [[ -z "$old_core" ]] || ! version_ge "$old_core" v2.1.1; }; then
+    logv="$(query_get "$u" log)"; logv="${logv:-info}"
+    if [[ "$logv" == event ]]; then
+      warn "$(tr_msg \
+        "This config still sets log=event, which Nowhere 2.1.1 removed. Change it to none|debug|info|warn|error or the service will fail to start." \
+        "此配置仍在使用 log=event，该等级已在 Nowhere 2.1.1 移除。请改为 none|debug|info|warn|error，否则服务将无法启动。")"
+    fi
+  fi
+
+  # 2.2.0 tightened key admission (Portal listener and native next) and made
+  # certificate verification mandatory for native clients.
+  version_ge "$VERSION" v2.2.0 || return 0
+  if [[ -n "$old_core" ]] && version_ge "$old_core" v2.2.0; then return 0; fi
+
+  if [[ "$role" == portal ]]; then
+    key="$(url_key "$u")"
+    if ! is_valid_key_value "$key"; then
+      warn "$(tr_msg \
+        "This Portal (or next-hop) key is not 32-64 lowercase hex. Nowhere 2.2.0+ refuses to start with a legacy key: generate a new one with 'nowhere generate-key' (or re-run configure to let the manager generate it) and update every peer on that hop." \
+        "此 Portal（或 next 跳）密钥不是 32-64 位小写十六进制。Nowhere 2.2.0+ 遇到旧格式密钥会拒绝启动：请用 'nowhere generate-key' 生成新密钥（或重新运行 configure 由管理器生成），并同步更新该跳的所有对端。")"
+    fi
+    next="$(query_get "$u" next)"
+    if [[ -n "$next" && "$next" != none ]]; then
+      nk="${next%@*}"
+      if ! is_valid_key_value "$nk"; then
+        warn "$(tr_msg \
+          "The next-hop key inside next= is not 32-64 lowercase hex; Nowhere 2.2.0+ will refuse it. Configure the same fresh key on both ends of that hop." \
+          "next= 中的下一跳密钥不是 32-64 位小写十六进制；Nowhere 2.2.0+ 将拒绝该配置。请在该跳两端配置相同的新密钥。")"
+      fi
+    fi
+  fi
+
+  pin="$(query_get "$u" pin)"; pin="${pin:-none}"
+  if [[ "$pin" == none ]]; then
+    if [[ "$role" == vector ]]; then
+      warn "$(tr_msg \
+        "This Vector config has no pin. Nowhere 2.2.0+ always verifies certificates against the system CA and the endpoint hostname: if the Portal uses a generated/self-signed certificate, traffic will fail until you add pin=<sha256> (see 'links' and 'fingerprint')." \
+        "此 Vector 配置没有 pin。Nowhere 2.2.0+ 始终使用系统 CA 与端点主机名验证证书：若 Portal 使用生成/自签名证书，必须先添加 pin=<sha256>（见 'links' 与 'fingerprint'），否则流量会中断。")"
+    elif [[ "$role" == portal ]]; then
+      next="$(query_get "$u" next)"
+      if [[ -n "$next" && "$next" != none ]]; then
+        warn "$(tr_msg \
+          "This Portal chain has no next-hop pin. Nowhere 2.2.0+ verifies chained Portal certificates: if the next hop uses a generated/self-signed certificate, traffic will fail until you add pin=<sha256>." \
+          "此 Portal 链式配置没有下一跳 pin。Nowhere 2.2.0+ 会验证链式 Portal 证书：若下一跳使用生成/自签名证书，必须先添加 pin=<sha256>，否则流量会中断。")"
+      fi
+    fi
+  fi
+  return 0
+}
+
 install_action() {
   require_root; require_systemd; ensure_user
   # Serialise installs: two concurrent runs would race on the releases directory
@@ -1290,6 +1455,7 @@ install_action() {
   old_core="$(installed_core_version)"
   if [[ "$INSTALL_METHOD" == source ]]; then install_source; else install_release; fi
   warn_morph_upgrade_requirement "$old_core"
+  warn_22_upgrade_requirements "$old_core"
   write_launcher; write_unit
 
   if [[ "$had_config" -eq 0 || "$FORCE_RECONFIGURE" -eq 1 ]]; then
@@ -1398,7 +1564,7 @@ public_endpoint_from_portal() {
 }
 
 build_native_vector_link_from_portal() {
-  local u="$1" ep eup edown emux sni pin morph key q
+  local u="$1" ep eup edown emux sni pin morph key q tls
   ep="$(public_endpoint_from_portal "$u")" || return 1; key="$(url_key "$u")"; morph="$(query_get "$u" morph)"; morph="${morph:-0}"
   eup="$CLIENT_UP"; edown="$CLIENT_DOWN"
   [[ "$eup" == auto ]] && eup="$(endpoint_default_policy vector "$ep")"
@@ -1406,8 +1572,24 @@ build_native_vector_link_from_portal() {
   validate_policy_against_endpoint vector "$ep" "$eup"; validate_policy_against_endpoint vector "$ep" "$edown"
   emux="$CLIENT_MUX"; [[ "$eup" == udp && "$edown" == udp ]] && emux=0
   sni="$CLIENT_SNI"; pin="$CLIENT_PIN"
+  tls="$(query_get "$u" tls)"; tls="${tls:-1}"
   if [[ "$sni" == auto ]]; then
-    if [[ "$(query_get "$u" tls)" == 2 && -n "$PUBLIC_HOST" && "$PUBLIC_HOST" != *:* && ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then sni="$PUBLIC_HOST"; else sni=none; fi
+    if [[ "$tls" == 2 && -n "$PUBLIC_HOST" && "$PUBLIC_HOST" != *:* && ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then sni="$PUBLIC_HOST"; else sni=none; fi
+  fi
+  # Nowhere 2.2.0+ clients verify the system CA plus hostname by default, and
+  # pin=none no longer disables verification. A generated (tls=1) certificate
+  # therefore only works with an explicit pin; fill it from the running local
+  # service unless the operator supplied --client-pin.
+  if [[ "$pin" == none || -z "$pin" ]]; then
+    if [[ "$tls" == 1 ]]; then
+      local auto_pin
+      if auto_pin="$(local_portal_fingerprint "$u")"; then
+        pin="$auto_pin"
+        warn "$(tr_msg "tls=1 link: pin auto-filled from the local Portal certificate. A generated certificate changes when the Portal restarts - regenerate links and update the client pin after each restart; prefer tls=2 for production." "tls=1 链接：已从本机 Portal 证书自动填入 pin。生成的证书会随 Portal 重启而变化——每次重启后请重新生成链接并更新客户端 pin；生产环境建议使用 tls=2。")"
+      else
+        warn "$(tr_msg "tls=1 link needs an explicit pin: Nowhere 2.2.0+ rejects generated certificates without one, and the local Portal is not reachable to auto-fill it. Start the service and re-run 'links', or run 'fingerprint'." "tls=1 链接需要显式 pin：Nowhere 2.2.0+ 对生成的证书不再放行，且本机 Portal 当前不可达无法自动填充。请启动服务后重新执行 'links'，或用 'fingerprint' 获取。")"
+      fi
+    fi
   fi
   q="up=${eup}&down=${edown}&mux=${emux}&morph=${morph}&socks=$(urlencode "$DEFAULT_VECTOR_SOCKS")"
   [[ "$sni" == none || -z "$sni" ]] || q+="&sni=$(urlencode "$sni")"
@@ -1434,9 +1616,20 @@ PY
   printf '\n%s\n%s#%s\n' "$(tr_msg "Generic V2 share URI (client must explicitly support V2/nw2):" "通用 V2 分享 URI（客户端必须明确支持 V2/nw2）：")" "$generic" "$(urlencode "$name")"
 }
 
+# Fetch the running local Portal's TLS certificate fingerprint. Also used to
+# auto-pin tls=1 client links (see build_native_vector_link_from_portal).
+local_portal_fingerprint() {
+  local u="$1" ep port host fp
+  ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || return 1
+  port="$(endpoint_tcp_port portal "$ep")"; host="$(endpoint_host portal "$ep")"; [[ "$host" == '*' ]] && host=127.0.0.1
+  fp="$(timeout 8 openssl s_client -alpn nw2 -connect "${host}:${port}" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)"
+  [[ -n "$fp" ]] || return 1
+  printf '%s\n' "$fp"
+}
+
 fingerprint() {
   require_root; install_runtime_deps; [[ -s "$URL_FILE" ]] || die "$(tr_msg "No config" "没有配置")"
-  local u role tls cert ep port host fp
+  local u role tls cert ep fp
   IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"; [[ "$role" == portal ]] || die "$(tr_msg "Fingerprint is a Portal operation" "仅 Portal 支持获取指纹")"
   tls="$(query_get "$u" tls)"; tls="${tls:-1}"
   if [[ "$tls" == 2 ]]; then
@@ -1447,9 +1640,7 @@ fingerprint() {
     return
   fi
   ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || die "$(tr_msg "Portal has no TCP carrier; no TLS certificate to probe" "Portal 没有 TCP carrier，无法探测 TLS 证书")"
-  port="$(endpoint_tcp_port portal "$ep")"; host="$(endpoint_host portal "$ep")"; [[ "$host" == '*' ]] && host=127.0.0.1
-  fp="$(timeout 8 openssl s_client -alpn nw2 -connect "${host}:${port}" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)"
-  [[ -n "$fp" ]] || die "$(tr_msg "Cannot read V2 TLS fingerprint" "无法读取 V2 TLS 指纹")"
+  fp="$(local_portal_fingerprint "$u")" || die "$(tr_msg "Cannot read V2 TLS fingerprint" "无法读取 V2 TLS 指纹")"
   printf '%s\n' "$fp"
 }
 
@@ -1468,7 +1659,7 @@ port_listening() {
 
 doctor_action() {
   require_root; require_systemd; install_runtime_deps
-  local fail=0 warnc=0 u role ep p fam tls f
+  local fail=0 warnc=0 u role ep p fam tls f ik kk nx
   printf '\n%b%s%b\n' "$C_CYAN" "$(tr_msg 'Nowhere V2 Doctor' 'Nowhere V2 健康检查')" "$C_NC"
   if [[ -x "$CURRENT_LINK/nowhere" ]]; then ok "$(tr_msg "V2 binary exists" "V2 二进制文件存在")"; else warn "$(tr_msg "V2 binary missing" "V2 二进制文件缺失")"; fail=$((fail+1)); fi
   if [[ -L "$BIN_LINK" && -x "$BIN_LINK" ]]; then
@@ -1485,6 +1676,21 @@ doctor_action() {
   systemctl is-active --quiet "$SERVICE_NAME" && ok "$(tr_msg "Service active" "服务正在运行")" || { warn "$(tr_msg "Service not active" "服务未运行")"; fail=$((fail+1)); }
   if [[ -n "$u" ]]; then
     role="$(url_role "$u")"; ep="$(url_endpoint "$u")"
+    # A 2.2.0+ core refuses to start on legacy shared keys; surface the reason
+    # instead of leaving only "service not active".
+    ik="$(installed_core_version)"; ik="${ik:-$VERSION}"
+    if version_ge "$ik" v2.2.0 && [[ "$role" == portal ]]; then
+      kk="$(url_key "$u")"
+      if ! is_valid_key_value "$kk"; then
+        warn "$(tr_msg "Portal key is not 32-64 lowercase hex, and the installed core (${ik}) refuses to start with a legacy key. Rotate with an auto-generated key and update every peer." "Portal 密钥不是 32-64 位小写十六进制，而当前 Core（${ik}）会因旧格式密钥拒绝启动。请轮换为自动生成的新密钥并同步更新所有对端。")"
+        warnc=$((warnc+1))
+      fi
+      nx="$(query_get "$u" next)"
+      if [[ -n "$nx" && "$nx" != none ]] && ! is_valid_key_value "${nx%@*}"; then
+        warn "$(tr_msg "Next-hop key inside next= is not 32-64 lowercase hex; a 2.2.0+ core refuses it." "next= 中的下一跳密钥不是 32-64 位小写十六进制；2.2.0+ Core 将拒绝该配置。")"
+        warnc=$((warnc+1))
+      fi
+    fi
     if [[ "$role" == portal ]]; then
       if [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]]; then p="$(endpoint_tcp_port portal "$ep")"; fam="$(endpoint_tcp_family portal "$ep")"; port_listening_tcp "$p" "$fam" && ok "$(tr_msg "TCP carrier listens on ${p} (family ${fam})" "TCP carrier 正在监听 ${p}（地址族 ${fam}）")" || { warn "$(tr_msg "TCP carrier not listening on ${p} for family ${fam}" "TCP carrier 未在 ${p} 监听（地址族 ${fam}）")"; fail=$((fail+1)); }; fi
       if [[ "$(endpoint_has_udp portal "$ep")" == 1 ]]; then p="$(endpoint_udp_port portal "$ep")"; fam="$(endpoint_udp_family portal "$ep")"; port_listening_udp "$p" "$fam" && ok "$(tr_msg "UDP carrier listens on ${p} (family ${fam})" "UDP carrier 正在监听 ${p}（地址族 ${fam}）")" || { warn "$(tr_msg "UDP carrier not listening on ${p} for family ${fam}" "UDP carrier 未在 ${p} 监听（地址族 ${fam}）")"; fail=$((fail+1)); }; fi
@@ -1726,7 +1932,7 @@ Nowhere V2 管理器 v${SCRIPT_VERSION}（通道：${SCRIPT_CHANNEL}）
 Core 版本策略：
   默认：${DEFAULT_CORE_VERSION}（安装时解析为官网最新稳定 v2.x.y）
   允许：指定稳定版 v2.x.y，或 latest-v2
-  拒绝：V1、普通 latest、预发布版本、未来主版本
+  拒绝：V1、普通 latest、预发布版本、v3.x（NW3 协议，本管理器不支持）
 
 主要 V2 参数：
   -y, --yes                    非交互模式
@@ -1744,9 +1950,11 @@ Core 版本策略：
   --sni NAME|none --pin SHA256|none
   --vector-socks HOST:PORT
   --out-socks HOST:PORT|none --next KEY@ENDPOINT|none
-  --rate Mbps --etar Mbps --dial auto|IP --log LEVEL
+  --rate Mbps --etar Mbps --log LEVEL
+  --dial auto|IP                         出站源 IP（与 --dial4/--dial6 互斥）
+  --dial4 auto|IP --dial6 auto|IP        Nowhere 2.2.0+ 双栈出站源地址（auto 或裸 IP）
   --memory-profile memory|balanced|throughput
-  --morph-prelude low7|full8   TCP Morph 客户端 prelude 策略（默认 low7）
+  --morph-prelude low7|full8   TCP Morph 客户端 prelude 策略（默认 full8）
   --config-mode ask|quick|advanced | --quick | --advanced
   --keep-releases N            保留旧 Release 数量（0-20）
   --libc auto|gnu|musl --swap auto|off|MB --keep-source
@@ -1778,7 +1986,7 @@ Usage:
 Core version policy:
   Default: ${DEFAULT_CORE_VERSION} (resolved to the newest stable v2.x.y at install time)
   Allowed: exact stable v2.x.y or latest-v2
-  Rejected: V1, plain 'latest', prereleases, future major versions
+  Rejected: V1, plain 'latest', prereleases, v3.x (NW3 is not supported by this manager)
 
 Important V2 options:
   -y, --yes
@@ -1796,9 +2004,11 @@ Important V2 options:
   --sni NAME|none --pin SHA256|none
   --vector-socks HOST:PORT
   --out-socks HOST:PORT|none --next KEY@ENDPOINT|none
-  --rate Mbps --etar Mbps --dial auto|IP --log LEVEL
+  --rate Mbps --etar Mbps --log LEVEL
+  --dial auto|IP                        Outbound source IP (mutually exclusive with --dial4/--dial6)
+  --dial4 auto|IP --dial6 auto|IP       Nowhere 2.2.0+ dual-stack outbound sources (auto or bare IP)
   --memory-profile memory|balanced|throughput
-  --morph-prelude low7|full8    TCP Morph client prelude policy (default low7)
+  --morph-prelude low7|full8    TCP Morph client prelude policy (default full8)
   --config-mode ask|quick|advanced | --quick | --advanced
   --keep-releases N (0-20)
   --libc auto|gnu|musl --swap auto|off|MB --keep-source
@@ -1841,7 +2051,9 @@ parse_args() {
       --morph) set_cli MORPH "${2:?missing --morph}"; shift 2 ;;
       --rate) set_cli RATE "${2:?missing --rate}"; shift 2 ;;
       --etar) set_cli ETAR "${2:?missing --etar}"; shift 2 ;;
-      --dial) set_cli DIAL "${2:?missing --dial}"; shift 2 ;;
+      --dial) set_cli DIAL "${2:?missing --dial}"; validate_dial_value any "$DIAL"; shift 2 ;;
+      --dial4) set_cli DIAL4 "${2:?missing --dial4}"; validate_dial_value 4 "$DIAL4"; shift 2 ;;
+      --dial6) set_cli DIAL6 "${2:?missing --dial6}"; validate_dial_value 6 "$DIAL6"; shift 2 ;;
       --log) set_cli LOG_LEVEL "${2:?missing --log}"; shift 2 ;;
       --out-socks) set_cli OUT_SOCKS "${2:?missing --out-socks}"; shift 2 ;;
       --next) set_cli NEXT "${2:?missing --next}"; shift 2 ;;
@@ -1889,7 +2101,7 @@ apply_noninteractive_defaults() {
 
 main() {
   parse_args "$@"
-  validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"; validate_config_mode "$CONFIG_MODE"; validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
+  validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"; validate_config_mode "$CONFIG_MODE"; validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"; validate_dial_settings
   [[ "$LANG_CODE" == ask && "$ACTION" != menu ]] && resolve_language auto
   # Defaults are only synthesized for a fresh generated configuration. Existing
   # configs are loaded inside configure_action, and imported URLs carry their own key/endpoint.

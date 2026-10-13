@@ -122,8 +122,25 @@ t_ok "role: portal accepted"      0 "$(t_rc validate_role portal)"
 t_ok "role: bogus rejected"       1 "$(t_rc validate_role bogus)"
 t_ok "tls: 2 accepted"            0 "$(t_rc validate_tls 2)"
 t_ok "tls: 3 rejected"            1 "$(t_rc validate_tls 3)"
-t_ok "log: event accepted"        0 "$(t_rc validate_log event)"
+t_ok "log: event rejected"        1 "$(t_rc validate_log event)"
 t_ok "log: loud rejected"         1 "$(t_rc validate_log loud)"
+t_ok "key: 32-hex accepted"       0 "$(t_rc validate_key "$(printf 'a%.0s' $(seq 1 32))")"
+t_ok "key: 64-hex accepted"       0 "$(t_rc validate_key "$(printf 'a%.0s' $(seq 1 64))")"
+t_ok "key: 31-hex rejected"       1 "$(t_rc validate_key "$(printf 'a%.0s' $(seq 1 31))")"
+t_ok "key: 65-hex rejected"       1 "$(t_rc validate_key "$(printf 'a%.0s' $(seq 1 65))")"
+t_ok "key: uppercase rejected"    1 "$(t_rc validate_key "$(printf 'A%.0s' $(seq 1 32))")"
+t_ok "key: non-hex rejected"      1 "$(t_rc validate_key "validkey_1234567890")"
+t_ok "vector key: legacy ok"      0 "$(t_rc validate_vector_key "validkey_1234567890")"
+t_ok "vector key: 64-hex ok"      0 "$(t_rc validate_vector_key "$(printf 'a%.0s' $(seq 1 64))")"
+t_ok "dial4: IP ok"               0 "$(t_rc validate_dial_value 4 192.0.2.10)"
+t_ok "dial4: wrong family out"    1 "$(t_rc validate_dial_value 4 2001:db8::10)"
+t_ok "dial6: IP ok"               0 "$(t_rc validate_dial_value 6 2001:db8::10)"
+t_ok "dial6: mapped out"          1 "$(t_rc validate_dial_value 6 ::ffff:192.0.2.10)"
+t_ok "dial6: zone out"            1 "$(t_rc validate_dial_value 6 'fe80::1%eth0')"
+t_ok "dial: auto ok"              0 "$(t_rc validate_dial_value any auto)"
+t_ok "dial: bracketed out"        1 "$(t_rc validate_dial_value any '[2001:db8::10]')"
+t_ok "dial+dial6 conflict"        1 "$(DIAL=192.0.2.10; DIAL4=auto; DIAL6=2001:db8::10; t_rc validate_dial_settings)"
+t_ok "dial4+auto dial6 ok"        0 "$(DIAL=auto; DIAL4=192.0.2.10; DIAL6=auto; t_rc validate_dial_settings)"
 t_ok "morph-prelude: full8 ok"    0 "$(t_rc validate_morph_prelude full8)"
 t_ok "morph-prelude: bogus out"   1 "$(t_rc validate_morph_prelude bogus)"
 t_ok "memory-profile: memory ok"  0 "$(t_rc validate_memory_profile memory)"
@@ -131,6 +148,7 @@ t_ok "memory-profile: bogus out"  1 "$(t_rc validate_memory_profile bogus)"
 t_ok "version: latest-v2 ok"      0 "$(t_rc validate_version_arg latest-v2)"
 t_ok "version: v2.1.0 ok"         0 "$(t_rc validate_version_arg v2.1.0)"
 t_ok "version: v1.8.3 rejected"   1 "$(t_rc validate_version_arg v1.8.3)"
+t_ok "version: v3.0.0 rejected"   1 "$(t_rc validate_version_arg v3.0.0)"
 t_ok "keep-releases: 20 ok"       0 "$(t_rc validate_keep_releases 20)"
 t_ok "keep-releases: 21 out"      1 "$(t_rc validate_keep_releases 21)"
 
@@ -175,13 +193,13 @@ t_ok "no family yields 0"           "0"   "$(endpoint_tcp_family portal '*:2082'
 t_section "URL build -> validate -> reload round trip"
 
 reset_portal() {
-  ROLE=portal; KEY="MyKey_1234567890abc"; ENDPOINT="*:2082"; TLS=1; MORPH=0
-  RATE=0; ETAR=0; DIAL=auto; LOG_LEVEL=info; CERT=""; TLS_KEY=""
+  ROLE=portal; KEY="$(printf 'a%.0s' $(seq 1 64))"; ENDPOINT="*:2082"; TLS=1; MORPH=0
+  RATE=0; ETAR=0; DIAL=auto; DIAL4=auto; DIAL6=auto; LOG_LEVEL=info; CERT=""; TLS_KEY=""
   OUT_SOCKS=none; NEXT=none; UP=auto; DOWN=auto; MUX=0; SNI=none; PIN=none
   PUBLIC_HOST=""; NODE_NAME=""
 }
 reset_vector() {
-  ROLE=vector; KEY="MyKey_1234567890abc"; ENDPOINT="relay.example:2082"; TLS=1; MORPH=0
+  ROLE=vector; KEY="$(printf 'a%.0s' $(seq 1 64))"; ENDPOINT="relay.example:2082"; TLS=1; MORPH=0
   RATE=0; ETAR=0; LOG_LEVEL=info; VECTOR_SOCKS="127.0.0.1:1082"
   UP=auto; DOWN=auto; MUX=0; SNI=none; PIN=none
 }
@@ -191,14 +209,22 @@ u="$(build_portal_url)"
 t_ok "portal+morph validates"  0 "$(t_rc validate_imported_url "$u")"
 printf '%s\n' "$u" > "$URL_FILE"; load_existing_config >/dev/null 2>&1
 t_ok "role round trips"        portal "$ROLE"
-t_ok "key round trips"         "MyKey_1234567890abc" "$KEY"
+t_ok "key round trips"         "$(printf 'a%.0s' $(seq 1 64))" "$KEY"
 t_ok "morph round trips"       1 "$MORPH"
 
-reset_portal; NEXT="nextkey_1234567890@origin.example/tcp:2006"; UP=tcp; DOWN=tcp
+reset_portal; NEXT="$(printf 'b%.0s' $(seq 1 32))@origin.example/tcp:2006"; UP=tcp; DOWN=tcp
 u="$(build_portal_url)"
 t_ok "portal+next validates"   0 "$(t_rc validate_imported_url "$u")"
 printf '%s\n' "$u" > "$URL_FILE"; load_existing_config >/dev/null 2>&1
-t_ok "next round trips verbatim" "nextkey_1234567890@origin.example/tcp:2006" "$NEXT"
+t_ok "next round trips verbatim" "$(printf 'b%.0s' $(seq 1 32))@origin.example/tcp:2006" "$NEXT"
+
+reset_portal; DIAL4=192.0.2.10; DIAL6=2001:db8::10
+u="$(build_portal_url)"
+t_ok "dial4+dial6 validates"   0 "$(t_rc validate_imported_url "$u")"
+printf '%s\n' "$u" > "$URL_FILE"; DIAL4=auto; DIAL6=auto; load_existing_config >/dev/null 2>&1
+t_ok "dial4 round trips"       "192.0.2.10"   "$DIAL4"
+t_ok "dial6 round trips"       "2001:db8::10" "$DIAL6"
+t_ok "dial stays auto"         "auto"         "$DIAL"
 
 reset_portal; OUT_SOCKS="127.0.0.1:1080"
 u="$(build_portal_url)"
@@ -234,7 +260,7 @@ t_ok "tls=2 key round trips"    "$TLS_KEY" "$TLS_KEY"
 # ---------------------------------------------------------------------------
 t_section "URL validation rules"
 
-K="AAAAAAAAAAAAAAAA"
+K="$(printf 'a%.0s' $(seq 1 32))"
 t_url() { t_rc validate_imported_url "$1"; }
 
 t_ok "password userinfo rejected"   1 "$(t_url "portal://user:pass@host:2082?tls=1")"
@@ -251,6 +277,7 @@ t_ok "sni with invalid chars"       1 "$(t_url "portal://$K@host:2082?tls=1&sni=
 t_ok "up value invalid"             1 "$(t_url "vector://$K@host:2082?socks=127.0.0.1:1080&up=quic")"
 t_ok "morph not 0/1"                1 "$(t_url "portal://$K@host:2082?tls=1&morph=2")"
 t_ok "log level invalid"            1 "$(t_url "portal://$K@host:2082?tls=1&log=loud")"
+t_ok "log event removed (2.1.1)"    1 "$(t_url "portal://$K@host:2082?tls=1&log=event")"
 t_ok "port 0"                       1 "$(t_url "portal://$K@host:0?tls=1")"
 t_ok "empty shared key"             1 "$(t_url "portal://@host:2082?tls=1")"
 t_ok "mix needs both carriers"      1 "$(t_url "vector://$K@host/tcp:2082?socks=127.0.0.1:1080&up=mix&down=mix")"
@@ -259,10 +286,28 @@ t_ok "minimal portal accepted"      0 "$(t_url "portal://$K@host:2082?tls=1")"
 t_ok "minimal vector accepted"      0 "$(t_url "vector://$K@host:2082?socks=127.0.0.1:1080")"
 t_ok "net= is unknown, accepted"    0 "$(t_url "portal://$K@host:2082?tls=1&net=mix")"
 t_ok "alpn= is unknown, accepted"   0 "$(t_url "portal://$K@host:2082?tls=1&alpn=nw2")"
-t_ok "1-char key accepted"          0 "$(t_url "portal://a@host:2082?tls=1")"
-t_ok "255-char key accepted"        0 "$(t_url "portal://$(printf 'A%.0s' $(seq 1 255))@host:2082?tls=1")"
-t_ok "256-char key rejected"        1 "$(t_url "portal://$(printf 'A%.0s' $(seq 1 256))@host:2082?tls=1")"
 t_ok "first duplicate wins"         "1" "$(query_get "portal://$K@h:2082?tls=1&morph=1&morph=0" morph)"
+
+# Nowhere 2.2.x key policy: Portal/next strict, Vector lenient.
+t_ok "portal 64-hex key accepted"   0 "$(t_url "portal://$(printf 'a%.0s' $(seq 1 64))@host:2082?tls=1")"
+t_ok "portal 31-hex key rejected"   1 "$(t_url "portal://$(printf 'a%.0s' $(seq 1 31))@host:2082?tls=1")"
+t_ok "portal 65-hex key rejected"   1 "$(t_url "portal://$(printf 'a%.0s' $(seq 1 65))@host:2082?tls=1")"
+t_ok "portal uppercase rejected"    1 "$(t_url "portal://$(printf 'A%.0s' $(seq 1 32))@host:2082?tls=1")"
+t_ok "portal legacy key rejected"   1 "$(t_url "portal://LegacyKey_1234567890@host:2082?tls=1")"
+t_ok "vector legacy key accepted"   0 "$(t_url "vector://LegacyKey_1234567890@host:2082?socks=127.0.0.1:1080")"
+t_ok "vector 1-char key accepted"   0 "$(t_url "vector://a@host:2082?socks=127.0.0.1:1080")"
+t_ok "vector 255-char key accepted" 0 "$(t_url "vector://$(printf 'A%.0s' $(seq 1 255))@host:2082?socks=127.0.0.1:1080")"
+t_ok "vector 256-char key rejected" 1 "$(t_url "vector://$(printf 'A%.0s' $(seq 1 256))@host:2082?socks=127.0.0.1:1080")"
+t_ok "next legacy key rejected"     1 "$(t_url "portal://$K@host:2082?tls=1&next=legacykey_1234567890@origin.example:2082")"
+t_ok "next 32-hex key accepted"     0 "$(t_url "portal://$K@host:2082?tls=1&next=$(printf 'b%.0s' $(seq 1 32))@origin.example:2082")"
+
+# Nowhere 2.2.0 source binding: dial4/dial6 and the dial exclusivity rule.
+t_ok "dial4 valid"                  0 "$(t_url "portal://$K@host:2082?tls=1&dial4=192.0.2.10")"
+t_ok "dial6 valid"                  0 "$(t_url "portal://$K@host:2082?tls=1&dial6=2001:db8::10")"
+t_ok "dial4 wrong family rejected"  1 "$(t_url "portal://$K@host:2082?tls=1&dial4=2001:db8::10")"
+t_ok "dial6 mapped rejected"        1 "$(t_url "portal://$K@host:2082?tls=1&dial6=::ffff:192.0.2.10")"
+t_ok "dial4 bracketed rejected"     1 "$(t_url "portal://$K@host:2082?tls=1&dial4=[192.0.2.10]")"
+t_ok "dial+dial4 conflict"          1 "$(t_url "portal://$K@host:2082?tls=1&dial=auto&dial4=192.0.2.10")"
 
 # ---------------------------------------------------------------------------
 t_section "version_ge"
@@ -358,10 +403,14 @@ t_section "prompts never spin without a terminal"
 
 t_ok "valid default returned"  info "$(no_tty prompt_choice 'Log level' info none info debug 2>/dev/null)"
 t_ok "invalid default stops"   1 "$(t_rc no_tty prompt_choice 'Log level' loud none info debug)"
-KEY=validkey_1234567890
-t_ok "valid key accepted"      0 "$(t_rc no_tty prompt_key)"
-KEY=bad
-t_ok "invalid key stops"       1 "$(t_rc no_tty prompt_key)"
+ROLE=portal; KEY="$(printf 'a%.0s' $(seq 1 32))"
+t_ok "hex key accepted (portal)"  0 "$(t_rc no_tty prompt_key)"
+ROLE=portal; KEY=validkey_1234567890
+t_ok "legacy key stops (portal)"  1 "$(t_rc no_tty prompt_key)"
+ROLE=vector; KEY=validkey_1234567890
+t_ok "legacy key ok (vector)"     0 "$(t_rc no_tty prompt_key)"
+ROLE=vector; KEY=bad
+t_ok "bad key stops (vector)"     1 "$(t_rc no_tty prompt_key)"
 
 # ---------------------------------------------------------------------------
 t_section "safe_extract_tar"
@@ -473,6 +522,54 @@ t_ok "morph unknown prev warns"     warn  "$(wmu "$U1" v2.1.0 '')"
 t_ok "morph 2.1.0 -> 2.1.0 quiet"   quiet "$(wmu "$U1" v2.1.0 v2.1.0)"
 t_ok "downgrade quiet"              quiet "$(wmu "$U1" v2.0.2 v2.1.0)"
 t_ok "morph=0 quiet"                quiet "$(wmu "$U0" v2.1.0 v2.0.2)"
+
+# ---------------------------------------------------------------------------
+t_section "warn_22_upgrade_requirements"
+
+w22() { # w22 <url> <target version> <previous version> -> warn|quiet
+  printf '%s\n' "$1" > "$URL_FILE"
+  VERSION="$2"
+  local out
+  out="$(warn_22_upgrade_requirements "$3" 2>&1 >/dev/null)"
+  [[ -n "$out" ]] && echo warn || echo quiet
+}
+HK32="$(printf 'a%.0s' $(seq 1 32))"
+PHEX="portal://${HK32}@*:2082?tls=1"
+PLEG="portal://LegacyKey_1234567890@*:2082?tls=1"
+PEVT="portal://${HK32}@*:2082?tls=1&log=event"
+VNP="vector://${HK32}@relay.example:2082?socks=127.0.0.1:1080"
+VPIN="vector://${HK32}@relay.example:2082?socks=127.0.0.1:1080&pin=$(printf 'c%.0s' $(seq 1 64))"
+PCHAIN="portal://${HK32}@*:2082?tls=1&next=legacykey_1234567890@origin.example:2082"
+t_ok "legacy portal key -> 2.2.1 warns"  warn  "$(w22 "$PLEG" v2.2.1 v2.1.2)"
+t_ok "hex portal key -> 2.2.1 quiet"     quiet "$(w22 "$PHEX" v2.2.1 v2.1.2)"
+t_ok "already on 2.2.0 quiet"            quiet "$(w22 "$PLEG" v2.2.1 v2.2.0)"
+t_ok "log=event crossing 2.1.1 warns"    warn  "$(w22 "$PEVT" v2.2.1 v2.0.2)"
+t_ok "log=event kept on 2.1.0 quiet"     quiet "$(w22 "$PEVT" v2.1.0 v2.0.2)"
+t_ok "vector without pin warns"          warn  "$(w22 "$VNP" v2.2.1 v2.1.2)"
+t_ok "vector with pin quiet"             quiet "$(w22 "$VPIN" v2.2.1 v2.1.2)"
+t_ok "portal chain legacy next warns"    warn  "$(w22 "$PCHAIN" v2.2.1 v2.1.2)"
+t_ok "downgrade to 2.1.2 quiet"          quiet "$(w22 "$PLEG" v2.1.2 v2.2.1)"
+
+# ---------------------------------------------------------------------------
+t_section "client link pin auto-fill (tls=1, Nowhere 2.2.0+)"
+
+PURL="portal://$(printf 'a%.0s' $(seq 1 32))@*:2082?tls=1"
+printf '%s\n' "$PURL" > "$URL_FILE"
+PUBLIC_HOST=relay.example.com
+CLIENT_UP=auto; CLIENT_DOWN=auto; CLIENT_MUX=0; CLIENT_SNI=auto; CLIENT_PIN=none
+PIN64="$(printf 'c%.0s' $(seq 1 64))"
+local_portal_fingerprint() { printf '%s\n' "$PIN64"; }
+link="$(build_native_vector_link_from_portal "$PURL" 2>/dev/null)"
+t_ok "tls=1 link auto-pins"    0 "$(printf '%s' "$link" | grep -q "pin=${PIN64}" && echo 0 || echo 1)"
+local_portal_fingerprint() { return 1; }
+link="$(build_native_vector_link_from_portal "$PURL" 2>/dev/null)"
+stderr="$(build_native_vector_link_from_portal "$PURL" 2>&1 >/dev/null)"
+t_ok "no pin when unreachable"      1 "$(printf '%s' "$link" | grep -q 'pin=' && echo 0 || echo 1)"
+t_ok "unreachable portal warns"     warn "$([[ -n "$stderr" ]] && echo warn || echo quiet)"
+CLIENT_PIN="$PIN64"
+link="$(build_native_vector_link_from_portal "$PURL" 2>/dev/null)"
+t_ok "explicit --client-pin wins"   0 "$(printf '%s' "$link" | grep -q "pin=${PIN64}" && echo 0 || echo 1)"
+CLIENT_PIN=none
 
 # ---------------------------------------------------------------------------
 t_section "self-update source"

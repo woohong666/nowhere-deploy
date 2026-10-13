@@ -8,16 +8,23 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.2.8
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.3.0
 
 #### ✨ Added
 
-- **Nowhere v2.1.0 support** (`v1.2.0`): raised the default core version and added the `--morph-prelude low7|full8` option plus the `NOW_MORPH_TCP_PRELUDE` systemd environment variable, matching upstream's new client-side TCP Morph prelude policy. `low7` remains the upstream default. (#1)
+- **Nowhere v2.2.x support** (`v1.3.0`): the V2 manager now tracks the 2.2.x core semantics end to end. Shared keys are generated as 64 lowercase hex characters and validated as 32-64 (the 2.2.0 policy; 64 stays valid on an exact v2.2.0 pin), native `next=` keys follow the same rule, and `--dial4` / `--dial6` expose the new dual-stack outbound source binding — mutually exclusive with `dial`, with the same rule enforced for imported URLs.
+- **Upgrade warnings for the 2.1.1 / 2.2.0 admission changes** (`v1.3.0`): `install` / `upgrade` warn when an existing config crosses a boundary that would refuse it — a legacy Portal or next-hop key, `log=event` (removed in 2.1.1), or a Vector / chained hop without a pin once certificate verification became mandatory in 2.2.0. `doctor` also names a legacy Portal key when the installed core is `>=2.2.0`.
+- **Auto-pin for generated-certificate client links** (`v1.3.0`): on a `tls=1` Portal, `links` fetches the running certificate fingerprint and embeds `pin=` in the generated Vector URL, with a warning that a generated certificate changes on every Portal restart (prefer `tls=2` in production).
+- **Nowhere v2.1.0 support** (`v1.2.0`): raised the default core version and added the `--morph-prelude low7|full8` option plus the `NOW_MORPH_TCP_PRELUDE` systemd environment variable, matching upstream's new client-side TCP Morph prelude policy. `low7` was the upstream default at that time; upstream moved to `full8` in 2.2.0 (see the v1.3.0 entries). (#1)
 - **Morph upgrade warning** (`v1.2.2`): `install` / `upgrade` now warn when a `morph=1` config actually crosses the 2.1.0 wire break. It reads the previously installed core version from `RELEASE-INFO`, so the warning stays quiet once every peer is already on `>=2.1.0`. (#3)
 - **Accurate status output** (`v1.2.3`): `status` reports the Core version actually installed (read from `RELEASE-INFO`, falling back to `manager.conf`) instead of restating the configured target. (#4)
 
 #### 🐛 Fixed
 
+- **Critical** (`v1.3.0`): fresh installs on a Nowhere 2.2.x core were broken. `random_key` generated base64-style keys and `validate_key` accepted any 16-255 safe characters, but a 2.2.0+ Portal refuses to start unless its listener (and each enabled native `next`) key is 32-64 lowercase hex. Keys are now generated and validated accordingly; the Vector role keeps upstream's documented 1-255 byte client leniency with a warning, so it can still reach a Portal that runs `<=2.1`.
+- **Critical** (`v1.3.0`): `tls=1` client links could never connect on 2.2.0+. Native clients now always verify the peer certificate against the system CA and the endpoint hostname, and `pin=none` no longer disables verification, so a generated certificate requires an explicit pin. `links` auto-fills it (above) and `fingerprint` remains the documented way to obtain it through a trusted channel.
+- (`v1.3.0`): `log=event` was still accepted by the validator, the advanced wizard, and the imported-URL checker although Nowhere 2.1.1 removed it and the core now refuses to start with it.
+- (`v1.3.0`): `doctor` now reports a legacy Portal / next-hop key on a `>=2.2.0` core instead of leaving only "service not active".
 - `manager.conf` kept the pre-upgrade `CORE_VERSION` after a binary-only `install`/`upgrade` (`v1.2.7`). That path only replaces the binary and never rewrites the metadata, so the recorded version drifted from the installed one. The file's version fields are now refreshed in place — deliberately *not* by rewriting the whole file, because `load_meta` does not restore every field (`ROLE`, for instance) and the defaults would be written instead. (#10)
 - **Critical** (`v1.2.6`): `prompt_choice` and `prompt_key` could spin forever. When `/dev/tty` was unavailable the `read` failed, the default was substituted, and if that default was not in the allowed list the retry loop never terminated — it printed an invalid-choice warning indefinitely. Reproduced: a 3-second run emitted 12,365 lines and never returned. Reachable from `NOWHERE_V2_LOG=loud sudo bash nowhere-v2.sh configure --advanced` (or any invalid `NOWHERE_V2_*` value feeding a wizard prompt) on a host without a controlling terminal. Both now accept a valid default and otherwise stop with a message naming the rejected value and the allowed ones. (#9)
 - `safe_extract_tar` validated member paths but not member types, so a tar containing a symlink or hardlink was extracted unchecked. It now refuses link members, matching the fact that a release asset only ever contains one regular file. (#9)
@@ -37,6 +44,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🔄 Changed
 
+- `DEFAULT_MORPH_PRELUDE` is now `full8` (`v1.3.0`), matching the upstream default since 2.2.0. Persisted `MORPH_PRELUDE` values (including an explicit `low7`) are left untouched, and `low7` remains a supported explicit choice.
+- The version policy now states that `v3.x` / NW3 is out of scope (`v1.3.0`): `--version` keeps accepting only `latest-v2` or an exact `v2.x.y`, which also keeps `latest-v2` resolving to the newest stable v2 release (currently `v2.2.1`).
 - **Self-update now works out of the box** (`v1.2.8`). `SELF_UPDATE_URL` defaults to this repository's `main` branch, so menu option [18] and `self-update` no longer require `NOWHERE_V2_SELF_URL` to be configured first — previously they just warned and returned. The variable still overrides the source (point it at a fork or mirror), and setting it to an empty string disables self-update deliberately. (#12)
 - The doctor Morph reminder was reworded (`v1.2.8`) to say that peer versions cannot be checked from this host. It fires whenever `morph=1` because the local side genuinely cannot verify the rest of the path, and the old wording read like a detected fault rather than a standing reminder. (#12)
 - Installs and release pruning are now serialised by the existing build lock (`v1.2.7`). `install_action` and `cleanup_old_releases` acquire it, so two concurrent runs can no longer race on the releases directory or the `current` symlink. It is idempotent, so the source-build path (which already held it) is unaffected, and a stale lock from a crashed run is still detected by PID and reclaimed. (#10)
@@ -47,6 +56,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🧹 Cleanup
 
+- Removed the unused `allowed` query-key set from the imported-URL validator (`v1.3.0`). Unknown keys follow upstream first-wins/ignore semantics, so the set only documented a rule that was never enforced.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
@@ -71,6 +81,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ### 📚 Documentation
 
+- **README (EN/zh-CN) updated for Nowhere v2.2.x** (`v1.3.0`): documented the 32-64 lowercase-hex shared-key policy, the always-on certificate verification and pin semantics for native clients, the `full8` Morph default, and `--dial4` / `--dial6`.
+- **Documented the official v3.0.0 / NW3 release as out of scope** (`v1.3.0`): NW3 is wire-incompatible with NW2, so the manager deliberately stays on the `v2.x` line and refuses `v3.x` tags. `latest-v2` keeps resolving to the newest stable v2 release (currently `v2.2.1`).
 - **README (EN/zh-CN) rewritten V2-first** (#6): V2 is now the primary channel and is documented end to end — script selection, release vs source, prerequisites, quick start (interactive and non-interactive, with Portal / Vector / TLS 2 / Morph examples), TLS and `--copy-cert`, per-endpoint firewall rules, client links (`vector://` vs `nowhere://`), daily operations, upgrade / rollback / backup / uninstall, the full CLI reference, file layout and sandbox hardening, and an FAQ covering the 2.1.0 Morph wire break. V1 is reduced to a deployment-only §12 that links to its detailed docs.
 - Corrected the V2 default version to `latest-v2` (was documented as `v2.0.0`), documented `status` as reporting the installed Core version, and removed a documented `--socks` option that does not exist (the option is `--out-socks`).
 - README (EN/zh-CN): corrected TLS default (`1`), version default (`latest`), `url.conf`/`manager.conf` file layout, `fingerprint` command name (was `show-fingerprint`), removed non-existent `--lang`/`--commit`/`--jobs` rows from the unified-script table.
