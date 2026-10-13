@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.4.1
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.4.0
 
 #### ✨ Added
 
@@ -24,9 +24,6 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🐛 Fixed
 
-- (`v1.4.1`): `links` treated "issuer != subject" as system-trusted, so a `tls=2` certificate signed by a **private CA** produced a pin-less link that every client rejects. The decision now verifies the chain with `openssl verify` against the system store: self-signed *and* private-CA certificates get the auto-filled pin, and only genuinely trusted chains stay pin-free.
-- (`v1.4.1`): key validation accepted 32-63 hex characters regardless of the target core, but an **exact `v2.2.0` pin requires exactly 64**. `validate_key`, the wizard prompt, `next=` validation, the imported-URL checker, and the 2.2.0 upgrade warnings are now version-aware; `latest-v2` and v2.2.1+ keep accepting 32-64.
-- (`v1.4.1`): `backup` and `doctor --fix` did not take the build lock, so a concurrent `install`/`configure` could observe or produce inconsistent state. Both now serialise on the same lock as every other mutating action.
 - **Critical** (`v1.3.0`): fresh installs on a Nowhere 2.2.x core were broken. `random_key` generated base64-style keys and `validate_key` accepted any 16-255 safe characters, but a 2.2.0+ Portal refuses to start unless its listener (and each enabled native `next`) key is 32-64 lowercase hex. Keys are now generated and validated accordingly; the Vector role keeps upstream's documented 1-255 byte client leniency with a warning, so it can still reach a Portal that runs `<=2.1`.
 - **Critical** (`v1.3.0`): `tls=1` client links could never connect on 2.2.0+. Native clients now always verify the peer certificate against the system CA and the endpoint hostname, and `pin=none` no longer disables verification, so a generated certificate requires an explicit pin. `links` auto-fills it (above) and `fingerprint` remains the documented way to obtain it through a trusted channel.
 - (`v1.3.0`): `log=event` was still accepted by the validator, the advanced wizard, and the imported-URL checker although Nowhere 2.1.1 removed it and the core now refuses to start with it.
@@ -74,6 +71,21 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.1.0
+
+#### Added
+- Manager-only, channel-checked self-update with downgrade refusal and atomic backup/replacement.
+- Complete 22-action bilingual looping menu and Portal/Vector/Egress installation wizards.
+- `versions`, `generate-key`, redacted `probe`, status panel and persisted language selection.
+- Native pinned links plus canonical pin-free share links and optional QR rendering.
+- Optional `doctor --probe` diagnostics; existing transaction, lock, PEM and role guards retained.
+- Expanded offline, non-root sandbox regression coverage and bilingual operation documentation.
+
+#### Fixed
+- Interactive prompts (menu, wizard, confirmations) are visible again: an integration review found every `read -p` label hidden behind a stderr redirect, turning the wizard into blind input.
+- `rate`/`etar` configured through `--url-file` survive a wizard or CLI reconfigure instead of being dropped from the rebuilt URL; the same pre-load keeps morph/out/in/pin/SNI/dial settings on CLI reconfigures.
+- The test suite skips cleanly on hosts without util-linux / GNU coreutils (flock, timeout, chmod/chown `--reference`) instead of failing.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.0.1
 
 A new, fully isolated manager for the Nowhere `v3.x` line (NW3). It shares no
@@ -112,7 +124,6 @@ NW3 is wire-incompatible with NW2, with no negotiation or fallback.
 
 ### 📚 Documentation
 
-- README (EN/zh-CN): FAQ Q8 explains that raw TLS probes must offer ALPN `nw2`, and that a `morph=1` portal cannot be probed with plain TLS at all (`v1.4.1`).
 - README (EN/zh-CN): added the V3 (NW3) channel section — quick start, the V2/V3 isolation table, and the one-registered-Egress behavior (`v1.4.0`).
 - `ACCEPTANCE.md`: added a V3 acceptance track — persistent pin, Vector via `--url-file`, Egress registration and offline behavior, and the role-switch guard (`v1.4.0`).
 - **README (EN/zh-CN) updated for Nowhere v2.2.x** (`v1.3.0`): documented the 32-64 lowercase-hex shared-key policy, the always-on certificate verification and pin semantics for native clients, the `full8` Morph default, and `--dial4` / `--dial6`.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.0.1
+# Nowhere V3 isolated manager v1.1.0
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
+# v1.1.0: bilingual operations menu/wizards, channel-safe self-update, versions,
+#   generate-key, redacted probe, share links/optional QR and language persistence.
 # v1.0.1 integration fixes: reuse the existing staged PEM on reconfigure so the
 #   client pin stays stable; guard role switches in configure; tolerate an
 #   unreadable manager.conf for `validate`; prune superseded PEM directories.
@@ -8,7 +10,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.0.1"
+readonly SCRIPT_VERSION="1.1.0"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -21,7 +23,7 @@ readonly CONFIG_DIR="/etc/nowhere-v3"
 readonly URL_FILE="$CONFIG_DIR/url.conf" META_FILE="$CONFIG_DIR/manager.conf" TLS_DIR="$CONFIG_DIR/tls"
 readonly UNIT_FILE="/etc/systemd/system/nowhere-v3.service"
 readonly BUILD_LOCK_DIR="/run/nowhere-v3-build.lock.d"
-LANG_CODE=zh
+LANG_CODE="${NOWHERE_V3_LANG:-zh}"
 C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_NC=''
 BUILD_LOCK_HELD=0
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
@@ -47,6 +49,17 @@ ACTION=menu
 ASSUME_YES=0
 PURGE=0
 ALLOW_ROLE_SWITCH=0
+readonly DEFAULT_SELF_UPDATE_URL="https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh"
+readonly SELF_UPDATE_URL="${NOWHERE_V3_SELF_URL-$DEFAULT_SELF_UPDATE_URL}"
+MANAGER_FILE="${BASH_SOURCE[0]}"
+NODE_NAME=Nowhere-V3
+DIAL='' DIAL4='' DIAL6='' RATE='' ETAR=''
+PROBE_TARGET=example.com:443
+DOCTOR_PROBE=0
+LANG_SET=0
+WIZARD_REQUESTED=0
+REINSTALL_MODE=0
+ROLE_SET=0
 TX_DIR=''
 TX_COMMITTED=0
 TX_ACTIVE=0
@@ -77,7 +90,7 @@ require_systemd() {
 
 require_command() { has_cmd "$1" || die "$(tr_msg "Missing command: $1" "缺少命令: $1")"; }
 
-prompt_confirm() { local a; read -r -p "$1 [y/N]: " a </dev/tty || a=""; [[ "$a" =~ ^[Yy] ]]; }
+prompt_confirm() { local a; read -r -p "$1 [y/N]: " a </dev/tty || a=""; [[ "$a" =~ ^[Yy]([Ee][Ss])?$ ]]; }
 
 release_build_lock() {
   if [[ "$BUILD_LOCK_HELD" -eq 1 ]]; then
@@ -91,7 +104,7 @@ acquire_build_lock() {
   [[ "$BUILD_LOCK_HELD" -eq 1 ]] && return 0
   require_root; require_command flock
   exec {BUILD_LOCK_FD}>"${BUILD_LOCK_DIR%.d}"
-  flock -n "$BUILD_LOCK_FD" || die "另一个 V3 管理操作正在运行"
+  flock -n "$BUILD_LOCK_FD" || die "$(tr_msg "Another V3 management operation is running" "另一个 V3 管理操作正在运行")"
   BUILD_LOCK_HELD=1
 }
 
@@ -139,7 +152,7 @@ resolve_version() {
   local tmp page found best="" count
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
   for ((page=1;page<=20;page++)); do
-    curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=100&page=${page}" "$tmp" || die "无法获取官方发布列表"
+    curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=100&page=${page}" "$tmp" || die "$(tr_msg "Cannot fetch the official release list" "无法获取官方发布列表")"
     found="$(python3 - "$tmp" <<'PY'
 import json,re,sys
 r=json.load(open(sys.argv[1])); assert isinstance(r,list)
@@ -147,15 +160,15 @@ c=[(tuple(map(int,x['tag_name'][1:].split('.'))),x['tag_name']) for x in r if re
 print(max(c)[1] if c else '')
 print(len(r))
 PY
-)" || die "发布元数据无效"
+)" || die "$(tr_msg "Invalid release metadata" "发布元数据无效")"
     count="${found##*$'\n'}"; found="${found%%$'\n'*}"
     if [[ -n "$found" ]] && { [[ -z "$best" ]] || version_ge "$found" "$best"; }; then best="$found"; fi
     if ((count<100)); then
-      [[ -n "$best" ]] || die "未找到稳定 V3 版本"
+      [[ -n "$best" ]] || die "$(tr_msg "No stable V3 release found" "未找到稳定 V3 版本")"
       VERSION="$best"; return 0
     fi
   done
-  die "发布列表超过扫描上限，请显式指定稳定版标签"
+  die "$(tr_msg "Release scan limit reached; specify a stable tag" "发布列表超过扫描上限，请显式指定稳定版标签")"
 }
 
 release_asset_fields() {
@@ -196,9 +209,11 @@ safe_extract_tar() {
   python3 - "$1" "$2" <<'PY'
 import sys,tarfile,pathlib,shutil
 with tarfile.open(sys.argv[1],'r:gz') as t:
-    members=t.getmembers()
+    members=t.getmembers(); seen=set()
     for m in members:
         p=pathlib.PurePosixPath(m.name)
+        if str(p) in seen: raise SystemExit('Duplicate archive member')
+        seen.add(str(p))
         if p.is_absolute() or '..' in p.parts or not (m.isfile() or m.isdir()):
             raise SystemExit('Unsafe archive member')
     bins=[m for m in members if m.isfile() and pathlib.PurePosixPath(m.name).name=='nowhere']
@@ -214,7 +229,7 @@ install_release() {
   local json fields name url digest expected actual tmp archive bin bsha target release_dir
   json="$(mktemp)"; CLEANUP_PATHS+=("$json")
   curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${VERSION}" "$json" || die "$(tr_msg "Failed to read release metadata" "读取发布元数据失败")"
-  python3 - "$json" "$VERSION" <<'PYMETA' || die "发布标签不是匹配的稳定正式版"
+  python3 - "$json" "$VERSION" <<'PYMETA' || die "$(tr_msg "Release tag is not a matching stable release" "发布标签不是匹配的稳定正式版")"
 import json,sys
 r=json.load(open(sys.argv[1]))
 assert r.get('tag_name')==sys.argv[2] and not r.get('draft') and not r.get('prerelease')
@@ -341,27 +356,26 @@ cleanup_old_releases() {
 }
 
 version_ge() {
-  local a="${1#v}" b="${2#v}" a1 a2 a3 b1 b2 b3 ap bp
-  [[ "$a" =~ ^[0-9]+(\.[0-9]+)*$ && "$b" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1
-  IFS=. read -r a1 a2 a3 <<<"$a"
-  IFS=. read -r b1 b2 b3 <<<"$b"
-  a1=${a1:-0}; a2=${a2:-0}; a3=${a3:-0}
-  b1=${b1:-0}; b2=${b2:-0}; b3=${b3:-0}
-  ap="$(printf '%05d%05d%05d' "$((10#$a1))" "$((10#$a2))" "$((10#$a3))")"
-  bp="$(printf '%05d%05d%05d' "$((10#$b1))" "$((10#$b2))" "$((10#$b3))")"
-  [[ "$ap" == "$bp" || "$ap" > "$bp" ]]
+  python3 - "$1" "$2" <<'PY'
+import re,sys
+v=[x.removeprefix('v') if hasattr(x,'removeprefix') else x.lstrip('v') for x in sys.argv[1:]]
+if not all(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',x) for x in v):sys.exit(1)
+sys.exit(0 if tuple(map(int,v[0].split('.'))) >= tuple(map(int,v[1].split('.'))) else 1)
+PY
 }
 
 validate_version_arg() {
-  [[ "$1" == latest-v3 || "$1" =~ ^v3\.[0-9]+\.[0-9]+$ ]] || die "仅支持稳定 V3 标签或 latest-v3；拒绝 V2"
+  [[ "$1" == latest-v3 || "$1" =~ ^v3\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "Only stable V3 tags or latest-v3 are supported; V2 is refused" "仅支持稳定 V3 标签或 latest-v3；拒绝 V2")"
 }
 # A fail-closed manager validator. Upstream ignores unknown keys; this manager
 # rejects them so accidentally importing an NW2 URL cannot silently change routing.
 v3_url() {
-  python3 - "$@" <<'PY'
-import sys,re,urllib.parse as U,ipaddress,json
+  NOWHERE_MANAGER_LANG="$LANG_CODE" python3 - "$@" <<'PY'
+import sys,re,urllib.parse as U,ipaddress,os
 op=sys.argv[1]
-def fail(m): raise SystemExit(m)
+MESSAGES={'Invalid IPv6': 'IPv6地址无效', 'Invalid host': '主机地址无效', 'Invalid port': '端口无效', 'Invalid carrier path': '载波路径无效', 'Invalid endpoint': '端点无效', 'Duplicate or missing carrier': '载波重复或缺失', 'V3 client must select one carrier': 'V3客户端必须选择单一载波', 'Egress requires QUIC/udp': 'Egress必须使用QUIC/udp', 'Address family conflict': '地址族冲突', 'SOCKS credentials must encode reserved characters': 'SOCKS凭据中的保留字符必须编码', 'Invalid SOCKS credentials': 'SOCKS凭据无效', 'SOCKS requires HOST:PORT': 'SOCKS必须使用HOST:PORT', 'Whitespace/control in URL': 'URL含空白或控制字符', 'Invalid percent encoding': '百分号编码无效', 'Invalid URL': 'URL无效', 'Invalid role URL': '角色URL无效', 'NW3 key must be exactly 32 lowercase hex characters': 'NW3密钥必须为32位小写十六进制', 'Unsupported V3 option; old NW2 and unknown parameters are refused': '不支持的V3参数；拒绝NW2及未知参数', 'Invalid morph': 'Morph无效', 'Rate must be an integer in 0..2147483647': '速率必须为0..2147483647整数', 'Conflicting source bindings': '出站源地址参数冲突', 'Invalid source IP': '出站源IP无效', 'Invalid source family': '出站源地址族无效', 'Invalid TLS mode': 'TLS模式无效', 'PEM paths required': '必须提供PEM路径', 'PEM paths must be absolute': 'PEM路径必须为绝对路径', 'PEM paths require tls=2': 'PEM路径要求tls=2', 'Egress output requires QUIC and forbids dial options': 'Portal的egress出口要求QUIC且禁止dial参数', 'Pin must be 64 lowercase hex characters': 'pin必须为64位小写十六进制', 'Invalid SNI': 'SNI无效', 'Vector requires in=': 'Vector必须指定in=', 'Links require Portal': '链接操作要求Portal角色', 'Verified local certificate pin required': '必须取得可信的本机证书pin', 'Fingerprint inspection requires a TCP listener or persistent PEM': '指纹探测需要TCP监听或持久PEM证书', 'V3 configuration OK': 'V3配置校验通过'}
+def msg(m):return MESSAGES.get(m,m) if os.environ.get('NOWHERE_MANAGER_LANG')=='zh' else m
+def fail(m): raise SystemExit(msg(m))
 def host(h,wild=False):
     if h=='*' and wild:return
     if h.startswith('[') and h.endswith(']'):
@@ -409,14 +423,19 @@ def validate(raw):
     except ValueError:fail('Invalid URL')
     role=u.scheme
     if role not in ('portal','vector','egress') or u.fragment or u.password is not None:fail('Invalid role URL')
-    key=U.unquote(u.username or '',errors='strict')
+    try:key=U.unquote(u.username or '',errors='strict')
+    except UnicodeError:fail('Invalid percent encoding')
     if not re.fullmatch(r'[0-9a-f]{32}',key):fail('NW3 key must be exactly 32 lowercase hex characters')
     ep=u.netloc.rsplit('@',1)[-1]+u.path
     h,entries=endpoint(ep,role)
     rawq={}
     for pair in u.query.split('&') if u.query else []:
-        k,_,v=pair.partition('=');k=U.unquote(k,errors='strict');rawq.setdefault(k,v)
-    q={k:U.unquote(v,errors='strict') for k,v in rawq.items()}
+        k,_,v=pair.partition('=')
+        try:k=U.unquote(k,errors='strict')
+        except UnicodeError:fail('Invalid percent encoding')
+        rawq.setdefault(k,v)
+    try:q={k:U.unquote(v,errors='strict') for k,v in rawq.items()}
+    except UnicodeError:fail('Invalid percent encoding')
     common={'morph','rate','etar'}
     allowed=common|({'out','tls','crt','key','dial','dial4','dial6'} if role=='portal' else {'in','sni','pin'} if role=='vector' else {'sni','pin','dial','dial4','dial6'})
     if set(q)-allowed:fail('Unsupported V3 option; old NW2 and unknown parameters are refused')
@@ -463,12 +482,46 @@ if op=='build':
 else:
     raw=sys.argv[2]
     role,key,ep,h,entries,q,rawq=validate(raw)
-    if op=='validate':print('V3 configuration OK')
+    if op=='validate':print(msg('V3 configuration OK'))
     elif op=='get':
         k=sys.argv[3];print({'role':role,'endpoint':ep,'shared_key':key}.get(k,q.get(k,'')))
     elif op=='rewrite-pem':
         rawq.update(tls='2',crt=U.quote(sys.argv[3],safe=''),key=U.quote(sys.argv[4],safe=''))
         print(f'{role}://{key}@{ep}?'+ '&'.join(U.quote(k,safe='')+'='+v for k,v in rawq.items()))
+    elif op=='redact':
+        print(f'{role}://***@{ep}')
+    elif op=='set-dial':
+        for k,v in zip(('dial','dial4','dial6'),sys.argv[3:]):
+            if v:rawq[k]=U.quote(v,safe='')
+        result=f'{role}://{key}@{ep}?'+ '&'.join(U.quote(k,safe='')+'='+v for k,v in rawq.items())
+        validate(result);print(result)
+    elif op=='set-advanced':
+        for k,v in zip(('rate','etar'),sys.argv[3:]):
+            if v:rawq[k]=U.quote(v,safe='')
+        result=f'{role}://{key}@{ep}?'+ '&'.join(U.quote(k,safe='')+'='+v for k,v in rawq.items())
+        validate(result);print(result)
+    elif op=='fingerprint-link':
+        if role!='portal':fail('Links require Portal')
+        tcp=next((x for x in entries if x[0]=='tcp'),None)
+        if not tcp:fail('Fingerprint inspection requires a TCP listener or persistent PEM')
+        local=h
+        if h in ('*','0.0.0.0','[::]'):local='[::1]' if tcp[1]==6 or h=='[::]' else '127.0.0.1'
+        print(f'nowhere://{key}@{local}:{tcp[2]}?morph='+q.get('morph','1'))
+    elif op=='probe-link':
+        if role!='portal':fail('Links require Portal')
+        public,pin=sys.argv[3:]
+        if ':' in public and not public.startswith('['):public='['+public+']'
+        host(public)
+        if not re.fullmatch(r'[0-9a-f]{64}',pin):fail('Verified local certificate pin required')
+        typ,_,p=next((x for x in entries if x[0]=='tcp'),entries[0])
+        print(f'vector://{key}@{public}/{typ}:{p}?morph='+q.get('morph','1')+'&pin='+pin+'&in=127.0.0.1:1083')
+    elif op=='shares':
+        if role!='portal':fail('Links require Portal')
+        public,name=sys.argv[3:]
+        if ':' in public and not public.startswith('['):public='['+public+']'
+        host(public)
+        for typ,_,p in entries:
+            print(f'nowhere://{key}@{public}:{p}?net={typ}&morph='+q.get('morph','1')+'#'+U.quote(name,safe=''))
     elif op=='links':
         if role!='portal':fail('Links require Portal')
         public,pin=sys.argv[3:]
@@ -485,20 +538,22 @@ else:
 PY
 }
 
-read_url() { [[ -s "$URL_FILE" ]] || die "尚未配置 V3"; head -n 1 "$URL_FILE"; }
+read_url() { [[ -s "$URL_FILE" ]] || die "$(tr_msg "V3 is not configured" "尚未配置 V3")"; head -n 1 "$URL_FILE"; }
 load_meta() {
   [[ -r "$META_FILE" ]] || return 0
   local k v
   while IFS='=' read -r k v; do
     case "$k" in
       PUBLIC_HOST) PUBLIC_HOST="$v" ;;
+      LANG) [[ "$v" != zh && "$v" != en ]] || LANG_CODE="$v" ;;
+      NODE_NAME) NODE_NAME="$v" ;;
       MEMORY_PROFILE) validate_memory_profile "$v"; MEMORY_PROFILE="$v" ;;
       MORPH_PRELUDE) validate_morph_prelude "$v"; MORPH_PRELUDE="$v" ;;
     esac
   done <"$META_FILE"
 }
 write_meta() {
-  printf 'SCRIPT_CHANNEL=v3\nSCRIPT_VERSION=%s\nCORE_VERSION=%s\nPUBLIC_HOST=%s\nMEMORY_PROFILE=%s\nMORPH_PRELUDE=%s\n' "$SCRIPT_VERSION" "$VERSION" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" >"$META_FILE"
+  printf 'SCRIPT_CHANNEL=v3\nSCRIPT_VERSION=%s\nCORE_VERSION=%s\nPUBLIC_HOST=%s\nMEMORY_PROFILE=%s\nMORPH_PRELUDE=%s\nLANG=%s\nNODE_NAME=%s\n' "$SCRIPT_VERSION" "$VERSION" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$LANG_CODE" "$NODE_NAME" >"$META_FILE"
   chown root:"$RUN_GROUP" "$META_FILE"; chmod 640 "$META_FILE"
 }
 # Save everything needed for service/config/binary recovery before mutation.
@@ -518,7 +573,7 @@ finish() {
   trap - EXIT
   set +e
   if [[ "$TX_STARTED" == 1 && "$TX_COMMITTED" == 0 ]]; then
-    warn "操作未完成，恢复之前的 V3 配置、服务定义和二进制链接"
+    warn "$(tr_msg "Operation failed; restoring previous V3 config, service files and binary links" "操作未完成，恢复之前的 V3 配置、服务定义和二进制链接")"
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
     rm -rf "$CONFIG_DIR"
     [[ ! -d "$TX_DIR/config" ]] || cp -a "$TX_DIR/config" "$CONFIG_DIR"
@@ -532,7 +587,7 @@ finish() {
     if [[ "$TX_ENABLED" == 1 ]]; then systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
     else systemctl disable "$SERVICE_NAME" >/dev/null 2>&1; fi
     if [[ "$TX_ACTIVE" == 1 ]]; then
-      systemctl restart "$SERVICE_NAME" && wait_service 12 || warn "服务恢复失败，请检查日志"
+      systemctl restart "$SERVICE_NAME" && wait_service 12 || warn "$(tr_msg "Service recovery failed; inspect the logs" "服务恢复失败，请检查日志")"
     fi
   fi
   for p in "${CLEANUP_PATHS[@]}"; do [[ -z "$p" ]] || rm -rf -- "$p"; done
@@ -545,14 +600,14 @@ trap 'exit 143' TERM
 
 stage_pem() {
   local cert="$1" key="$2" cp kp d
-  [[ -f "$cert" && -f "$key" ]] || die "证书或私钥不存在"
+  [[ -f "$cert" && -f "$key" ]] || die "$(tr_msg "Certificate or private key does not exist" "证书或私钥不存在")"
   d="$(mktemp -d "$TLS_DIR/pem.XXXXXX")"; chmod 750 "$d"; chown root:"$RUN_GROUP" "$d"
   install -m 640 -o root -g "$RUN_GROUP" "$cert" "$d/cert.pem"
   install -m 640 -o root -g "$RUN_GROUP" "$key" "$d/key.pem"
-  openssl x509 -in "$d/cert.pem" -noout -checkend 0 >/dev/null || die "证书无效或已过期"
+  openssl x509 -in "$d/cert.pem" -noout -checkend 0 >/dev/null || die "$(tr_msg "Certificate invalid or expired" "证书无效或已过期")"
   cp="$(openssl x509 -in "$d/cert.pem" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum)"
-  kp="$(openssl pkey -in "$d/key.pem" -passin pass: -pubout -outform DER | sha256sum)"
-  [[ "$cp" == "$kp" ]] || die "证书与私钥不匹配（仅支持无口令服务私钥）"
+  kp="$(openssl pkey -in "$d/key.pem" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum)"
+  [[ "$cp" == "$kp" ]] || die "$(tr_msg "Certificate and key mismatch; only unencrypted service keys are supported" "证书与私钥不匹配（仅支持无口令服务私钥）")"
   CERT="$d/cert.pem"; TLS_KEY="$d/key.pem"
 }
 prepare_configuration() {
@@ -565,12 +620,12 @@ prepare_configuration() {
       stage_pem "$crt" "$pk"
       u="$(v3_url rewrite-pem "$u" "$CERT" "$TLS_KEY")"
     elif [[ "$ROLE" == portal ]]; then
-      warn "导入的 tls=1 使用临时证书；重启后需要更新客户端 pin"
+      warn "$(tr_msg "Imported tls=1 uses a temporary certificate; update client pins after restart" "导入的 tls=1 使用临时证书；重启后需要更新客户端 pin")"
     fi
   else
     [[ -n "$KEY" ]] || { [[ "$ROLE" == portal ]] && KEY="$(python3 -c 'import secrets;print(secrets.token_hex(16))')"; }
     [[ -n "$ENDPOINT" ]] || { [[ "$ROLE" == portal ]] && ENDPOINT='*:2083'; }
-    [[ -n "$KEY" && -n "$ENDPOINT" ]] || die "Vector/Egress 必须提供 --key 和 --endpoint"
+    [[ -n "$KEY" && -n "$ENDPOINT" ]] || die "$(tr_msg "Vector/Egress require --key and --endpoint" "Vector/Egress 必须提供 --key 和 --endpoint")"
     if [[ "$ROLE" == portal ]]; then
       if [[ -z "$CERT" && -z "$TLS_KEY" && -s "$URL_FILE" ]]; then
         # Reuse the existing staged PEM: a reconfigure must not silently rotate
@@ -593,6 +648,8 @@ prepare_configuration() {
       fi
     fi
     u="$(v3_url build "$ROLE" "$KEY" "$ENDPOINT" "$MORPH" "$OUT" "$INGRESS" "$PIN" "$SNI" "$CERT" "$TLS_KEY")"
+    u="$(v3_url set-dial "$u" "$DIAL" "$DIAL4" "$DIAL6")"
+    u="$(v3_url set-advanced "$u" "$RATE" "$ETAR")"
   fi
   v3_url validate "$u" >/dev/null
   printf '%s\n' "$u" >"$URL_FILE.new"
@@ -609,7 +666,7 @@ activate() {
   write_launcher; write_unit
   systemctl enable "$SERVICE_NAME" >/dev/null
   systemctl restart "$SERVICE_NAME"
-  wait_service 12 || die "V3 未持续运行，触发恢复；请检查 journalctl -u nowhere-v3"
+  wait_service 12 || die "$(tr_msg "V3 did not stay active; restoring state. Check journalctl -u nowhere-v3" "V3 未持续运行，触发恢复；请检查 journalctl -u nowhere-v3")"
   TX_COMMITTED=1
 }
 mutating_setup() {
@@ -617,63 +674,80 @@ mutating_setup() {
 }
 install_action() {
   mutating_setup
-  if [[ "$ACTION" == upgrade ]]; then [[ -s "$URL_FILE" ]] || die "upgrade 需要已有 V3 配置"; fi
+  if [[ "$ACTION" == upgrade ]]; then [[ -s "$URL_FILE" ]] || die "$(tr_msg "upgrade requires existing V3 configuration" "upgrade 需要已有 V3 配置")"; fi
   if [[ -s "$URL_FILE" && ( -n "$URL_INPUT" || -n "$KEY" || -n "$ENDPOINT" || -n "$CERT" || "$ROLE" != portal || "$OUT" != direct || "$MORPH" != 1 ) ]]; then
-    die "已有 V3 配置；install/upgrade 仅更新二进制。修改配置请单独使用 configure"
+    die "$(tr_msg "Existing V3 config: install/upgrade only updates the binary. Use configure to change configuration" "已有 V3 配置；install/upgrade 仅更新二进制。修改配置请单独使用 configure")"
   fi
   begin_transaction; ensure_user
-  if [[ -s "$URL_FILE" ]]; then load_meta; v3_url validate "$(read_url)" >/dev/null
+  if [[ -s "$URL_FILE" ]]; then v3_url validate "$(read_url)" >/dev/null
   else prepare_configuration; fi
   install_release
   local actual
   actual="$("$CURRENT_LINK/nowhere" --version)"
-  [[ "$actual" == "nowhere-${VERSION} "* ]] || die "下载二进制版本与所选标签不符"
+  [[ "$actual" == "nowhere-${VERSION} "* ]] || die "$(tr_msg "Downloaded binary version does not match the selected tag" "下载二进制版本与所选标签不符")"
   write_meta; activate
   cleanup_old_releases 1
-  ok "V3 ${VERSION} 服务已启动；尚需客户端端到端验收"
+  ok "$(tr_msg "V3 ${VERSION} is active; client end-to-end acceptance is still required" "V3 ${VERSION} 服务已启动；尚需客户端端到端验收")"
 }
 configure_action() {
-  mutating_setup; [[ -x "$CURRENT_LINK/nowhere" ]] || die "请先 install"
-  [[ -n "$URL_INPUT" || ( -n "$KEY" && -n "$ENDPOINT" ) ]] || die "configure 必须明确提供 --url 或 --key 与 --endpoint"
+  mutating_setup; [[ -x "$CURRENT_LINK/nowhere" ]] || die "$(tr_msg "Run install first" "请先 install")"
+  [[ -n "$URL_INPUT" || ( -n "$KEY" && -n "$ENDPOINT" ) ]] || die "$(tr_msg "configure requires --url or both --key and --endpoint" "configure 必须明确提供 --url 或 --key 与 --endpoint")"
   if [[ -s "$URL_FILE" ]]; then
     local current_role new_role
     current_role="$(v3_url get "$(head -n 1 "$URL_FILE")" role)"
     if [[ -n "$URL_INPUT" ]]; then new_role="$(v3_url get "$URL_INPUT" role)"; else new_role="$ROLE"; fi
     if [[ "$new_role" != "$current_role" ]]; then
       if [[ "$ALLOW_ROLE_SWITCH" == 1 ]]; then
-        warn "角色从 ${current_role} 切换为 ${new_role}：原配置将被覆盖"
+        warn "$(tr_msg "Switching role ${current_role} to ${new_role}: existing config will be replaced" "角色从 ${current_role} 切换为 ${new_role}：原配置将被覆盖")"
       elif [[ "$ASSUME_YES" == 1 ]]; then
-        die "角色将从 ${current_role} 切换为 ${new_role}；确认请显式加 --allow-role-switch"
+        die "$(tr_msg "Role changes from ${current_role} to ${new_role}; explicitly add --allow-role-switch to confirm" "角色将从 ${current_role} 切换为 ${new_role}；确认请显式加 --allow-role-switch")"
       else
-        prompt_confirm "角色将从 ${current_role} 切换为 ${new_role}，原配置会被覆盖，继续？" || die "已取消角色切换"
+        prompt_confirm "$(tr_msg "Role changes from ${current_role} to ${new_role}, replacing existing config. Continue?" "角色将从 ${current_role} 切换为 ${new_role}，原配置会被覆盖，继续？")" || die "$(tr_msg "Role switch cancelled" "已取消角色切换")"
       fi
     fi
   fi
   begin_transaction; ensure_user
   VERSION="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"
-  prepare_configuration; write_meta; activate
-  ok "V3 配置已应用"
+  prepare_configuration
+  if [[ "$REINSTALL_MODE" == 1 ]]; then
+    install_release
+    local actual
+    actual="$("$CURRENT_LINK/nowhere" --version)"
+    [[ "$actual" == "nowhere-${VERSION} "* ]] || die "$(tr_msg 'Downloaded binary version does not match the selected tag' '下载二进制版本与所选标签不符')"
+  fi
+  write_meta; activate
+  ok "$(tr_msg "V3 configuration applied" "V3 配置已应用")"
 }
 local_pin() {
-  local u tls cert fp
+  local u tls cert fp link
   u="$(read_url)"
-  [[ "$(v3_url get "$u" role)" == portal ]] || die "仅 Portal 支持本机 PEM 指纹"
+  [[ "$(v3_url get "$u" role)" == portal ]] || die "$(tr_msg "Fingerprint is a Portal operation" "仅 Portal 支持本机证书指纹")"
   tls="$(v3_url get "$u" tls)"
-  [[ "$tls" == 2 ]] || die "tls=1 不导出可能过期的链接；请提供持久 PEM，或自行核验当前证书指纹"
-  cert="$(v3_url get "$u" crt)"
-  fp="$(openssl x509 -in "$cert" -noout -fingerprint -sha256)"
-  fp="${fp#*=}"; fp="${fp//:/}"; fp="${fp,,}"
-  [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "指纹读取失败"
+  if [[ "$tls" == 2 ]]; then
+    cert="$(v3_url get "$u" crt)"
+    fp="$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null)" || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
+    fp="${fp#*=}"; fp="${fp//:/}"; fp="${fp,,}"
+  else
+    [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V3 binary missing" "V3 二进制缺失")"
+    link="$(v3_url fingerprint-link "$u")"
+    fp="$(timeout 12 "$BIN_LINK" fingerprint "$link" 2>/dev/null)" || die "$(tr_msg "Cannot inspect the live local certificate" "无法探测本机正在使用的证书")"
+  fi
+  [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
   printf '%s\n' "$fp"
 }
 show_links() {
   require_root
-  local requested="$PUBLIC_HOST"
-  load_meta
-  [[ -z "$requested" ]] || PUBLIC_HOST="$requested"
-  [[ -n "$PUBLIC_HOST" ]] || die "请用 --public-host 指定公网地址"
-  v3_url links "$(read_url)" "$PUBLIC_HOST" "$(local_pin)"
-  warn "以上是 NW3 原生角色 URL；不能导入仅支持 NW2 的客户端"
+  [[ -n "$PUBLIC_HOST" ]] || die "$(tr_msg "Set --public-host first" "请用 --public-host 指定公网地址")"
+  local u pin shares line
+  u="$(read_url)"; pin="$(local_pin)"
+  v3_url links "$u" "$PUBLIC_HOST" "$pin"
+  shares="$(v3_url shares "$u" "$PUBLIC_HOST" "$NODE_NAME")"
+  printf '%s\n' "$shares"
+  warn "$(tr_msg "Links contain a shared key; do not disclose them. NW3 clients only." "链接含密钥勿外传；仅供支持 NW3 的客户端使用。")"
+  warn "$(tr_msg "Share links cannot carry pin. For self-signed certificates, add the SHA-256 from fingerprint to the client's trust list." "通用分享链接不能携带 pin；自签证书请将 fingerprint 的 SHA-256 添加到客户端信任列表。")"
+  if has_cmd qrencode; then
+    while IFS= read -r line; do qrencode -t ANSIUTF8 "$line" || warn "$(tr_msg "QR rendering failed" "二维码显示失败")"; done <<<"$shares"
+  fi
 }
 rollback_action() {
   mutating_setup
@@ -683,26 +757,26 @@ rollback_action() {
     [[ "$d" == "$OLD_TARGET" || ! -x "$d/nowhere" ]] && continue
     target="$d"; break
   done < <(ls -1dt "$RELEASES_DIR"/v3.* 2>/dev/null || true)
-  [[ -n "$target" ]] || die "没有可回滚的 V3 版本"
+  [[ -n "$target" ]] || die "$(tr_msg "No previous V3 release is available" "没有可回滚的 V3 版本")"
   ln -sfn "$target" "$CURRENT_LINK"
   VERSION="$(sed -n 's/^tag: //p' "$target/RELEASE-INFO")"
-  validate_version_arg "$VERSION"; load_meta; write_meta; activate
-  ok "V3 二进制已回滚；配置不跨版本转换"
+  validate_version_arg "$VERSION"; write_meta; activate
+  ok "$(tr_msg "V3 binary rolled back; config is not converted across versions" "V3 二进制已回滚；配置不跨版本转换")"
 }
 backup_action() {
   require_root; acquire_build_lock
   local out="${BACKUP_PATH:-/root/nowhere-v3-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
-  [[ -d "$CONFIG_DIR" ]] || die "没有 V3 配置"
-  [[ ! -e "$out" ]] || die "备份目标已存在，拒绝覆盖"
-  case "$(realpath -m "$out")" in "$CONFIG_DIR"/*) die "备份必须位于配置目录之外" ;; esac
-  tar -czf "$out" -C /etc nowhere-v3
-  chmod 600 "$out"; ok "已备份到 $out（包含密钥，请妥善保管）"
+  [[ -d "$CONFIG_DIR" ]] || die "$(tr_msg "No V3 configuration" "没有 V3 配置")"
+  [[ ! -e "$out" ]] || die "$(tr_msg "Backup target exists; refusing overwrite" "备份目标已存在，拒绝覆盖")"
+  case "$(realpath -m "$out")" in "$CONFIG_DIR"/*) die "$(tr_msg "Backup must be outside the config directory" "备份必须位于配置目录之外")" ;; esac
+  tar -czf "$out" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"
+  chmod 600 "$out"; ok "$(tr_msg "Backup saved to $out (contains keys; keep it private)" "已备份到 $out（包含密钥，请妥善保管）")"
 }
 uninstall_action() {
   mutating_setup
   if [[ "$ASSUME_YES" != 1 ]]; then
     local answer
-    read -r -p '确认卸载 V3？输入 REMOVE-V3: ' answer
+    read -r -p "$(tr_msg 'Confirm V3 removal: type REMOVE-V3: ' '确认卸载V3？输入REMOVE-V3：')" answer || return 0
     [[ "$answer" == REMOVE-V3 ]] || return 0
   fi
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
@@ -710,86 +784,432 @@ uninstall_action() {
   rm -rf "$INSTALL_ROOT"
   if [[ "$PURGE" == 1 ]]; then rm -rf "$CONFIG_DIR"; fi
   systemctl daemon-reload
-  ok "V3 已卸载；默认保留配置，V2 不受影响"
+  ok "$(tr_msg "V3 removed; configuration is retained unless --purge was used; V2 is unaffected" "V3 已卸载；默认保留配置，V2 不受影响")"
 }
 doctor_action() {
   require_root; require_systemd
   v3_url validate "$(read_url)"
-  [[ -x "$CURRENT_LINK/nowhere" ]] || die "V3 二进制缺失"
+  [[ -x "$CURRENT_LINK/nowhere" ]] || die "$(tr_msg "V3 binary missing" "V3 二进制缺失")"
   "$CURRENT_LINK/nowhere" --version
-  systemctl is-active --quiet "$SERVICE_NAME" || die "V3 服务未运行"
+  systemctl is-active --quiet "$SERVICE_NAME" || die "$(tr_msg "V3 service is not active" "V3 服务未运行")"
   local u; u="$(read_url)"
   if [[ "$(v3_url get "$u" tls)" == 2 ]]; then
-    runuser -u "$RUN_USER" -- test -r "$(v3_url get "$u" crt)" || die "服务账户不能读取证书"
-    runuser -u "$RUN_USER" -- test -r "$(v3_url get "$u" key)" || die "服务账户不能读取私钥"
+    runuser -u "$RUN_USER" -- test -r "$(v3_url get "$u" crt)" || die "$(tr_msg "Service account cannot read the certificate" "服务账户不能读取证书")"
+    runuser -u "$RUN_USER" -- test -r "$(v3_url get "$u" key)" || die "$(tr_msg "Service account cannot read the private key" "服务账户不能读取私钥")"
   fi
-  ok "基础检查通过；不代表 Egress 在线或目标可达，请另做 probe"
+  if [[ "$DOCTOR_PROBE" == 1 ]]; then
+    local probe_rc
+    set +e
+    ( set -e; trap finish EXIT; probe_action )
+    probe_rc=$?
+    set -e
+    [[ "$probe_rc" == 0 ]] || warn "$(tr_msg 'Optional probe failed; base doctor checks passed' '可选probe失败；基础doctor检查已通过')"
+  fi
+  ok "$(tr_msg "Basic checks passed; this does not prove Egress online or target reachability; run probe separately" "基础检查通过；不代表 Egress 在线或目标可达，请另做 probe")"
+}
+
+# Operator prompts always go to stderr/tty; captured defaults never include secrets.
+prompt_value() {
+  local label="$1" default="${2:-}" value secret="${3:-0}"
+  if [[ "$secret" == 1 ]]; then
+    if ! read -r -s -p "$label [$(tr_msg 'Enter keeps/generates a value' '回车保留或自动生成')]: " value </dev/tty; then value="$default"; else printf '\n' >&2; fi
+  else
+    if ! read -r -p "$label [$default]: " value </dev/tty; then value="$default"; fi
+  fi
+  printf '%s' "${value:-$default}"
+}
+prompt_choice() {
+  local label="$1" default="$2" value allowed; shift 2
+  while true; do
+    if ! read -r -p "$label [$default]: " value </dev/tty; then
+      for allowed in "$@"; do [[ "$default" != "$allowed" ]] || { printf '%s' "$default"; return 0; }; done
+      die "$(tr_msg 'No terminal and no valid default' '无终端且没有合法默认值')"
+    fi
+    value="${value:-$default}"
+    for allowed in "$@"; do [[ "$value" != "$allowed" ]] || { printf '%s' "$value"; return 0; }; done
+    warn "$(tr_msg 'Invalid choice' '无效选项')"
+  done
+}
+generate_key() { python3 -c 'import secrets;print(secrets.token_hex(16))'; }
+prompt_shared_key() {
+  local value fallback="${KEY:-}"
+  [[ -n "$fallback" ]] || fallback="$(generate_key)"
+  while true; do
+    if ! read -r -s -p "$(tr_msg 'Shared key (Enter keeps/generates one)' '共享密钥（回车保留或自动生成）'): " value </dev/tty; then
+      [[ "$fallback" =~ ^[0-9a-f]{32}$ ]] || die "$(tr_msg 'No terminal and no valid shared key' '无终端且没有合法共享密钥')"
+      KEY="$fallback"; return 0
+    fi
+    printf '\n' >&2; value="${value:-$fallback}"
+    if [[ "$value" =~ ^[0-9a-f]{32}$ ]]; then KEY="$value"; return 0; fi
+    warn "$(tr_msg 'Shared key must be exactly 32 lowercase hex characters' '共享密钥必须为32位小写十六进制')"
+  done
+}
+load_config_fields() {
+  local u
+  u="$(read_url)"
+  ROLE="$(v3_url get "$u" role)"; KEY="$(v3_url get "$u" shared_key)"
+  ENDPOINT="$(v3_url get "$u" endpoint)"; MORPH="$(v3_url get "$u" morph)"; MORPH="${MORPH:-1}"
+  OUT="$(v3_url get "$u" out)"; OUT="${OUT:-direct}"
+  INGRESS="$(v3_url get "$u" in)"; INGRESS="${INGRESS:-127.0.0.1:1083}"
+  PIN="$(v3_url get "$u" pin)"; SNI="$(v3_url get "$u" sni)"
+  DIAL="$(v3_url get "$u" dial)"; DIAL4="$(v3_url get "$u" dial4)"; DIAL6="$(v3_url get "$u" dial6)"
+  # Advanced limits are configured through --url-file; carry them across a
+  # wizard/CLI reconfigure instead of silently dropping them from the rebuilt URL.
+  RATE="$(v3_url get "$u" rate)"; ETAR="$(v3_url get "$u" etar)"
+}
+installation_wizard() {
+  local preset port udp tlsmode exitmode carrier remote previous_role="$ROLE"
+  [[ -n "$URL_INPUT" ]] && return 0
+  ROLE="$(prompt_choice "$(tr_msg 'Role portal/vector/egress' '角色 portal/vector/egress')" "$ROLE" portal vector egress)"
+  if [[ "$ROLE" != "$previous_role" ]]; then ENDPOINT=''; DIAL=''; DIAL4=''; DIAL6=''; PIN=''; SNI=''; CERT=''; TLS_KEY=''; OUT=direct; fi
+  prompt_shared_key
+  if [[ "$ROLE" == portal ]]; then
+    preset=both; [[ -z "$ENDPOINT" ]] || preset=manual
+    preset="$(prompt_choice "$(tr_msg 'Listener: both/tcp/udp/split/manual' '监听预设：both共端口/tcp/udp/split分端口/manual手动')" "$preset" both tcp udp split manual)"
+    if [[ "$preset" == manual ]]; then
+      ENDPOINT="$(prompt_value "$(tr_msg 'Listen endpoint' '监听端点')" "${ENDPOINT:-*:2083}")"
+    else
+      port="$(prompt_value "$(tr_msg 'Primary port' '主端口')" 2083)"
+      case "$preset" in
+        both) ENDPOINT="*:$port" ;;
+        tcp|udp) ENDPOINT="*/$preset:$port" ;;
+        split) udp="$(prompt_value "$(tr_msg 'UDP port' 'UDP端口')" 2084)"; ENDPOINT="*/tcp:$port/udp:$udp" ;;
+      esac
+    fi
+    tlsmode="$(prompt_choice "$(tr_msg 'TLS: managed persistent PEM / supplied PEM' 'TLS：managed持久PEM / supplied自备PEM')" managed managed supplied)"
+    if [[ "$tlsmode" == supplied ]]; then
+      CERT="$(prompt_value "$(tr_msg 'Certificate PEM path' '证书PEM路径')" "$CERT")"
+      TLS_KEY="$(prompt_value "$(tr_msg 'Private key PEM path' '私钥PEM路径')" "$TLS_KEY")"
+      [[ -n "$CERT" && -n "$TLS_KEY" ]] || die "$(tr_msg 'Certificate and private key are required' '必须提供证书与私钥')"
+    fi
+    exitmode="$OUT"; [[ "$exitmode" == direct || "$exitmode" == egress ]] || exitmode=socks
+    exitmode="$(prompt_choice "$(tr_msg 'Output: direct/socks/egress' '出口：direct直连/socks上游/egress远程出口')" "$exitmode" direct socks egress)"
+    if [[ "$exitmode" == socks ]]; then
+      OUT="$(prompt_value "$(tr_msg 'SOCKS upstream (input hidden)' 'SOCKS上游（隐藏输入）')" "${OUT/direct/127.0.0.1:1080}" 1)"
+    else OUT="$exitmode"; fi
+    if [[ "$OUT" == egress ]]; then DIAL='' DIAL4='' DIAL6=''; fi
+    PUBLIC_HOST="$(prompt_value "$(tr_msg 'Public host for links' '链接使用的公网地址')" "$PUBLIC_HOST")"
+  else
+    remote="$(prompt_value "$(tr_msg 'Portal host (bracket IPv6)' 'Portal地址（IPv6加方括号）')" 127.0.0.1)"
+    port="$(prompt_value "$(tr_msg 'Portal port' 'Portal端口')" 2083)"
+    if [[ "$ROLE" == vector ]]; then
+      carrier="$(prompt_choice "$(tr_msg 'Carrier tcp/udp' '载波 tcp/udp')" tcp tcp udp)"
+      INGRESS="$(prompt_value "$(tr_msg 'Local SOCKS ingress (input hidden)' '本地SOCKS入口（隐藏输入）')" "$INGRESS" 1)"
+    else carrier=udp; fi
+    ENDPOINT="$(prompt_value "$(tr_msg 'Portal endpoint' 'Portal端点')" "${ENDPOINT:-$remote/$carrier:$port}")"
+    SNI="$(prompt_value SNI "$SNI")"
+    PIN="$(prompt_value "$(tr_msg 'Trusted SHA-256 pin; empty uses system CA' '可信SHA-256 pin；空值使用系统CA')" "$PIN" 1)"
+    if [[ "$ROLE" == egress ]]; then
+      DIAL="$(prompt_value "$(tr_msg 'Source dial (blank omits)' '出站源dial（空值省略）')" "$DIAL")"
+      if [[ -z "$DIAL" ]]; then
+        DIAL4="$(prompt_value "$(tr_msg 'IPv4 source dial4 (blank omits)' 'IPv4出站源dial4（空值省略）')" "$DIAL4")"
+        DIAL6="$(prompt_value "$(tr_msg 'IPv6 source dial6 (blank omits)' 'IPv6出站源dial6（空值省略）')" "$DIAL6")"
+      else DIAL4='' DIAL6=''; fi
+    fi
+    warn "$(tr_msg 'Clients must use the Portal shared key and trust its certificate; generated client defaults alone cannot connect to an existing Portal.' '客户端必须与Portal使用相同密钥并信任其证书；客户端自动生成的默认密钥不能直接连接已有Portal。')"
+  fi
+  MORPH="$(prompt_choice "$(tr_msg 'Morph (must match peers)' 'Morph（必须与对端一致）')" "$MORPH" 0 1)"
+}
+
+save_language() {
+  require_root; acquire_build_lock
+  [[ "$LANG_CODE" == zh || "$LANG_CODE" == en ]] || die 'LANG: zh|en'
+  local tmp
+  install -d -m 750 "$CONFIG_DIR"
+  tmp="$(mktemp "$CONFIG_DIR/.language.XXXXXX")"; CLEANUP_PATHS+=("$tmp")
+  if [[ -f "$META_FILE" ]]; then
+    awk -v lang="$LANG_CODE" '/^LANG=/ {next} {print} END {print "LANG=" lang}' "$META_FILE" >"$tmp"
+    chmod --reference="$META_FILE" "$tmp"; chown --reference="$META_FILE" "$tmp"
+  else printf 'LANG=%s\n' "$LANG_CODE" >"$tmp"; chmod 600 "$tmp"; fi
+  mv -f "$tmp" "$META_FILE"
+}
+
+fetch_versions() {
+  local tmp page count tag
+  local -a tags=()
+  require_command curl; require_command python3
+  tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
+  for ((page=1;page<=20;page++)); do
+    curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=100&page=$page" "$tmp" || die "$(tr_msg 'Cannot fetch releases' '无法获取发布列表')"
+    count="$(python3 - "$tmp" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]));assert isinstance(r,list);print(len(r))
+PY
+)" || die "$(tr_msg 'Invalid release metadata' '发布元数据无效')"
+    while IFS= read -r tag; do [[ -z "$tag" ]] || tags+=("$tag"); done < <(python3 - "$tmp" <<'PY'
+import json,re,sys
+for r in json.load(open(sys.argv[1])):
+    t=r.get('tag_name','')
+    if re.fullmatch(r'v3\.\d+\.\d+',t) and not r.get('draft') and not r.get('prerelease'): print(t)
+PY
+)
+    if ((count<100)); then
+      ((${#tags[@]}>0)) || die "$(tr_msg 'No stable V3 release found' '未找到稳定V3版本')"
+      printf '%s\n' "${tags[@]}" | python3 -c 'import sys;print("\n".join(sorted(set(sys.stdin.read().split()),key=lambda v:tuple(map(int,v[1:].split("."))),reverse=True)))'
+      return 0
+    fi
+  done
+  die "$(tr_msg 'Release scan limit reached; specify a stable tag' '发布扫描达到上限，请指定稳定标签')"
+}
+versions_action() { fetch_versions; }
+select_version_install() {
+  local listed choice i=0
+  local -a available=()
+  listed="$(fetch_versions)"
+  while IFS= read -r choice; do available+=("$choice"); done <<<"$listed"
+  for choice in "${available[@]}"; do i=$((i+1)); printf '%d) %s\n' "$i" "$choice"; done
+  choice="$(prompt_value "$(tr_msg 'Version number from list' '版本列表序号')" 1)"
+  [[ "$choice" =~ ^[0-9]{1,4}$ ]] && ((10#$choice>=1 && 10#$choice<=${#available[@]})) || die "$(tr_msg 'Invalid selection' '选择无效')"
+  VERSION="${available[$((10#$choice-1))]}"; ACTION=install
+  if [[ ! -s "$URL_FILE" ]]; then installation_wizard; fi
+  install_action
+}
+self_update() {
+  [[ -n "$SELF_UPDATE_URL" ]] || { info "$(tr_msg 'Self-update is disabled (NOWHERE_V3_SELF_URL is empty).' '自更新已禁用（NOWHERE_V3_SELF_URL为空）。')"; return 0; }
+  require_command curl; require_command python3
+  local tmp remote_ver remote_channel self staging backup
+  tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 30 -o "$tmp" "$SELF_UPDATE_URL" 2>/dev/null || die "$(tr_msg 'Manager download failed; local file unchanged' '管理脚本下载失败，本地文件未改变')"
+  bash -n "$tmp" 2>/dev/null || die "$(tr_msg 'Downloaded manager has syntax errors' '下载的管理脚本存在语法错误')"
+  remote_ver="$(sed -n 's/^readonly SCRIPT_VERSION="\([0-9][0-9.]*\)"$/\1/p' "$tmp")"
+  remote_channel="$(sed -n 's/^readonly SCRIPT_CHANNEL="\([^"]*\)"$/\1/p' "$tmp")"
+  [[ "$remote_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$remote_channel" == v3 ]] || die "$(tr_msg 'Invalid manager version or channel' '管理脚本版本或通道无效')"
+  version_ge "$remote_ver" "$SCRIPT_VERSION" || die "$(tr_msg 'Refusing manager downgrade' '拒绝降级管理脚本')"
+  [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "$(tr_msg 'Manager already up to date' '管理脚本已是最新')"; return 0; }
+  [[ "$ASSUME_YES" == 1 ]] || prompt_confirm "$(tr_msg "Update manager $SCRIPT_VERSION -> $remote_ver?" "更新管理脚本 $SCRIPT_VERSION -> $remote_ver？")" || return 0
+  self="$(readlink -f "$MANAGER_FILE")"
+  [[ -f "$self" && -w "$self" && -w "$(dirname "$self")" ]] || die "$(tr_msg 'Manager file/directory is not writable' '管理脚本或目录不可写')"
+  staging="$(mktemp "${self}.update.XXXXXX")"; CLEANUP_PATHS+=("$staging")
+  backup="$(mktemp "${self}.bak.XXXXXX")"
+  cp -p -- "$self" "$backup"
+  cp -- "$tmp" "$staging"; chmod --reference="$self" "$staging"; chown --reference="$self" "$staging"
+  mv -f -- "$staging" "$self"
+  ok "$(tr_msg "Manager updated; backup: $backup. Restart the manager to load it." "管理脚本已更新；备份：$backup。重新启动管理器后生效。")"
+}
+
+status_panel() {
+  local active enabled core role='-' ep='-' morph='-' u
+  active="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"; active="${active:-unknown}"
+  enabled="$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true)"; enabled="${enabled:-unknown}"
+  core='-'
+  [[ ! -r "$CURRENT_LINK/RELEASE-INFO" ]] || core="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"
+  if [[ -r "$URL_FILE" ]]; then
+    u="$(read_url)"
+    if v3_url validate "$u" >/dev/null 2>&1; then
+      role="$(v3_url get "$u" role)"; ep="$(v3_url get "$u" endpoint)"; morph="$(v3_url get "$u" morph)"; morph="${morph:-1}"
+    fi
+  fi
+  printf 'Nowhere V3 %s | %s | Core %s\n' "$SCRIPT_VERSION" "$SCRIPT_CHANNEL" "$core"
+  printf '%s: %s / %s\nRole: %s | Endpoint: %s | Morph: %s\n' "$(tr_msg 'Service active/enabled' '服务运行/开机启动')" "$active" "$enabled" "$role" "$ep" "$morph"
+}
+redact_stream() {
+  python3 -c '
+import re,sys
+for line in sys.stdin:
+ line=re.sub(r"(?:portal|vector|egress|nowhere)://[^\s]+", "[URL REDACTED]", line)
+ line=re.sub(r"(?i)\b[0-9a-f]{32,64}\b", "***", line)
+ print(line,end="",flush=True)
+'
+}
+show_status() {
+  status_panel
+  # systemctl status includes the process command line; redact it before display.
+  systemctl status "$SERVICE_NAME" --no-pager --lines=0 2>&1 | redact_stream || true
+}
+telemetry_action() {
+  require_root
+  runuser -u "$RUN_USER" -- env TMPDIR=/run/nowhere-v3 "$BIN_LINK" status 2>&1 | redact_stream
+}
+probe_action() {
+  require_root
+  local u role link pin output rc result
+  [[ -x "$BIN_LINK" ]] || die "$(tr_msg 'V3 binary missing' 'V3二进制缺失')"
+  # Restrict target to a host:port without any credential/query component.
+  python3 - "$PROBE_TARGET" <<'PY' >/dev/null 2>&1 || die "$(tr_msg 'Probe target must be HOST:PORT' '探测目标必须是HOST:PORT')"
+import sys,re
+s=sys.argv[1];m=re.fullmatch(r'(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+):([0-9]{1,5})',s)
+assert m and 1<=int(m[1])<=65535
+PY
+  u="$(read_url)"; role="$(v3_url get "$u" role)"
+  case "$role" in
+    portal)
+      [[ -n "$PUBLIC_HOST" ]] || die "$(tr_msg 'Set --public-host before probing a Portal' '探测Portal前请先设置--public-host')"
+      pin="$(local_pin)"; link="$(v3_url probe-link "$u" "$PUBLIC_HOST" "$pin")" ;;
+    vector) link="$u" ;;
+    egress) die "$(tr_msg 'Probe requires a Vector or Portal; Egress is unsupported' 'probe需从Vector或Portal发起，不支持Egress角色')" ;;
+  esac
+  printf '%s\n' "$(v3_url redact "$link")"
+  if output="$(timeout 30 "$BIN_LINK" probe "$link" "$PROBE_TARGET" 2>&1)"; then rc=0; else rc=$?; fi
+  # Accept only an enumerated result word; never echo untrusted core diagnostics.
+  result="$(printf '%s' "$output" | python3 -c '
+import re,sys
+s=sys.stdin.read();m=re.search(r"(?im)^\s*Result\s*[:=]?\s*(OK|READY|DIAL_FAILED|TRANSPORT_FAILED|AUTH_FAILED|AUTHENTICATION_FAILED|CLEANUP_FAILED|INVALID_REQUEST|FLOW_LIMIT|TIMEOUT|BUSY|UNAVAILABLE|EGRESS_OFFLINE|INTERNAL_ERROR)\b",s)
+print(m[1] if m else "")')"
+  if [[ "$rc" == 0 ]]; then printf 'Result OK\n'; else printf 'Result %s\n' "${result:-FAILED}"; fi
+  return "$rc"
 }
 usage() {
-  cat <<EOF
-Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；仅 Linux + systemd，Bash >=4.3）
-默认固定 v3.0.0；--version latest-v3 可显式更新到最新稳定 V3。
-独立服务/账户 nowhere-v3；/etc/nowhere-v3；/opt/nowhere-v3。
-默认 Portal 2083，Vector SOCKS 1083；不修改 V2，不自动开放防火墙。
+  if [[ "$LANG_CODE" == zh ]]; then
+    cat <<EOF
+Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + systemd，Bash >=4.3）
+默认固定 v3.0.0；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
+独立账户/服务 nowhere-v3；配置 /etc/nowhere-v3；程序 /opt/nowhere-v3。
+不修改V1/V2，不自动开放防火墙。新Portal使用持久PEM；同角色配置复用证书。
+用法：sudo bash nowhere-v3.sh [ACTION] [选项]；无参数进入循环菜单。
 
-用法：sudo bash nowhere-v3.sh ACTION [选项]
-  install       安装官方 SHA-256 校验预编译版；新 Portal 自动生成持久 PEM
-  upgrade       更新已有 V3（二进制），默认 v3.0.0
-  configure     明确重配；提供 --url，或 --key 与 --endpoint
-  validate      只校验 --url，不需要 root，不安装依赖
-  status        systemd 状态
-  telemetry     V3 原生只读统计（取代旧 TUI）
-  links         导出原生 Vector/Egress URL，需要 --public-host
-  fingerprint   持久 PEM 的 SHA-256 指纹
-  doctor        基础配置、进程和证书可读性检查
-  logs | start | stop | restart
-  rollback | backup [路径] | check-updates | uninstall [--purge]
+ install                 安装官方校验版；交互向导 / --yes 自动部署
+ upgrade                 仅升级二进制（默认固定版本）
+ configure               修改配置；无配置参数时进入向导
+ validate                只校验 --url/--url-file，无需root
+ versions / check-updates 列出所有稳定V3（不足10个列出现有全部）/最新版本
+ self-update             只更新管理脚本；NOWHERE_V3_SELF_URL为空时禁用
+ generate-key            输出一行32位小写hex，不附加文字
+ probe [HOST:PORT]        TCP Flow探测，默认example.com:443，URL打码
+ links / fingerprint     原生+通用链接 / 证书SHA-256（这些命令按需输出秘密值）
+ status / telemetry      状态面板 / 只读统计
+ doctor [--probe [目标]]  基础检查；可选探测失败仅警告
+ logs / start / stop / restart / clean-releases
+ backup [路径] / rollback / uninstall [--purge] / language
 
-参数：
- --version v3.0.0|latest-v3  --libc auto|gnu|musl  --keep-releases 0..20
- --role portal|vector|egress  --key 32位小写十六进制  --endpoint HOST:PORT
- --url '完整原生 V3 URL'     --url-file FILE（避免将 URL 留在 shell 历史）
- --public-host HOST          --morph 0|1（默认1）
- --out direct|egress|HOST:PORT  --in HOST:PORT（默认127.0.0.1:1083）
- --pin 64位小写十六进制     --sni DNS名
- --cert PEM --tls-key PEM（自动复制；不提供时新 Portal 生成持久自签 PEM）
+ --role portal|vector|egress --key KEY --endpoint HOST:PORT或carrier路径
+ --url 'V3 URL' --url-file FILE（避免密钥写入shell历史）
+ --public-host HOST --name NAME --morph 0|1（默认1）
+ --out direct|egress|SOCKS地址 --in SOCKS入口（默认127.0.0.1:1083）
+ --pin 64位小写hex --sni DNS --cert PEM --tls-key PEM
+ --dial IP|auto --dial4 IP|auto --dial6 IP|auto（前者与后两者互斥）
  --memory-profile memory|balanced|throughput --morph-prelude low7|full8
- -y / --yes（确认卸载）
- --allow-role-switch          configure 时允许角色切换（默认要求确认或拒绝）
+ --version v3.x.y|latest-v3 --libc auto|gnu|musl --keep-releases 0..20
+ --lang zh|en（CLI > NOWHERE_V3_LANG > manager.conf > 中文）
+ --yes / -y；--wizard；--allow-role-switch（明确允许角色切换）
 
-高级 rate/etar、dial/dial4/dial6、SOCKS凭证通过 --url-file 配置。
-不接受旧 socks/next/up/down/mux/log 参数；不做 V2 配置自动转换。
-首次接入前核验客户端明确支持 NW3，并通过可信渠道传递 pin。
+language --lang zh|en 保存语言；修改类命令的显式--lang也保存。
+help/validate/generate-key/self-update只读或独立操作，不修改服务偏好。
+高级rate/etar使用--url-file；不接受NW2 socks/next/up/down/mux/log。
+Egress使用QUIC；Portal out=egress要求UDP且禁止dial*；Egress自身可使用dial*。
 EOF
+  else
+    cat <<EOF
+Nowhere V3 Manager ${SCRIPT_VERSION} (channel ${SCRIPT_CHANNEL}; Linux + systemd, Bash >=4.3)
+Pinned core v3.0.0; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
+Dedicated account/service nowhere-v3; config /etc/nowhere-v3; binaries /opt/nowhere-v3.
+No V1/V2 changes or firewall edits. New Portals use persistent PEM; same-role configure reuses it.
+Usage: sudo bash nowhere-v3.sh [ACTION] [options]; no arguments opens the looping menu.
+
+ install                 Verified official binary; wizard / --yes unattended
+ upgrade                 Binary-only upgrade (pinned default)
+ configure               Configure; opens wizard without configuration arguments
+ validate                Validate --url/--url-file; no root needed
+ versions / check-updates All stable V3 tags (all available if fewer than 10) / latest
+ self-update             Manager only; empty NOWHERE_V3_SELF_URL disables it
+ generate-key            Exactly one line of 32 lowercase hex characters
+ probe [HOST:PORT]        TCP Flow probe; default example.com:443; URL redacted
+ links / fingerprint     Native+share links / certificate SHA-256 (explicit secret outputs)
+ status / telemetry      Status panel / read-only statistics
+ doctor [--probe [target]] Basic checks; optional probe failure is a warning
+ logs / start / stop / restart / clean-releases
+ backup [path] / rollback / uninstall [--purge] / language
+
+ --role portal|vector|egress --key KEY --endpoint HOST:PORT or carrier path
+ --url 'V3 URL' --url-file FILE (avoids shared keys in shell history)
+ --public-host HOST --name NAME --morph 0|1 (default 1)
+ --out direct|egress|SOCKS-address --in SOCKS-ingress (default 127.0.0.1:1083)
+ --pin 64-lowercase-hex --sni DNS --cert PEM --tls-key PEM
+ --dial IP|auto --dial4 IP|auto --dial6 IP|auto (dial excludes dial4/dial6)
+ --memory-profile memory|balanced|throughput --morph-prelude low7|full8
+ --version v3.x.y|latest-v3 --libc auto|gnu|musl --keep-releases 0..20
+ --lang zh|en (CLI > NOWHERE_V3_LANG > manager.conf > Chinese)
+ --yes / -y; --wizard; --allow-role-switch (explicit role-switch consent)
+
+language --lang zh|en persists the language; explicit --lang on mutations is saved too.
+help/validate/generate-key/self-update do not change service preferences.
+Advanced rate/etar: use --url-file. NW2 socks/next/up/down/mux/log are rejected.
+Egress uses QUIC. Portal out=egress requires UDP and forbids dial*; Egress itself allows dial*.
+EOF
+  fi
+}
+menu_install() {
+  local requested="$1"
+  ACTION=install
+  if [[ -s "$URL_FILE" ]]; then
+    if prompt_confirm "$(tr_msg 'Existing instance: reconfigure with the wizard? No updates only the binary.' '已有实例：使用向导重配？否将仅重装二进制。')"; then
+      load_config_fields; ROLE="$requested"; ENDPOINT=''; installation_wizard; REINSTALL_MODE=1; configure_action
+    else install_action; fi
+  else ROLE="$requested"; installation_wizard; install_action; fi
 }
 menu() {
-  local c
-  printf 'Nowhere V3 独立管理器\n1) 新建 Portal（2083）\n2) 更新 V3\n3) 状态\n4) 连接链接\n5) 日志\n6) 健康检查\n7) 最新版本\n0) 退出\n'
-  read -r -p '选择: ' c || return 0
-  case "$c" in
-    1) read -r -p '公网 IP/域名: ' PUBLIC_HOST; ACTION=install; install_action ;;
-    2) ACTION=upgrade; VERSION=latest-v3; install_action ;;
-    3) systemctl status "$SERVICE_NAME" --no-pager ;;
-    4) show_links ;;
-    5) journalctl -u "$SERVICE_NAME" -f ;;
-    6) doctor_action ;;
-    7) VERSION=latest-v3; resolve_version; printf '%s\n' "$VERSION" ;;
-    0) return 0 ;;
-    *) die "无效选项" ;;
-  esac
+  local choice rc
+  while true; do
+    status_panel
+    printf '%s\n' "$(tr_msg '--- Install / configuration ---' '--- 安装与配置 ---')"
+    printf '%s\n' \
+      "1. $(tr_msg 'Install/reinstall Portal (wizard)' '安装/重装Portal（向导）')" \
+      "2. $(tr_msg 'Install/reinstall Vector (wizard)' '安装/重装Vector（向导）')" \
+      "3. $(tr_msg 'Install/reinstall Egress (wizard)' '安装/重装Egress（向导）')" \
+      "4. $(tr_msg 'Configure instance' '修改配置')" \
+      "5. $(tr_msg 'Select a stable version to install' '指定稳定版本安装')" \
+      "6. $(tr_msg 'Upgrade binary: pinned/latest-v3' '升级二进制：固定/latest-v3')" \
+      "$(tr_msg '--- Service / diagnostics ---' '--- 服务与诊断 ---')" \
+      "7. $(tr_msg 'Start service' '启动服务')" "8. $(tr_msg 'Stop service' '停止服务')" "9. $(tr_msg 'Restart service' '重启服务')" \
+      "10. $(tr_msg 'Status and telemetry' '状态与统计')" "11. $(tr_msg 'Client links' '客户端链接')" \
+      "12. $(tr_msg 'Certificate fingerprint' '证书指纹')" "13. $(tr_msg 'Generate shared key' '生成共享密钥')" \
+      "14. $(tr_msg 'TCP Flow probe' 'TCP Flow探测')" "15. $(tr_msg 'Live logs' '实时日志')" \
+      "$(tr_msg '--- Maintenance ---' '--- 维护 ---')" \
+      "16. $(tr_msg 'Health checks' '健康检查')" "17. $(tr_msg 'Prune old releases' '清理旧Release')" \
+      "18. $(tr_msg 'Backup configuration' '备份配置')" "19. $(tr_msg 'Rollback binary' '回滚二进制')" \
+      "20. $(tr_msg 'Uninstall (config retained by default)' '卸载（默认保留配置）')" \
+      "21. $(tr_msg 'Change and save language' '切换并保存语言')" "22. $(tr_msg 'Update manager script' '更新管理脚本')" \
+      "0/q. $(tr_msg 'Exit' '退出')"
+    if ! read -r -p "$(tr_msg 'Choice: ' '选择：')" choice </dev/tty; then return 0; fi
+    [[ "$choice" != 0 && "$choice" != q ]] || return 0
+    set +e
+    (
+      set -Eeuo pipefail
+      trap finish EXIT
+      case "$choice" in
+        1) menu_install portal ;; 2) menu_install vector ;; 3) menu_install egress ;;
+        4) load_config_fields; installation_wizard; configure_action ;;
+        5) select_version_install ;;
+        6) VERSION="$(prompt_choice "$(tr_msg 'Core version' '内核版本')" "$DEFAULT_CORE_VERSION" "$DEFAULT_CORE_VERSION" latest-v3)"; ACTION=upgrade; install_action ;;
+        7|8|9) mutating_setup; case "$choice" in 7) systemctl start "$SERVICE_NAME" ;; 8) systemctl stop "$SERVICE_NAME" ;; 9) systemctl restart "$SERVICE_NAME" ;; esac ;;
+        10) show_status; telemetry_action ;;
+        11) show_links ;; 12) require_root; local_pin ;; 13) generate_key ;;
+        14) PROBE_TARGET="$(prompt_value "$(tr_msg 'Probe target' '探测目标')" "$PROBE_TARGET")"; probe_action ;;
+        15) require_root; journalctl -u "$SERVICE_NAME" -f 2>&1 | redact_stream ;;
+        16) doctor_action ;; 17) cleanup_old_releases ;; 18) backup_action ;; 19) rollback_action ;;
+        20) PURGE=0; if prompt_confirm "$(tr_msg 'Also delete configuration and keys?' '同时删除配置和密钥？')"; then PURGE=1; fi; uninstall_action ;;
+        21) LANG_CODE="$(prompt_choice 'Language / 语言 zh|en' "$LANG_CODE" zh en)"; save_language ;;
+        22) self_update ;;
+        *) warn "$(tr_msg 'Invalid choice' '无效选项')" ;;
+      esac
+    )
+    rc=$?
+    set -e
+    if [[ "$rc" == 0 && "$choice" =~ ^([1-6]|21)$ ]]; then load_meta; fi
+    [[ "$rc" == 0 ]] || warn "$(tr_msg "Operation failed (exit $rc); see message above" "操作失败（退出码$rc），请查看上方提示")"
+    if ! read -r -p "$(tr_msg 'Press Enter to return...' '按回车返回…')" choice </dev/tty; then return 0; fi
+  done
 }
 main() {
   load_meta
-  (($#==0)) || { ACTION="$1"; shift; }
+  LANG_CODE="${NOWHERE_V3_LANG:-$LANG_CODE}"
+  if (($#)) && [[ "$1" != --* && "$1" != -h ]]; then ACTION="$1"; shift; fi
+  # A reconfigure must keep existing settings that the caller did not override:
+  # load them before parsing so explicit CLI arguments below still win. Runs as
+  # root against a valid existing config only, so a non-root call still reaches
+  # the clean require-root error in the action itself.
+  if [[ "$ACTION" == configure && "$(id -u)" -eq 0 && -s "$URL_FILE" ]]; then
+    if v3_url validate "$(head -n 1 "$URL_FILE")" >/dev/null 2>&1; then load_config_fields; fi
+  fi
   while (($#)); do
     case "$1" in
       --version) VERSION="${2:?}"; shift 2 ;;
-      --role|--type) ROLE="${2:?}"; shift 2 ;;
+      --role|--type) ROLE="${2:?}"; ROLE_SET=1; shift 2 ;;
       --key) KEY="${2:?}"; shift 2 ;;
       --endpoint) ENDPOINT="${2:?}"; shift 2 ;;
       --url) URL_INPUT="${2:?}"; shift 2 ;;
       --url-file) URL_INPUT="$(cat -- "${2:?}")"; shift 2 ;;
       --public-host) PUBLIC_HOST="${2:?}"; shift 2 ;;
+      --name) NODE_NAME="${2:?}"; shift 2 ;;
       --morph) MORPH="${2:?}"; shift 2 ;;
       --out) OUT="${2:?}"; shift 2 ;;
       --in) INGRESS="${2:?}"; shift 2 ;;
@@ -797,38 +1217,66 @@ main() {
       --sni) SNI="${2:?}"; shift 2 ;;
       --cert) CERT="${2:?}"; shift 2 ;;
       --tls-key) TLS_KEY="${2:?}"; shift 2 ;;
+      --dial) DIAL="${2:?}"; shift 2 ;;
+      --dial4) DIAL4="${2:?}"; shift 2 ;;
+      --dial6) DIAL6="${2:?}"; shift 2 ;;
       --memory-profile) MEMORY_PROFILE="${2:?}"; shift 2 ;;
       --morph-prelude) MORPH_PRELUDE="${2:?}"; shift 2 ;;
       --libc) LIBC="${2:?}"; shift 2 ;;
       --keep-releases) KEEP_RELEASES="${2:?}"; shift 2 ;;
+      --lang) LANG_CODE="${2:?}"; LANG_SET=1; shift 2 ;;
+      --probe) DOCTOR_PROBE=1; shift; if (($#)) && [[ "$1" != -* ]]; then PROBE_TARGET="$1"; shift; fi ;;
+      --wizard) WIZARD_REQUESTED=1; shift ;;
       -y|--yes) ASSUME_YES=1; shift ;;
       --purge) PURGE=1; shift ;;
       --allow-role-switch) ALLOW_ROLE_SWITCH=1; shift ;;
-      *) if [[ "$ACTION" == backup && "$1" != -* && -z "${BACKUP_PATH:-}" ]]; then BACKUP_PATH="$1"; shift; else die "未知参数"; fi ;;
+      -h|--help) ACTION=help; shift ;;
+      *)
+        if [[ "$ACTION" == backup && "$1" != -* && -z "${BACKUP_PATH:-}" ]]; then BACKUP_PATH="$1"; shift
+        elif [[ "$ACTION" == probe && "$1" != -* ]]; then PROBE_TARGET="$1"; shift
+        else die "$(tr_msg 'Unknown option' '未知参数')"; fi ;;
     esac
   done
+  [[ "$LANG_CODE" == zh || "$LANG_CODE" == en ]] || die 'LANG: zh|en'
   validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"
   validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
-  [[ "$ROLE" == portal || "$ROLE" == vector || "$ROLE" == egress ]] || die "无效角色"
-  [[ "$PUBLIC_HOST" != *$'\n'* && "$PUBLIC_HOST" != *$'\r'* ]] || die "公网地址包含换行"
+  [[ "$ROLE" == portal || "$ROLE" == vector || "$ROLE" == egress ]] || die "$(tr_msg 'Invalid role' '无效角色')"
+  [[ "$PUBLIC_HOST$NODE_NAME" != *$'\n'* && "$PUBLIC_HOST$NODE_NAME" != *$'\r'* ]] || die "$(tr_msg 'Host/name contains a newline' '地址或名称包含换行')"
   case "$ACTION" in
     menu) menu ;;
-    help|-h|--help) usage ;;
-    validate) [[ -n "$URL_INPUT" ]] || die "需要 --url 或 --url-file"; v3_url validate "$URL_INPUT" ;;
-    install|upgrade) install_action ;;
-    configure) configure_action ;;
+    help) usage ;;
+    validate) [[ -n "$URL_INPUT" ]] || die "$(tr_msg 'Provide --url or --url-file' '需要--url或--url-file')"; v3_url validate "$URL_INPUT" ;;
+    generate-key) generate_key ;;
+    install)
+      if [[ "$ASSUME_YES" != 1 && ! -s "$URL_FILE" && -z "$URL_INPUT" && ( -z "$KEY" || "$WIZARD_REQUESTED" == 1 ) ]]; then installation_wizard; fi
+      install_action ;;
+    upgrade) install_action ;;
+    configure)
+      if [[ -z "$URL_INPUT" && -z "$KEY" && -z "$ENDPOINT" ]]; then
+        [[ "$ASSUME_YES" != 1 ]] || die "$(tr_msg 'Unattended configure requires explicit configuration' '非交互configure需要明确配置')"
+        local requested="$ROLE"
+        load_config_fields; [[ "$ROLE_SET" != 1 ]] || ROLE="$requested"
+        installation_wizard
+      fi
+      configure_action ;;
     links) show_links ;;
     fingerprint) require_root; local_pin ;;
-    status) systemctl status "$SERVICE_NAME" --no-pager ;;
-    telemetry) require_root; runuser -u "$RUN_USER" -- env TMPDIR=/run/nowhere-v3 "$BIN_LINK" status ;;
-    logs) require_root; journalctl -u "$SERVICE_NAME" -f ;;
+    status) show_status ;;
+    telemetry) telemetry_action ;;
+    logs) require_root; journalctl -u "$SERVICE_NAME" -f 2>&1 | redact_stream ;;
     start|stop|restart) mutating_setup; systemctl "$ACTION" "$SERVICE_NAME" ;;
     doctor) doctor_action ;;
+    probe) probe_action ;;
     rollback) rollback_action ;;
     backup) backup_action ;;
+    clean-releases) cleanup_old_releases ;;
+    versions) versions_action ;;
     check-updates) VERSION=latest-v3; resolve_version; printf '%s\n' "$VERSION" ;;
+    self-update) self_update ;;
+    language) save_language ;;
     uninstall) uninstall_action ;;
     *) usage; exit 1 ;;
   esac
+  if [[ "$LANG_SET" == 1 && "$ACTION" =~ ^(install|upgrade|configure|start|stop|restart|rollback)$ ]]; then save_language; fi
 }
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

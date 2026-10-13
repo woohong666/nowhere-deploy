@@ -244,7 +244,7 @@ Native clients (Vector, `probe`, and a chained Portal's `next`) **always** verif
 | Portal certificate | What the client needs |
 |---|---|
 | CA-signed (`tls=2`, e.g. Let's Encrypt) | Nothing extra when clients reach the Portal by a name the certificate covers; otherwise set `sni=` or `pin=` |
-| Self-signed or private-CA (`tls=2`) | `pin=<sha256>` — `links` fills it in automatically, because the chain does not verify against the system store; stable as long as you keep the certificate |
+| Self-managed / self-signed (`tls=2`) | `pin=<sha256>` — stable as long as you keep the certificate |
 | Generated (`tls=1`) | `pin=<sha256>`; the generated certificate **changes on every Portal restart**, so the pin must be refreshed — testing only |
 
 Get the fingerprint on the Portal host with `sudo bash nowhere-v2.sh fingerprint` (or from the certificate log), and treat a remotely fetched fingerprint as untrusted until it matches the Portal host. On a `tls=1` Portal, `links` auto-fills the pin into generated Vector URLs.
@@ -578,17 +578,6 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 * **Cause:** the config still uses a pre-2.2 key format. Nowhere 2.2.0+ refuses to start with it (`nowhere generate-key` outputs the required form).
 * **Fix:** rotate only the key, keeping the other settings, with `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"`. Then configure the **same** text on every peer of that hop. Legacy 1-255 byte keys keep working only against Portals `<=2.1`.
 
-### Q8: A raw `openssl s_client` probe is disconnected, but real clients work
-
-* **Cause:** the Nowhere TLS listener requires the fixed ALPN `nw2` and silently closes handshakes that do not offer it. The `Verify return code: 0 (ok)` printed by such a probe is misleading — no certificate was actually exchanged.
-* **Check:** always offer the ALPN when probing by hand:
-
-  ```bash
-  echo | openssl s_client -connect <host>:2082 -servername <name> -alpn nw2 2>&1 | grep -E "subject=|ALPN"
-  ```
-
-  On a `morph=1` portal a plain TLS probe cannot work at all (the wire is masked) — use `nowhere-v2 probe` / `nowhere-v3 probe` instead.
-
 ---
 
 ## 12. V1 Stable Channel (Deployment Only)
@@ -685,11 +674,61 @@ sudo bash nowhere-v3.sh telemetry    # read-only status (NW3 removed the TUI)
 | Service / config / binary | `nowhere-v2` · `/etc/nowhere-v2` · `nowhere-v2` | `nowhere-v3` · `/etc/nowhere-v3` · `nowhere-v3` |
 | Default ports | 2082 / SOCKS 1082 | 2083 / SOCKS 1083 |
 | Monitoring | TUI | `status` / `telemetry` |
-| Source build / self-update | yes / yes | no (by design) |
+| Source build / self-update | yes / yes | no source build / yes self-update |
 
-> The V3 manager prints Chinese-first messages for now. Firewall: allow TCP **and** UDP `2083`; an Egress host needs QUIC/UDP outbound to the Portal.
+> V3 v1.1.0 provides complete Chinese and English interaction. Firewall: allow TCP **and** UDP `2083`; an Egress host needs QUIC/UDP outbound to the Portal.
 
 ---
+
+### 13.3 v1.1.0 daily operations
+
+No arguments opens a looping 22-action menu. Portal, Vector and Egress have
+install/configure wizards. Failed actions restore their transaction in an isolated
+child shell before returning; unavailable terminal input exits cleanly.
+
+```bash
+sudo bash nowhere-v3.sh                         # Full menu
+sudo bash nowhere-v3.sh install --yes           # Default Portal, 2083, persistent PEM
+bash nowhere-v3.sh versions                     # All stable V3 tags, numeric descending
+bash nowhere-v3.sh check-updates
+bash nowhere-v3.sh generate-key                 # Only 32 lowercase hex characters
+sudo bash nowhere-v3.sh probe example.com:443    # Redacted URL + Result
+sudo bash nowhere-v3.sh doctor --probe           # Probe failure warns only
+sudo bash nowhere-v3.sh status
+sudo bash nowhere-v3.sh telemetry
+sudo bash nowhere-v3.sh clean-releases
+sudo bash nowhere-v3.sh language --lang en       # Persist language
+sudo bash nowhere-v3.sh self-update              # Manager script only
+NOWHERE_V3_SELF_URL= bash nowhere-v3.sh self-update # Disabled
+```
+
+Language precedence: `--lang` > `NOWHERE_V3_LANG` > manager.conf LANG > Chinese.
+The menu and language action persist the choice; explicit --lang on mutations is
+also saved. help/validate/generate-key/self-update do not edit service preferences.
+New options: `--name` (share name), `--wizard`, `--dial/--dial4/--dial6`;
+all previous CLI options remain supported.
+
+`versions` lists every available stable tag; fewer than ten upstream releases
+means fewer than ten results, never invented tags. The default stays v3.0.0;
+`upgrade --version latest-v3` explicitly opts in. Self-update checks Bash syntax,
+V3 channel and numeric version, rejects downgrades and replaces atomically in the
+same directory with a backup. It changes no service, configuration or core binary.
+The source defaults to this repository main and can be overridden with NOWHERE_V3_SELF_URL.
+
+`links` emits pinned native Vector/Egress URLs and one share per carrier:
+`nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`.
+Shares omit pin. For self-signed certificates, add the fingerprint command result
+to the client trust list. Optional qrencode renders QR codes; absence is silent.
+Links contain shared keys; keep them private. generate-key and fingerprint are
+explicit secret-output exceptions; status, logs and probe are redacted.
+
+Portal probe requires PUBLIC_HOST (or transient --public-host). Persistent PEM
+supplies a local pin; tls=1 uses the native core to inspect the local TCP listener.
+A UDP-only temporary certificate cannot be verified and links/probe are refused.
+Egress cannot initiate probe. Egress itself allows dial*; only Portal out=egress forbids it.
+Same-role reconfiguration reuses PEM; explicit --cert/--tls-key rotates it.
+Role switches still require confirmation or --allow-role-switch.
+Optional `backup --restore` is not implemented in this release.
 
 ## Testing
 

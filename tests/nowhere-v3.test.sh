@@ -105,6 +105,16 @@ t_rc() { # t_rc <command...> -> prints 0 on success, 1 on any failure
 
 t_section() { printf '\n%s\n' "$1"; }
 
+# Host capabilities: the suite runs in full on Linux; macOS dev runs skip the
+# sections that need util-linux / GNU coreutils commands.
+HAVE_FLOCK=0; command -v flock >/dev/null 2>&1 && HAVE_FLOCK=1
+HAVE_TIMEOUT=0; command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
+# self-update preserves mode/owner with GNU --reference extensions.
+HAVE_CHMODREF=0
+cap="$(mktemp)"
+if chmod --reference="$cap" "$cap" 2>/dev/null && chown --reference="$cap" "$cap" 2>/dev/null; then HAVE_CHMODREF=1; fi
+rm -f "$cap"
+
 # ---------------------------------------------------------------------------
 t_section "syntax and help"
 
@@ -194,7 +204,7 @@ t_section "namespace isolation"
 t_ok "no v2 paths"                  yes "$(grep -q '/nowhere-v2' "$PATCHED" && echo no || echo yes)"
 t_ok "default ingress is 1083"      yes "$(grep -q '127.0.0.1:1083' "$PATCHED" && echo yes || echo no)"
 t_ok "default portal port is 2083"  yes "$(grep -q '\*:2083' "$PATCHED" && echo yes || echo no)"
-t_ok "no self-update URL"           yes "$(grep -q 'DEFAULT_SELF_UPDATE_URL' "$PATCHED" && echo no || echo yes)"
+t_ok "self-update stays on V3 source" yes "$(grep -q 'DEFAULT_SELF_UPDATE_URL=.*nowhere-v3.sh' "$PATCHED" && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 t_section "safe_extract_tar (v3)"
@@ -275,6 +285,245 @@ printf 'PUBLIC_HOST=hidden.example\n' > "$META_FILE"
 chmod 000 "$META_FILE"
 t_ok "unreadable meta is ignored" 0 "$(bash -c 'source "$1" >/dev/null 2>&1; load_meta; echo done' _ "$PATCHED" >/dev/null 2>&1; echo $?)"
 chmod 644 "$META_FILE"
+
+# ---------------------------------------------------------------------------
+t_section "v1.1.0 key, language and redaction"
+key_out="$(bash "$PATCHED" generate-key 2>/dev/null)"
+t_ok "key exactly 32 lowercase hex" yes "$([[ "$key_out" =~ ^[0-9a-f]{32}$ ]] && echo yes || echo no)"
+t_ok "English help" yes "$(bash "$PATCHED" help --lang en | grep -q 'Nowhere V3 Manager' && echo yes || echo no)"
+t_ok "English help contains no Chinese" yes "$(bash "$PATCHED" help --lang en | python3 -c 'import sys;print("no" if any("\u4e00"<=c<="\u9fff" for c in sys.stdin.read()) else "yes")')"
+t_ok "environment selects English" yes "$(NOWHERE_V3_LANG=en bash "$PATCHED" help | grep -q 'Nowhere V3 Manager' && echo yes || echo no)"
+t_ok "CLI language wins over env" yes "$(NOWHERE_V3_LANG=en bash "$PATCHED" help --lang zh | grep -q '管理器' && echo yes || echo no)"
+t_ok "invalid language rejected" 1 "$(t_rc bash "$PATCHED" help --lang fr)"
+if ((HAVE_FLOCK)); then
+  ( LANG_CODE=en; save_language ) >/dev/null 2>&1
+  t_ok "language persisted" yes "$(grep -q '^LANG=en$' "$META_FILE" && echo yes || echo no)"
+  t_ok "preference write preserves host" yes "$(grep -q '^PUBLIC_HOST=hidden.example$' "$META_FILE" && echo yes || echo no)"
+  t_ok "meta language used" yes "$(bash "$PATCHED" help | grep -q 'Nowhere V3 Manager' && echo yes || echo no)"
+else
+  t_skip "language persistence (flock unavailable on this host)"
+fi
+redacted="$(printf 'Exec vector://%s@relay:2083?pin=%s\nPIN %s\n' "$K" "$P64" "$P64" | redact_stream)"
+t_ok "status redactor removes key" yes "$([[ "$redacted" != *"$K"* ]] && echo yes || echo no)"
+t_ok "status redactor removes pin" yes "$([[ "$redacted" != *"$P64"* ]] && echo yes || echo no)"
+t_ok "arbitrary-size version comparison" 0 "$(t_rc version_ge 3.1000000000000000000000000000.0 3.2.0)"
+
+# ---------------------------------------------------------------------------
+t_section "self-update (stubbed download; no network)"
+if ((HAVE_CHMODREF)); then
+t_update() {
+  local remote="$1" mode="${2:-normal}"
+  cp "$PATCHED" "$SANDBOX/self.sh"
+  chmod 750 "$SANDBOX/self.sh"
+  NOWHERE_V3_SELF_URL="https://example.invalid/v3.sh" bash -c '
+    source "$1"
+    fixture="$2"; mode="$3"
+    curl() {
+      [[ "$mode" != offline ]] || return 22
+      local dst=""
+      while (($#)); do if [[ "$1" == -o ]]; then dst="$2"; shift 2; else shift; fi; done
+      cp "$fixture" "$dst"
+    }
+    ASSUME_YES=1
+    self_update
+  ' _ "$SANDBOX/self.sh" "$remote" "$mode"
+}
+for ver in 1.2.0 1.1.0 1.0.0; do
+  printf '#!/usr/bin/env bash\nreadonly SCRIPT_VERSION="%s"\nreadonly SCRIPT_CHANNEL="v3"\n' "$ver" >"$SANDBOX/remote-$ver"
+done
+out="$(t_update "$SANDBOX/remote-1.2.0" 2>&1)"; rc=$?
+t_ok "higher manager version accepted" 0 "$rc"
+t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="1.2.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
+t_ok "update preserves executable bit" yes "$([[ -x "$SANDBOX/self.sh" ]] && echo yes || echo no)"
+t_ok "update saves backup" yes "$(find "$SANDBOX" -name 'self.sh.bak.*' -print -quit | grep -q . && echo yes || echo no)"
+out="$(t_update "$SANDBOX/remote-1.1.0" 2>&1)"; rc=$?
+t_ok "same version exits normally" 0 "$rc"
+t_ok "same version unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
+out="$(t_update "$SANDBOX/remote-1.0.0" 2>&1)"; rc=$?
+t_ok "downgrade refused" 1 "$rc"
+t_ok "downgrade leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
+printf '#!/bin/bash\ntrue\n' >"$SANDBOX/invalid-manager"
+out="$(t_update "$SANDBOX/invalid-manager" 2>&1)"; rc=$?
+t_ok "missing version refused" 1 "$rc"
+t_ok "invalid manager leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
+printf '#!/bin/bash\nreadonly SCRIPT_VERSION="9.0.0"\nreadonly SCRIPT_CHANNEL="v2"\n' >"$SANDBOX/cross-manager"
+out="$(t_update "$SANDBOX/cross-manager" 2>&1)"; rc=$?
+t_ok "cross-channel manager refused" 1 "$rc"
+out="$(t_update "$SANDBOX/remote-1.2.0" offline 2>&1)"; rc=$?
+t_ok "offline update refused" 1 "$rc"
+t_ok "offline leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
+t_ok "empty update URL disables normally" 0 "$(t_rc env NOWHERE_V3_SELF_URL= bash "$PATCHED" self-update)"
+else
+  t_skip "self-update (GNU chmod/chown --reference unavailable on this host)"
+fi
+
+# ---------------------------------------------------------------------------
+t_section "share links and Portal probe"
+shares="$(v3_url shares "portal://$K@*:2083?morph=0" 203.0.113.5 'NW3 测试')"
+t_ok "share TCP format" yes "$(grep -q '^nowhere://.*?net=tcp&morph=0#' <<<"$shares" && echo yes || echo no)"
+t_ok "share UDP format" yes "$(grep -q '^nowhere://.*?net=udp&morph=0#' <<<"$shares" && echo yes || echo no)"
+t_ok "share has no pin" yes "$([[ "$shares" != *pin=* ]] && echo yes || echo no)"
+t_ok "share node name encoded" yes "$([[ "$shares" == *%20* ]] && echo yes || echo no)"
+probeurl="$(v3_url probe-link "portal://$K@*:2083?morph=0" 203.0.113.5 "$P64")"
+t_ok "probe uses configured morph" yes "$([[ "$probeurl" == *morph=0* ]] && echo yes || echo no)"
+t_ok "probe uses trusted pin" yes "$([[ "$probeurl" == *"pin=$P64"* ]] && echo yes || echo no)"
+t_ok "probe URL validates" 0 "$(vu "$probeurl")"
+t_ok "UDP-only probe selects UDP" yes "$(v3_url probe-link "portal://$K@*/udp:2083" 203.0.113.5 "$P64" | grep -q '/udp:2083' && echo yes || echo no)"
+t_ok "egress source dial allowed" 0 "$(vu "egress://$K@relay/udp:2083?dial4=127.0.0.1")"
+if ((HAVE_TIMEOUT)); then
+cat > "$BIN_LINK" <<'CORE'
+#!/bin/sh
+printf 'vector://should-not-leak@host:2083?pin=should-not-leak\n'
+printf 'Result: OK\n'
+CORE
+chmod +x "$BIN_LINK"
+printf '%s\n' "$probeurl" >"$URL_FILE"
+out="$(probe_action 2>&1)"; rc=$?
+t_ok "Vector probe succeeds" 0 "$rc"
+t_ok "probe output redacts key" yes "$([[ "$out" != *"$K"* && "$out" != *should-not-leak* ]] && echo yes || echo no)"
+t_ok "probe output redacts pin" yes "$([[ "$out" != *"$P64"* ]] && echo yes || echo no)"
+t_ok "probe output contains masked URL" yes "$([[ "$out" == *'vector://***@'* ]] && echo yes || echo no)"
+printf 'portal://%s@*:2083?morph=0\n' "$K" >"$URL_FILE"
+out="$( (PUBLIC_HOST=203.0.113.5; local_pin() { printf '%s\n' "$P64"; }; probe_action) 2>&1)"; rc=$?
+t_ok "Portal probe succeeds" 0 "$rc"
+printf 'egress://%s@relay/udp:2083\n' "$K" >"$URL_FILE"
+out="$(probe_action 2>&1)"; rc=$?
+t_ok "Egress probe refused" 1 "$rc"
+cat > "$BIN_LINK" <<'CORE'
+#!/bin/sh
+printf 'Result: DIAL_FAILED\n'
+exit 4
+CORE
+chmod +x "$BIN_LINK"
+printf '%s\n' "$probeurl" >"$URL_FILE"
+out="$(probe_action 2>&1)"; rc=$?
+t_ok "probe preserves failure code" 4 "$rc"
+t_ok "probe prints known failure" yes "$([[ "$out" == *DIAL_FAILED* ]] && echo yes || echo no)"
+else
+  t_skip "probe execution (timeout unavailable on this host)"
+fi
+
+# ---------------------------------------------------------------------------
+t_section "release pagination (stubbed GitHub)"
+python3 - "$SANDBOX" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]);(p/'page1.json').write_text(json.dumps([{'tag_name':'v2.2.1'}]*100))
+(p/'page2.json').write_text(json.dumps([{'tag_name':'v3.0.9'},{'tag_name':'v3.0.10'},{'tag_name':'v3.0.11','prerelease':True},{'tag_name':'v3.0.12','draft':True}]))
+PY
+versions="$( (curl_github() { cp "$SANDBOX/page${1##*page=}.json" "$2"; }; fetch_versions) )"
+t_ok "second page stable release included" yes "$([[ "$versions" == *v3.0.10* ]] && echo yes || echo no)"
+t_ok "numeric descending order" v3.0.10 "$(head -1 <<<"$versions")"
+t_ok "prerelease excluded" yes "$([[ "$versions" != *v3.0.11* ]] && echo yes || echo no)"
+t_ok "draft excluded" yes "$([[ "$versions" != *v3.0.12* ]] && echo yes || echo no)"
+t_ok "V2 releases excluded" yes "$([[ "$versions" != *v2.* ]] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+t_section "menu and transaction regressions"
+# Python creates a session with no controlling terminal, independently of CI TTY.
+out="$(python3 - "$PATCHED" <<'PY'
+import subprocess,sys
+p=subprocess.run(['bash',sys.argv[1]],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,timeout=4)
+print(p.returncode);print(p.stdout.decode().count('22.'))
+PY
+)"
+t_ok "no-tty menu exits 0" 0 "$(head -1 <<<"$out")"
+t_ok "no-tty menu renders only once" 1 "$(tail -1 <<<"$out")"
+printf 'portal://%s@127.0.0.1:2083?morph=1\n' "$K" > "$URL_FILE"
+ORIG_URL="$(cat "$URL_FILE")"
+# Run the same non-conditional child-shell boundary used by the menu.
+out="$(bash -c 'source "$1"; systemctl() { return 0; }; wait_service() { return 0; }; set +e; ( set -e; trap finish EXIT; begin_transaction; printf broken > "$URL_FILE"; false ); rc=$?; exit "$rc"' _ "$PATCHED" 2>&1)"; rc=$?
+t_ok "menu child failure nonzero" 1 "$rc"
+t_ok "menu child restored configuration" "$ORIG_URL" "$(cat "$URL_FILE")"
+mkdir -p "$RELEASES_DIR/v3.0.0-fixture"
+printf '#!/bin/sh\nexit 0\n' > "$RELEASES_DIR/v3.0.0-fixture/nowhere"
+chmod +x "$RELEASES_DIR/v3.0.0-fixture/nowhere"
+ln -sfn "$RELEASES_DIR/v3.0.0-fixture" "$CURRENT_LINK"
+out="$(bash -c 'source "$1"; mutating_setup() { :; }; ROLE=egress; KEY="$2"; ENDPOINT=relay:2083; ASSUME_YES=1; configure_action' _ "$PATCHED" "$K" 2>&1)"; rc=$?
+t_ok "unattended role switch refused" 1 "$rc"
+t_ok "role-switch diagnostic reached" yes "$([[ "$out" == *allow-role-switch* ]] && echo yes || echo no)"
+t_ok "role guard preserves URL" "$ORIG_URL" "$(cat "$URL_FILE")"
+
+# ---------------------------------------------------------------------------
+t_section "persistent PEM reuse"
+if command -v openssl >/dev/null 2>&1; then
+  mkdir -p "$TLS_DIR/pem.original"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=test -keyout "$TLS_DIR/pem.original/key.pem" -out "$TLS_DIR/pem.original/cert.pem" >/dev/null 2>&1
+  cp "$TLS_DIR/pem.original/cert.pem" "$SANDBOX/original-cert.pem"
+  printf 'portal://%s@*:2083?tls=2&crt=%s&key=%s\n' "$K" "$TLS_DIR/pem.original/cert.pem" "$TLS_DIR/pem.original/key.pem" >"$URL_FILE"
+  # Keep real openssl/parser/copy; stub ownership only, so it remains non-root.
+  out="$(bash -c '
+    source "$1"; KEY="$2"; ENDPOINT="*:2083"; CERT=""; TLS_KEY=""
+    chown() { :; }
+    install() { local -a a=(); while (($#)); do case "$1" in -o|-g) shift 2 ;; *) a+=("$1"); shift ;; esac; done; command install "${a[@]}"; }
+    prepare_configuration
+  ' _ "$PATCHED" "$K" 2>&1)"; rc=$?
+  t_ok "same-role configuration prepared" 0 "$rc"
+  newcert="$(v3_url get "$(cat "$URL_FILE")" crt)"
+  t_ok "reconfigure preserves certificate bytes" 0 "$(t_rc cmp "$SANDBOX/original-cert.pem" "$newcert")"
+  t_ok "superseded PEM directory pruned" yes "$([[ ! -d "$TLS_DIR/pem.original" ]] && echo yes || echo no)"
+else t_skip "PEM reuse (openssl unavailable)"; fi
+# ---------------------------------------------------------------------------
+t_section "wizard defaults and optional doctor probe"
+out="$(python3 - "$PATCHED" <<'PYW'
+import subprocess,sys
+code='source "$1"; ROLE="$2"; installation_wizard; printf "SUMMARY %s %s %s\\n" "$ROLE" "$ENDPOINT" "${#KEY}"'
+for role in ('portal','vector','egress'):
+ p=subprocess.run(['bash','-c',code,'test',sys.argv[1],role],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,timeout=5)
+ assert p.returncode==0,p.stderr.decode()
+ print(p.stdout.decode().strip())
+PYW
+)"
+t_ok "Portal defaults without tty" yes "$([[ "$out" == *'SUMMARY portal *:2083 32'* ]] && echo yes || echo no)"
+t_ok "Vector defaults without tty" yes "$([[ "$out" == *'SUMMARY vector 127.0.0.1/tcp:2083 32'* ]] && echo yes || echo no)"
+t_ok "Egress defaults without tty" yes "$([[ "$out" == *'SUMMARY egress 127.0.0.1/udp:2083 32'* ]] && echo yes || echo no)"
+cat > "$CURRENT_LINK/nowhere" <<'CORE'
+#!/bin/sh
+if [ "$1" = --version ]; then echo 'nowhere-v3.0.0 linux/x86_64'; exit 0; fi
+printf 'Result DIAL_FAILED\n'
+exit 4
+CORE
+chmod +x "$CURRENT_LINK/nowhere"
+cp "$CURRENT_LINK/nowhere" "$BIN_LINK"
+printf '%s\n' "$probeurl" >"$URL_FILE"
+out="$(bash -c 'source "$1"; require_root() { :; }; require_systemd() { :; }; DOCTOR_PROBE=1; doctor_action' _ "$PATCHED" 2>&1)"; rc=$?
+t_ok "doctor probe failure warns only" 0 "$rc"
+t_ok "doctor probe warning present" yes "$([[ "$out" == *'[Warn]'* ]] && echo yes || echo no)"
+t_ok "doctor probe warning contains no key" yes "$([[ "$out" != *"$K"* ]] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+t_section "wizard reinstall transaction"
+printf 'tag: v3.0.0\n' > "$CURRENT_LINK/RELEASE-INFO"
+ORIG_URL="$(cat "$URL_FILE")"
+out="$(bash -c '
+ source "$1"
+ require_root() { :; }; mutating_setup() { :; }; ensure_user() { :; }; wait_service() { return 0; }
+ ROLE=vector; KEY="$2"; ENDPOINT=relay:2083; REINSTALL_MODE=1
+ prepare_configuration() { printf changed > "$URL_FILE"; }
+ install_release() { return 19; }
+ configure_action
+' _ "$PATCHED" "$K" 2>&1)"; rc=$?
+t_ok "reinstall download failure returned" 19 "$rc"
+t_ok "reinstall download failure restores URL" "$ORIG_URL" "$(cat "$URL_FILE")"
+
+# ---------------------------------------------------------------------------
+t_section "integration fixes (prompt visibility, advanced carry)"
+
+# The v1.1.0 review found every interactive prompt hidden behind 2>/dev/null;
+# guard against the pattern coming back.
+t_ok "no stderr-suppressed read prompts" yes \
+  "$(grep -q '</dev/tty; } 2>/dev/null' "$SCRIPT" && echo no || echo yes)"
+s="$(v3_url build portal "$K" '*:2083' 1 direct 127.0.0.1:1083 '' '' '' '')"
+s2="$(v3_url set-advanced "$s" 100 50)"
+t_ok "set-advanced adds rate" yes "$(grep -q 'rate=100' <<<"$s2" && echo yes || echo no)"
+t_ok "set-advanced adds etar" yes "$(grep -q 'etar=50' <<<"$s2" && echo yes || echo no)"
+t_ok "set-advanced result validates" 0 "$(vu "$s2")"
+# rate/etar must survive a reconfigure: load_config_fields reads them so the
+# rebuilt URL can carry them via set-advanced.
+printf 'portal://%s@*:2083?morph=0&tls=1&rate=123&etar=45\n' "$K" > "$URL_FILE"
+load_config_fields
+t_ok "load_config_fields reads rate" 123 "$RATE"
+t_ok "load_config_fields reads etar" 45 "$ETAR"
 
 # ---------------------------------------------------------------------------
 printf '\n%s\n' "----------------------------------------"

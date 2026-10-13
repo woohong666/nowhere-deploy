@@ -244,7 +244,7 @@ native 客户端（Vector、`probe`、链式 Portal 的 `next`）**始终**验�
 | Portal 证书 | 客户端需要什么 |
 |---|---|
 | CA 签发（`tls=2`，如 Let's Encrypt） | 客户端通过证书覆盖的域名访问时无需额外配置；否则设置 `sni=` 或 `pin=` |
-| 自签名 / 私有 CA（`tls=2`） | `pin=<sha256>`——`links` 会自动填入（证书无法通过系统信任库验证）；只要证书不换就一直有效 |
+| 自管理 / 自签名（`tls=2`） | `pin=<sha256>`——只要证书不换就一直有效 |
 | 生成的自签名（`tls=1`） | `pin=<sha256>`；生成的证书**每次 Portal 重启都会变化**，pin 必须同步更新——仅适合测试 |
 
 在 Portal 主机上用 `sudo bash nowhere-v2.sh fingerprint` 获取指纹（也可从证书日志获取）；远程拿到的指纹在与你 Portal 主机核对之前都应视为不可信。`tls=1` 时 `links` 会自动把 pin 填进生成的 Vector 链接。
@@ -578,17 +578,6 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 * **根因**：配置仍是 2.2 之前的密钥格式，Nowhere 2.2.0+ 会拒绝启动（`nowhere generate-key` 输出即为要求的格式）。
 * **解决**：用 `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"` 只轮换密钥、保留其它设置，然后把**同一串文本**配置到该跳的每个对端。旧式 1-255 位密钥仅在 Portal `<=2.1` 上继续可用。
 
-### Q8: 裸 `openssl s_client` 被断开，但真实客户端正常
-
-* **根因**：Nowhere 的 TLS 监听固定要求 ALPN `nw2`，不带该参数的握手会被静默断开；此时输出的 `Verify return code: 0 (ok)` 具有误导性——实际上没有交换任何证书。
-* **检查**：手动探测时必须带上 ALPN：
-
-  ```bash
-  echo | openssl s_client -connect <host>:2082 -servername <name> -alpn nw2 2>&1 | grep -E "subject=|ALPN"
-  ```
-
-  `morph=1` 的 Portal 无法用裸 TLS 探测（线路是掩码流），请改用 `nowhere-v2 probe` / `nowhere-v3 probe`。
-
 ---
 
 ## 12. V1 稳定通道（仅部署）
@@ -685,11 +674,54 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计（NW3 已取消 TUI）
 | 服务 / 配置 / 二进制 | `nowhere-v2` · `/etc/nowhere-v2` · `nowhere-v2` | `nowhere-v3` · `/etc/nowhere-v3` · `nowhere-v3` |
 | 默认端口 | 2082 / SOCKS 1082 | 2083 / SOCKS 1083 |
 | 监控 | TUI | `status` / `telemetry` |
-| 源码编译 / 自更新 | 支持 | 设计上不提供 |
+| 源码编译 / 自更新 | 支持 / 支持 | 不提供源码 / 支持自更新 |
 
-> V3 管理器目前以中文提示为主。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需能向 Portal 发起 QUIC/UDP 出站。
+> V3 v1.1.0 支持完整中文/英文交互。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需能向 Portal 发起 QUIC/UDP 出站。
 
 ---
+
+### 13.3 v1.1.0 日常操作
+
+无参数运行进入22项循环菜单；安装/重配提供Portal、Vector、Egress向导。
+菜单失败在独立子shell恢复事务后返回；无终端读取失败直接退出。
+
+```bash
+sudo bash nowhere-v3.sh                         # 完整菜单
+sudo bash nowhere-v3.sh install --yes           # 默认Portal、2083、持久PEM
+bash nowhere-v3.sh versions                     # 所有稳定V3，数值倒序
+bash nowhere-v3.sh check-updates
+bash nowhere-v3.sh generate-key                 # 仅输出32位小写hex
+sudo bash nowhere-v3.sh probe example.com:443    # 脱敏URL + Result
+sudo bash nowhere-v3.sh doctor --probe          # 探测失败仅警告
+sudo bash nowhere-v3.sh status
+sudo bash nowhere-v3.sh telemetry
+sudo bash nowhere-v3.sh clean-releases
+sudo bash nowhere-v3.sh language --lang en      # 保存语言
+sudo bash nowhere-v3.sh self-update             # 仅更新管理脚本
+NOWHERE_V3_SELF_URL= bash nowhere-v3.sh self-update # 禁用
+```
+
+语言优先级：`--lang` > `NOWHERE_V3_LANG` > `manager.conf` 的LANG > 中文。
+菜单切换与language命令保存语言；修改类命令的显式--lang也保存；
+help/validate/generate-key/self-update不为语言选项修改服务配置。
+新增 `--name`（分享链接名称）、`--wizard`、`--dial/--dial4/--dial6`；原CLI选项全部保留。
+
+`versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
+默认仍固定v3.0.0，跟进新版本必须显式`upgrade --version latest-v3`。
+自更新验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
+不更新服务、配置或内核。来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
+
+`links`输出带pin的原生Vector/Egress URL，以及每个carrier对应的
+`nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`。
+分享链接不携带pin；自签证书应将`fingerprint`结果添加到客户端信任列表。
+若安装了qrencode则显示二维码，否则静默跳过。链接含密钥勿外传。
+`generate-key`与`fingerprint`是明确的密钥/指纹输出例外；其他状态、日志和probe输出脱敏。
+
+Portal probe需要PUBLIC_HOST，可临时传`--public-host`；持久证书读取本机PEM指纹，
+临时tls=1用官方内核探测本机TCP指纹；纯UDP临时证书无法核实时拒绝链接/探测。
+Egress角色不能发起probe。Egress自身可使用dial*；只有Portal的out=egress禁止dial*。
+重配同角色复用PEM；明确提供--cert/--tls-key才轮换；角色切换仍需确认或--allow-role-switch。
+本版未实现可选的`backup --restore`，不要将普通备份命令当作恢复功能。
 
 ## 测试
 

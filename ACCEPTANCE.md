@@ -299,6 +299,39 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 
 ---
 
+### 13.1 v1.1.0 菜单与自更新走查
+
+- 在测试主机运行无参数菜单：检查22项、0/q退出、无效输入与回车返回；中英文各走查一次。
+- 断开终端/stdin：应只显示一次并退出，不循环刷屏。
+- 分别通过Portal/Vector/Egress向导安装；同角色重配前后用fingerprint比较，默认pin应相同。
+- 模拟错误证书或启动失败：原配置、unit、launcher与current均恢复；V1/V2目录无变化。
+- `versions`应数值倒序过滤draft/prerelease，官方不足10个时只显示实际数量。
+- 复制脚本测试self-update：更高版本升级、同版本不改、较低版本拒绝、空环境变量禁用、断网不破坏原文件；不得更新服务或配置。
+- `language --lang en`保存后重新进入菜单；`NOWHERE_V3_LANG=zh`及`--lang en`按优先级覆盖。
+
+### 13.2 v1.1.0 探测与隐私
+
+- Portal（设置PUBLIC_HOST）和Vector运行`probe example.com:443`；成功0、失败非零，只显示脱敏URL与Result。
+- Portal分别测试tls=2与tls=1、Morph=0/1；tls=1无TCP监听时应明确拒绝指纹核验。
+- Egress发起probe应失败且说明不支持；`doctor --probe`探测失败仅警告，基础doctor语义不变。
+- links应包含带pin的Vector tcp/udp、适用时Egress，以及不带pin的nowhere分享链接。
+- 可选qrencode存在时检查二维码；缺失时无安装动作、无错误。
+- 检查status、日志与probe不泄露共享密钥或pin；generate-key、fingerprint与links为明确输出例外。
+- 私有CA/自签场景手动导入客户端信任；通用分享链接本身不携带信任锚。
+
+### 13.3 自动化验收
+
+```bash
+bash -n nowhere-v3.sh tests/nowhere-v3.test.sh
+shellcheck -S warning nowhere-v3.sh tests/nowhere-v3.test.sh
+bash tests/nowhere-v3.test.sh
+```
+
+在Linux Bash 5.x + util-linux flock的非root账户执行全部沙箱测试；
+测试不访问网络、不写真实服务目录。原先“无自更新URL”断言随F1改为“自更新只指向V3”；其余旧断言保留。
+可选backup --restore未纳入本版；不要执行未实现的恢复命令。
+真机人工走查结果由操作者填写，不以沙箱成功替代生产验收。
+
 ## 14. 清理
 
 ```bash
