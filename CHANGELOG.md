@@ -78,7 +78,9 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Fingerprint normalization (`normalize_fingerprint`) is now shared by the local and remote paths, so colon/space-separated output from the core is accepted everywhere.
 - **`nh` shortcut**: install/configure/self-update (re)create `/usr/local/bin/nh`, a marker-owned wrapper that opens the menu or forwards arguments (`nh status`); a foreign file at that path is never overwritten, and `uninstall --purge` removes only a marker-owned shortcut.
 - **Numbered choices and y/n confirmations**: `prompt_choice` accepts an index (1..N) besides the value word — values that already look numeric win over the index — and the wizard labels list `1=... 2=...`; `prompt_confirm` accepts `y`/`yes`/`是` with a `[y/N]（y=是 n=否）` hint. Both honor `NOWHERE_V3_PROMPT_TTY` for scripted input.
+- **qrencode auto-install**: `links` installs qrencode on demand (apt-get/dnf/yum/apk) so QR codes render by default; with no supported package manager (or a failed installation) it warns and prints the links without QR.
 - README (EN/zh-CN) documents the remote form; the acceptance checklist gained a matching probe/privacy bullet.
+- README (EN/zh-CN): new step-by-step V3 installation walkthrough (§13.1 — menu wizard field table, unattended commands, post-install checks, client import, firewall), a document map in the §13 preamble, and a post-install file-layout table (§13.4); QR behavior updated to auto-install in the docs and the acceptance checklist.
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.1.0
 

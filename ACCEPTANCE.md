@@ -319,7 +319,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - Egress发起probe应失败且说明不支持；`doctor --probe`探测失败仅警告，基础doctor语义不变。
 - links应包含带pin的Vector tcp/udp、适用时Egress，以及不带pin的nowhere分享链接。
 - `fingerprint 'nowhere://KEY@主机:端口?morph=0|1'`应回64位hex；非nowhere://参数、缺端口或带carrier路径会被拒；输出与报错均不含密钥（v1.2.0 起）。
-- 可选qrencode存在时检查二维码；缺失时无安装动作、无错误。
+- links 会自动尝试安装 qrencode（apt/dnf/yum/apk）：成功则输出二维码；无包管理器或安装失败时仅警告，链接照常输出。
 - 检查status、日志与probe不泄露共享密钥或pin；generate-key、fingerprint与links为明确输出例外。
 - 私有CA/自签场景手动导入客户端信任；通用分享链接本身不携带信任锚。
 

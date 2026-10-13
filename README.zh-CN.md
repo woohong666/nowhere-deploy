@@ -641,27 +641,83 @@ sudo bash nowhere-v1.sh install \
 ## 13. V3 通道（NW3）
 
 > `nowhere-v3.sh` 是面向 Nowhere **v3.x** 的**独立管理器**，与 V2 完全隔离（独立服务、账户、路径、端口），不会转换或触碰 V2 安装。NW3 与 NW2 线协议不兼容，没有协商或回落。
+>
+> 文档位置：V3 安装与操作=本文件 §13；验收清单=[`ACCEPTANCE.md`](ACCEPTANCE.md) §13；变更历史=[`CHANGELOG.md`](CHANGELOG.md)；V2 的完整文档=本文件 §2–§11。
 
-### 13.1 快速开始
+### 13.1 安装步骤（详细走查）
+
+第一次装推荐**直接走菜单向导（Step 1）**；批量/自动化部署看 Step 2。
+
+**Step 0 · 下载脚本（建议固定在 `/root`）**
 
 ```bash
-# 下载
+cd /root
 wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh -O nowhere-v3.sh
-chmod 700 nowhere-v3.sh && bash -n nowhere-v3.sh
+chmod 700 nowhere-v3.sh
+bash -n nowhere-v3.sh        # 语法自检；无输出即通过
+```
 
-# 新建 Portal（默认固定 v3.0.0）。不传 --cert/--tls-key 时自动生成持久自签 PEM，
-# 客户端 pin 永久稳定。
-sudo bash nowhere-v3.sh install --version v3.0.0 --public-host relay.example.com
+**Step 1 · 打开菜单，用向导安装 Portal（推荐）**
 
-# 或使用你自己的证书
+```bash
+sudo bash nowhere-v3.sh      # 不带参数 = 打开完整菜单（22 项）
+```
+
+菜单分三组：**1–6 安装与配置**（1=Portal 2=Vector 3=Egress 4=改配置 5=选版本 6=升级）、**7–15 服务与诊断**（启停重启、状态统计、客户端链接、证书指纹、生成密钥、TCP 探测、实时日志）、**16–22 维护**（体检、清理、备份、回滚、卸载、语言、更新脚本）。
+
+安装 Portal：**输入 `1`**（Vector 输入 `2`、Egress 输入 `3`），然后跟着向导走，**每一步直接回车 = 用括号里的默认值**：
+
+| 向导提示 | 输入 | 说明 |
+|---|---|---|
+| 角色 | `1` | 1=portal（默认）2=vector 3=egress |
+| 共享密钥 | 回车 | 自动生成 32 位 hex；也可粘贴自己的 |
+| 监听预设 | 回车（1） | 1=both（TCP+UDP 共用端口）；选 4=split 会多问一个 UDP 端口（默认 2084） |
+| 主端口 | 回车 | 默认 2083 |
+| TLS 模式 | 回车（1） | 1=managed：自动生成**持久**自签 PEM（pin 不随重启变）；2=supplied：用你自己的证书（接着填证书与私钥两个路径） |
+| 出口 | 回车（1） | 1=direct（直连）2=socks（上游 SOCKS，输入隐藏）3=egress（远程出口） |
+| 公网地址 | 填域名/IP | 生成客户端链接用（如 relay.example.com） |
+| Morph | 回车（1） | 必须与客户端一致 |
+
+装完自动启动服务，并生成快捷命令 `nh`——以后直接敲 `nh` 就能回到这个菜单。
+
+> **已有实例时留意**：菜单 `1` 会先问「已有实例：使用向导重配？」——**输入 `y` 才进入向导**；直接回车/输入 `n` 只是重装二进制（配置不动）。
+
+**Step 2 · 或一条命令无人值守安装**
+
+```bash
+# 最小安装：自签证书 + 自动生成密钥 + 端口 2083 + morph=1
+sudo bash nowhere-v3.sh install --yes --public-host relay.example.com
+
+# 用域名证书（如 Let's Encrypt）
 sudo bash nowhere-v3.sh install --public-host relay.example.com \
   --cert /etc/letsencrypt/live/relay.example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
 
-sudo bash nowhere-v3.sh doctor
-sudo bash nowhere-v3.sh links        # Vector（及 Egress）URL，均自带 pin
-sudo bash nowhere-v3.sh telemetry    # 只读统计（NW3 已取消 TUI）
+# 指定版本 / 端口 / 密钥
+sudo bash nowhere-v3.sh install --version v3.0.0 --endpoint '*:8443' \
+  --key "$(openssl rand -hex 16)"
 ```
+
+**Step 3 · 安装后确认**
+
+```bash
+sudo bash nowhere-v3.sh doctor     # 服务 / 证书 / 账户体检
+sudo bash nowhere-v3.sh links      # Vector URL + 分享链接 + 二维码
+nh                                 # 或直接用快捷命令回到菜单
+```
+
+**Step 4 · 客户端导入（Anywhere 2.4+）**
+
+- 扫 `links` 输出的二维码，或把 `nowhere://` 链接复制进 App 导入
+- 自签证书：把 `sudo bash nowhere-v3.sh fingerprint` 的结果加入 App 的证书信任列表
+- `net=tcp` / `net=udp` 两条链接任选一条导入即可（仅载体不同，共用端口时不要两条都导）
+
+**Step 5 · 防火墙（别忘云安全组）**
+
+- Portal：放行 **TCP 和 UDP 2083**（split/自定义端口时对应各自端口）
+- Egress：无需入站，只需能向 Portal 发起 QUIC/UDP 出站
+
+**其他角色与版本跟进**
 
 - **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
 - **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
@@ -688,7 +744,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计（NW3 已取消 TUI）
 
 ---
 
-### 13.3 v1.1.0 日常操作
+### 13.3 日常操作
 
 无参数运行进入22项循环菜单；安装/重配提供Portal、Vector、Egress向导。
 安装/重配或自更新成功后自动生成快捷命令 `nh`（=打开本菜单；参数透传，如 `nh status`、`nh doctor`；`uninstall --purge` 时移除）。
@@ -725,7 +781,7 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`。
 分享链接不携带pin；自签证书应将`fingerprint`结果添加到客户端信任列表。
 `fingerprint` 无参数查本机；`fingerprint 'nowhere://KEY@HOST:PORT?morph=0|1'` 查**远端**证书指纹（v1.2.0 起；强制 TCP/TLS、链接打码，`net=udp` 链接同样适用）——请带外核对后再用作 pin 或客户端信任项。
-若安装了qrencode则显示二维码，否则静默跳过。链接含密钥勿外传。
+二维码会自动安装 qrencode（apt/dnf/yum/apk）后显示；无包管理器或安装失败时仅警告并跳过。链接含密钥勿外传。
 `generate-key`与`fingerprint`是明确的密钥/指纹输出例外；其他状态、日志和probe输出脱敏。
 
 Portal probe需要PUBLIC_HOST，可临时传`--public-host`；持久证书读取本机PEM指纹，
@@ -733,6 +789,24 @@ Portal probe需要PUBLIC_HOST，可临时传`--public-host`；持久证书读取
 Egress角色不能发起probe。Egress自身可使用dial*；只有Portal的out=egress禁止dial*。
 重配同角色复用PEM；明确提供--cert/--tls-key才轮换；角色切换仍需确认或--allow-role-switch。
 本版未实现可选的`backup --restore`，不要将普通备份命令当作恢复功能。
+
+### 13.4 安装后的文件位置
+
+| 内容 | 位置 |
+|---|---|
+| 管理脚本 | 你下载的路径（建议 `/root/nowhere-v3.sh`）；`nh` 指向它，挪动后重跑一次 install/configure/self-update 即可刷新 |
+| 快捷命令 | `/usr/local/bin/nh`（`uninstall --purge` 时移除） |
+| 当前内核 | `/usr/local/bin/nowhere-v3` → `/opt/nowhere-v3/current/nowhere` |
+| 版本目录 | `/opt/nowhere-v3/releases/v3.x.y/`（默认保留最近 3 个，用 `--keep-releases` 调整） |
+| 服务配置 | `/etc/nowhere-v3/url.conf`（含共享密钥，注意保密） |
+| 管理元数据 | `/etc/nowhere-v3/manager.conf` |
+| 证书/PEM | `/etc/nowhere-v3/tls/pem.XXXXXX/`（只保留当前一份） |
+| systemd 单元 | `/etc/systemd/system/nowhere-v3.service` |
+| 启动器 | `/usr/local/libexec/nowhere-v3-launch` |
+| 服务账户 | `nowhere-v3`（系统账户，无登录） |
+| 日志 | `journalctl -u nowhere-v3`（`nh logs` 实时跟随） |
+| 配置备份 | 默认 `/root/nowhere-v3-backup-YYYYmmdd-HHMMSS.tar.gz`（`nh backup`） |
+| 构建锁 | `/run/nowhere-v3-build.lock.d`（防止并发管理操作） |
 
 ## 测试
 

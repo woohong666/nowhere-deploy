@@ -795,6 +795,18 @@ fingerprint_action() {
   [[ -n "$url" ]] || { local_pin; return 0; }
   remote_fingerprint "$url"
 }
+ensure_qrencode() {
+  has_cmd qrencode && return 0
+  if has_cmd apt-get; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qrencode >/dev/null 2>&1 || true
+  elif has_cmd dnf; then dnf install -y -q qrencode >/dev/null 2>&1 || true
+  elif has_cmd yum; then yum install -y -q qrencode >/dev/null 2>&1 || true
+  elif has_cmd apk; then apk add --no-cache -q qrencode >/dev/null 2>&1 || true
+  fi
+  has_cmd qrencode || { warn "$(tr_msg 'qrencode is unavailable; QR output skipped (install it and rerun links)' 'qrencode 不可用，已跳过二维码（安装后重跑 links 即可显示）')"; return 1; }
+  info "$(tr_msg 'qrencode installed for QR output' 'qrencode 已自动安装（用于显示二维码）')"
+}
 show_links() {
   require_root
   [[ -n "$PUBLIC_HOST" ]] || die "$(tr_msg "Set --public-host first" "请用 --public-host 指定公网地址")"
@@ -807,7 +819,7 @@ show_links() {
   warn "$(tr_msg "If the tcp/udp variants share one port, import only ONE link - they differ only in the carrier." "若 tcp/udp 两条共用同一端口，任选一条导入即可——两者仅 carrier 参数不同。")"
   warn "$(tr_msg "Links contain a shared key; do not disclose them. NW3 clients only." "链接含密钥勿外传；仅供支持 NW3 的客户端使用。")"
   warn "$(tr_msg "Share links cannot carry pin. For self-signed certificates, add the SHA-256 from fingerprint to the client's trust list." "通用分享链接不能携带 pin；自签证书请将 fingerprint 的 SHA-256 添加到客户端信任列表。")"
-  if has_cmd qrencode; then
+  if ensure_qrencode; then
     while IFS= read -r line; do qrencode -t ANSIUTF8 "$line" || warn "$(tr_msg "QR rendering failed" "二维码显示失败")"; done <<<"$shares"
   fi
 }

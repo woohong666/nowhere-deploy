@@ -520,6 +520,33 @@ t_ok "confirm no" 1 "$(printf 'no\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_c
 t_ok "confirm empty defaults to no" 1 "$(printf '\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
 
 # ---------------------------------------------------------------------------
+t_section "qrencode auto-install"
+rm -f "$SANDBOX/bin/qrencode" "$SANDBOX/bin/apt-called"
+cat > "$SANDBOX/bin/apt-get" <<'APT'
+#!/bin/sh
+d=${0%/*}
+echo called >> "$d/apt-called"
+if [ "$1" = "install" ]; then
+  printf '#!/bin/sh\nexit 0\n' > "$d/qrencode"
+  PATH=/usr/bin:/bin chmod 755 "$d/qrencode"
+fi
+exit 0
+APT
+chmod +x "$SANDBOX/bin/apt-get"
+out="$( (PATH="$SANDBOX/bin"; ensure_qrencode) 2>&1)"; rc=$?
+t_ok "qrencode install path succeeds" 0 "$rc"
+t_ok "qrencode stub was created" yes "$([[ -x "$SANDBOX/bin/qrencode" ]] && echo yes || echo no)"
+t_ok "package manager was used" yes "$([[ -f "$SANDBOX/bin/apt-called" ]] && echo yes || echo no)"
+rm -f "$SANDBOX/bin/apt-called"
+out="$( (PATH="$SANDBOX/bin"; ensure_qrencode) 2>&1)"; rc=$?
+t_ok "existing qrencode short-circuits" 0 "$rc"
+t_ok "package manager untouched when present" yes "$([[ ! -f "$SANDBOX/bin/apt-called" ]] && echo yes || echo no)"
+rm -f "$SANDBOX/bin/qrencode" "$SANDBOX/bin/apt-get"
+out="$( (PATH="$SANDBOX/bin"; ensure_qrencode) 2>&1)"; rc=$?
+t_ok "no package manager warns and fails soft" 1 "$rc"
+t_ok "warning mentions qrencode" yes "$([[ "$out" == *qrencode* ]] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
 t_section "persistent PEM reuse"
 if command -v openssl >/dev/null 2>&1; then
   mkdir -p "$TLS_DIR/pem.original"

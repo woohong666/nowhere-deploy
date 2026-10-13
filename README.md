@@ -641,27 +641,83 @@ They coexist on one VPS as long as their ports do not collide, and neither modif
 ## 13. V3 Channel (NW3)
 
 > `nowhere-v3.sh` is a **separate manager** for the Nowhere **v3.x** line. It is fully isolated from V2 (own service, account, paths, ports) and never converts or touches a V2 install. NW3 is wire-incompatible with NW2, with no negotiation or fallback.
+>
+> Document map: V3 installation and operations = this section §13; acceptance checklist = [`ACCEPTANCE.md`](ACCEPTANCE.md) §13; change history = [`CHANGELOG.md`](CHANGELOG.md); full V2 documentation = §2–§11 of this file.
 
-### 13.1 Quick start
+### 13.1 Step-by-step installation
+
+The first installation is best done through the menu wizard (Step 1); use Step 2 for unattended deployments.
+
+**Step 0 · Download the script (keep it in `/root`)**
 
 ```bash
-# Download
+cd /root
 wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh -O nowhere-v3.sh
-chmod 700 nowhere-v3.sh && bash -n nowhere-v3.sh
+chmod 700 nowhere-v3.sh
+bash -n nowhere-v3.sh        # syntax self-check; no output means it passed
+```
 
-# New Portal (fixed default core v3.0.0). Without --cert/--tls-key the manager
-# generates a persistent self-signed PEM, so the client pin stays stable.
-sudo bash nowhere-v3.sh install --version v3.0.0 --public-host relay.example.com
+**Step 1 · Open the menu and install a Portal with the wizard (recommended)**
 
-# Or bring your own certificate
+```bash
+sudo bash nowhere-v3.sh      # no arguments = the full 22-action menu
+```
+
+The menu has three groups: **1–6 install & configure** (1=Portal 2=Vector 3=Egress 4=reconfigure 5=pick a version 6=upgrade), **7–15 service & diagnostics** (start/stop/restart, status, client links, certificate fingerprint, key generation, TCP probe, live logs), **16–22 maintenance** (health check, prune, backup, rollback, uninstall, language, update the manager).
+
+To install a Portal, **type `1`** (Vector is `2`, Egress is `3`) and follow the wizard — **Enter keeps the default shown in brackets**:
+
+| Wizard prompt | Type | Meaning |
+|---|---|---|
+| Role | `1` | 1=portal (default) 2=vector 3=egress |
+| Shared key | Enter | Generates a 32-hex key; paste your own to override |
+| Listener preset | Enter (1) | 1=both (TCP+UDP on one port); 4=split asks for a UDP port (default 2084) |
+| Primary port | Enter | Default 2083 |
+| TLS mode | Enter (1) | 1=managed: generates a **persistent** self-signed PEM (pin stays stable across restarts); 2=supplied: bring your own certificate (two paths follow) |
+| Output | Enter (1) | 1=direct 2=socks (upstream SOCKS, hidden input) 3=egress (remote exit) |
+| Public host | your domain/IP | Used in client links (e.g. relay.example.com) |
+| Morph | Enter (1) | Must match the client |
+
+The service starts automatically and the `nh` shortcut is created — from then on just type `nh` to reopen the menu.
+
+> **Existing instance:** menu `1` first asks "Existing instance: reconfigure with the wizard?" — **type `y` to enter the wizard**; pressing Enter / typing `n` only reinstalls the binary and leaves the configuration alone.
+
+**Step 2 · Or one unattended command**
+
+```bash
+# Minimal: self-signed certificate + generated key + port 2083 + morph=1
+sudo bash nowhere-v3.sh install --yes --public-host relay.example.com
+
+# Bring a domain certificate (e.g. Let's Encrypt)
 sudo bash nowhere-v3.sh install --public-host relay.example.com \
   --cert /etc/letsencrypt/live/relay.example.com/fullchain.pem \
   --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
 
-sudo bash nowhere-v3.sh doctor
-sudo bash nowhere-v3.sh links        # Vector (+ Egress) URLs, always carrying the pin
-sudo bash nowhere-v3.sh telemetry    # read-only status (NW3 removed the TUI)
+# Pin a version / port / key
+sudo bash nowhere-v3.sh install --version v3.0.0 --endpoint '*:8443' \
+  --key "$(openssl rand -hex 16)"
 ```
+
+**Step 3 · Verify after installation**
+
+```bash
+sudo bash nowhere-v3.sh doctor     # service / certificate / account checks
+sudo bash nowhere-v3.sh links      # Vector URL + share links + QR codes
+nh                                 # or just reopen the menu with the shortcut
+```
+
+**Step 4 · Import into the client (Anywhere 2.4+)**
+
+- Scan the QR code from `links`, or copy a `nowhere://` link into the app
+- Self-signed certificate: add the `sudo bash nowhere-v3.sh fingerprint` result to the app's trust list
+- Import either the `net=tcp` or the `net=udp` link (same endpoint, different carrier; with a shared port import only one)
+
+**Step 5 · Firewall (including your cloud security group)**
+
+- Portal: allow **TCP and UDP 2083** (or the custom/split ports you chose)
+- Egress: no inbound ports; it only needs QUIC/UDP outbound to the Portal
+
+**Other roles and version tracking**
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
 - **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
@@ -688,7 +744,7 @@ sudo bash nowhere-v3.sh telemetry    # read-only status (NW3 removed the TUI)
 
 ---
 
-### 13.3 v1.1.0 daily operations
+### 13.3 Daily operations
 
 No arguments opens a looping 22-action menu. Portal, Vector and Egress have
 install/configure wizards. Install, configure or self-update create the `nh`
@@ -733,8 +789,9 @@ Shares omit pin. For self-signed certificates, add the fingerprint command resul
 to the client trust list. Without an argument `fingerprint` reads the local certificate;
 `fingerprint 'nowhere://KEY@HOST:PORT?morph=0|1'` inspects a **remote** certificate over
 TCP/TLS (v1.2.0; the link is redacted and `net=udp` links are still inspected over TCP) —
-compare it through a trusted channel before using it as a pin. Optional qrencode renders
-QR codes; absence is silent.
+compare it through a trusted channel before using it as a pin. qrencode is installed on
+demand (apt/dnf/yum/apk) so QR codes render by default; if unavailable, the manager warns
+and prints the links without QR.
 Links contain shared keys; keep them private. generate-key and fingerprint are
 explicit secret-output exceptions; status, logs and probe are redacted.
 
@@ -745,6 +802,24 @@ Egress cannot initiate probe. Egress itself allows dial*; only Portal out=egress
 Same-role reconfiguration reuses PEM; explicit --cert/--tls-key rotates it.
 Role switches still require confirmation or --allow-role-switch.
 Optional `backup --restore` is not implemented in this release.
+
+### 13.4 Files after installation
+
+| Item | Location |
+|---|---|
+| Manager script | wherever you downloaded it (recommended `/root/nowhere-v3.sh`); `nh` points at it — rerun install/configure/self-update after moving it |
+| Shortcut | `/usr/local/bin/nh` (removed by `uninstall --purge`) |
+| Current core | `/usr/local/bin/nowhere-v3` → `/opt/nowhere-v3/current/nowhere` |
+| Releases | `/opt/nowhere-v3/releases/v3.x.y/` (newest 3 kept by default; `--keep-releases`) |
+| Service config | `/etc/nowhere-v3/url.conf` (holds the shared key) |
+| Manager metadata | `/etc/nowhere-v3/manager.conf` |
+| Certificates/PEM | `/etc/nowhere-v3/tls/pem.XXXXXX/` (only the current one is kept) |
+| systemd unit | `/etc/systemd/system/nowhere-v3.service` |
+| Launcher | `/usr/local/libexec/nowhere-v3-launch` |
+| Service account | `nowhere-v3` (system account, no login) |
+| Logs | `journalctl -u nowhere-v3` (`nh logs` to follow) |
+| Config backup | `/root/nowhere-v3-backup-YYYYmmdd-HHMMSS.tar.gz` by default (`nh backup`) |
+| Build lock | `/run/nowhere-v3-build.lock.d` (prevents concurrent management operations) |
 
 ## Testing
 
