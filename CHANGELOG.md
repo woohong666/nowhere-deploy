@@ -81,6 +81,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - **qrencode auto-install**: `links` installs qrencode on demand (apt-get/dnf/yum/apk) so QR codes render by default; with no supported package manager (or a failed installation) it warns and prints the links without QR.
 - README (EN/zh-CN) documents the remote form; the acceptance checklist gained a matching probe/privacy bullet.
 - README (EN/zh-CN): new step-by-step V3 installation walkthrough (§13.1 — menu wizard field table, unattended commands, post-install checks, client import, firewall), a document map in the §13 preamble, and a post-install file-layout table (§13.4); QR behavior updated to auto-install in the docs and the acceptance checklist.
+- README (EN/zh-CN) §3.0/§13.1 and FAQ Q9: documented the root-without-sudo case on minimal VPS images (drop the `sudo` prefix — identical as root); the in-script usage lines now note "omit sudo when already root".
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.1.0
 

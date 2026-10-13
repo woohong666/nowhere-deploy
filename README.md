@@ -117,6 +117,8 @@ bash -n nowhere-v2.sh
 sudo bash nowhere-v2.sh
 ```
 
+> 💡 **On machines where you already log in as root and `sudo` is not installed** (common on minimal VPS images): drop the `sudo` prefix and run the command directly (e.g. `bash nowhere-v2.sh links`) — as root both forms are equivalent; `sudo: command not found` has exactly this cause.
+
 Or in one line (trusted sources only):
 
 ```bash
@@ -584,6 +586,11 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 * **Prove the server is healthy:** `sudo bash nowhere-v2.sh doctor`; from outside, `echo | openssl s_client -connect <host>:2082 -servername <name> -alpn nw2 2>&1 | grep ALPN` — `ALPN protocol: nw2` means the Portal is intact (probes with a mismatched ALPN are silently dropped by design).
 * **Choices:** keep V2 → keep the client on 2.3 or earlier; already on 2.4+ → migrate to the [V3 channel (NW3)](#13-v3-channel-nw3). One app version cannot serve both V2 and V3 on the same device.
 
+### Q9: `sudo: command not found`
+
+* **Cause:** you are already logged in as root, and this VPS image (some Evoxt images, for example) is minimal and does not ship `sudo`. It is unrelated to the manager or the service.
+* **Fix:** drop the `sudo` prefix and run the command directly, e.g. `bash nowhere-v2.sh status`, `bash nowhere-v3.sh links`, or just `nh`. As root both forms are equivalent. Installing sudo (Debian/Ubuntu: `apt-get install -y sudo`) is possible but unnecessary.
+
 ---
 
 ## 12. V1 Stable Channel (Deployment Only)
@@ -656,6 +663,8 @@ wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3
 chmod 700 nowhere-v3.sh
 bash -n nowhere-v3.sh        # syntax self-check; no output means it passed
 ```
+
+> 💡 On machines where you already log in as root and `sudo` is not installed (e.g. minimal Evoxt images): drop the `sudo` prefix from every command in this document (e.g. `bash nowhere-v3.sh links`) — identical result.
 
 **Step 1 · Open the menu and install a Portal with the wizard (recommended)**
 

@@ -1139,7 +1139,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
 默认固定 v3.0.0；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
 独立账户/服务 nowhere-v3；配置 /etc/nowhere-v3；程序 /opt/nowhere-v3。
 不修改V1/V2，不自动开放防火墙。新Portal使用持久PEM；同角色配置复用证书。
-用法：sudo bash nowhere-v3.sh [ACTION] [选项]；无参数进入循环菜单。
+用法：sudo bash nowhere-v3.sh [ACTION] [选项]（已是 root 可省略 sudo）；无参数进入循环菜单。
 
  install                 安装官方校验版；交互向导 / --yes 自动部署
  upgrade                 仅升级二进制（默认固定版本）
@@ -1179,7 +1179,7 @@ Nowhere V3 Manager ${SCRIPT_VERSION} (channel ${SCRIPT_CHANNEL}; Linux + systemd
 Pinned core v3.0.0; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
 Dedicated account/service nowhere-v3; config /etc/nowhere-v3; binaries /opt/nowhere-v3.
 No V1/V2 changes or firewall edits. New Portals use persistent PEM; same-role configure reuses it.
-Usage: sudo bash nowhere-v3.sh [ACTION] [options]; no arguments opens the looping menu.
+Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root); no arguments opens the looping menu.
 
  install                 Verified official binary; wizard / --yes unattended
  upgrade                 Binary-only upgrade (pinned default)

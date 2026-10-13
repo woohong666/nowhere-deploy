@@ -117,6 +117,8 @@ bash -n nowhere-v2.sh
 sudo bash nowhere-v2.sh
 ```
 
+> 💡 **已直接用 root 登录的机器（很多 VPS 精简系统没装 `sudo`）**：把命令开头的 `sudo` 去掉直接运行即可（如 `bash nowhere-v2.sh links`）——root 下两者效果相同；出现 `sudo: command not found` 就是这个原因。
+
 也可一行完成（适用于可信来源）：
 
 ```bash
@@ -584,6 +586,11 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 * **自证服务器正常**：`sudo bash nowhere-v2.sh doctor`；外部再跑一条 `echo | openssl s_client -connect <host>:2082 -servername <域名> -alpn nw2 2>&1 | grep ALPN`——显示 `ALPN protocol: nw2` 即 Portal 完好（不匹配 ALPN 的探测会被静默断开，属正常设计）。
 * **选择**：继续用 V2 → 客户端保留在 **2.3 及以下**；已升级到 **2.4+** → 迁移到 [V3 通道（NW3）](#13-v3-通道nw3)。同一台设备上的一个 App 版本无法同时兼顾 V2 与 V3。
 
+### Q9: 报错 `sudo: command not found`
+
+* **根因**：你已经以 root 登录，而这台 VPS（如 Evoxt 的部分镜像）是精简系统、没有安装 `sudo`。与脚本或服务无关。
+* **解决**：把命令开头的 `sudo` 去掉直接运行，例如 `bash nowhere-v2.sh status`、`bash nowhere-v3.sh links`、或直接 `nh`。root 下两者权限完全相同。想装 sudo 也可以（Debian/Ubuntu：`apt-get install -y sudo`），但没有必要。
+
 ---
 
 ## 12. V1 稳定通道（仅部署）
@@ -656,6 +663,8 @@ wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3
 chmod 700 nowhere-v3.sh
 bash -n nowhere-v3.sh        # 语法自检；无输出即通过
 ```
+
+> 💡 在 Evoxt 这类**没装 `sudo`、已用 root 登录**的机器上：把本文所有命令开头的 `sudo` 去掉（如 `bash nowhere-v3.sh links`）——效果完全相同。
 
 **Step 1 · 打开菜单，用向导安装 Portal（推荐）**
 
