@@ -86,6 +86,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Interactive prompts (menu, wizard, confirmations) are visible again: an integration review found every `read -p` label hidden behind a stderr redirect, turning the wizard into blind input.
 - `rate`/`etar` configured through `--url-file` survive a wizard or CLI reconfigure instead of being dropped from the rebuilt URL; the same pre-load keeps morph/out/in/pin/SNI/dial settings on CLI reconfigures.
 - The test suite skips cleanly on hosts without util-linux / GNU coreutils (flock, timeout, chmod/chown `--reference`) instead of failing.
+- Wizard and menu prompts are unambiguous after a field report: choices read `value=meaning`, the invalid-input reply lists the allowed values (e.g. `无效选项；可选：managed supplied`), and the menu asks `请输入选项 [0-22]：`.
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.0.1
 

@@ -829,7 +829,7 @@ prompt_choice() {
     fi
     value="${value:-$default}"
     for allowed in "$@"; do [[ "$value" != "$allowed" ]] || { printf '%s' "$value"; return 0; }; done
-    warn "$(tr_msg 'Invalid choice' '无效选项')"
+    warn "$(tr_msg "Invalid choice; allowed: $*" "无效选项；可选：$*")"
   done
 }
 generate_key() { python3 -c 'import secrets;print(secrets.token_hex(16))'; }
@@ -862,12 +862,12 @@ load_config_fields() {
 installation_wizard() {
   local preset port udp tlsmode exitmode carrier remote previous_role="$ROLE"
   [[ -n "$URL_INPUT" ]] && return 0
-  ROLE="$(prompt_choice "$(tr_msg 'Role portal/vector/egress' '角色 portal/vector/egress')" "$ROLE" portal vector egress)"
+  ROLE="$(prompt_choice "$(tr_msg 'Role: portal / vector / egress' '角色：portal / vector / egress')" "$ROLE" portal vector egress)"
   if [[ "$ROLE" != "$previous_role" ]]; then ENDPOINT=''; DIAL=''; DIAL4=''; DIAL6=''; PIN=''; SNI=''; CERT=''; TLS_KEY=''; OUT=direct; fi
   prompt_shared_key
   if [[ "$ROLE" == portal ]]; then
     preset=both; [[ -z "$ENDPOINT" ]] || preset=manual
-    preset="$(prompt_choice "$(tr_msg 'Listener: both/tcp/udp/split/manual' '监听预设：both共端口/tcp/udp/split分端口/manual手动')" "$preset" both tcp udp split manual)"
+    preset="$(prompt_choice "$(tr_msg 'Listener preset: both / tcp / udp / split / manual' '监听预设：both=共用端口，tcp=仅TCP，udp=仅UDP，split=分端口，manual=手动')" "$preset" both tcp udp split manual)"
     if [[ "$preset" == manual ]]; then
       ENDPOINT="$(prompt_value "$(tr_msg 'Listen endpoint' '监听端点')" "${ENDPOINT:-*:2083}")"
     else
@@ -878,14 +878,14 @@ installation_wizard() {
         split) udp="$(prompt_value "$(tr_msg 'UDP port' 'UDP端口')" 2084)"; ENDPOINT="*/tcp:$port/udp:$udp" ;;
       esac
     fi
-    tlsmode="$(prompt_choice "$(tr_msg 'TLS: managed persistent PEM / supplied PEM' 'TLS：managed持久PEM / supplied自备PEM')" managed managed supplied)"
+    tlsmode="$(prompt_choice "$(tr_msg 'TLS mode: managed (persistent PEM) / supplied (own PEM)' 'TLS 模式：managed=持久PEM，supplied=自备PEM')" managed managed supplied)"
     if [[ "$tlsmode" == supplied ]]; then
       CERT="$(prompt_value "$(tr_msg 'Certificate PEM path' '证书PEM路径')" "$CERT")"
       TLS_KEY="$(prompt_value "$(tr_msg 'Private key PEM path' '私钥PEM路径')" "$TLS_KEY")"
       [[ -n "$CERT" && -n "$TLS_KEY" ]] || die "$(tr_msg 'Certificate and private key are required' '必须提供证书与私钥')"
     fi
     exitmode="$OUT"; [[ "$exitmode" == direct || "$exitmode" == egress ]] || exitmode=socks
-    exitmode="$(prompt_choice "$(tr_msg 'Output: direct/socks/egress' '出口：direct直连/socks上游/egress远程出口')" "$exitmode" direct socks egress)"
+    exitmode="$(prompt_choice "$(tr_msg 'Output: direct / socks / egress' '出口：direct=直连，socks=上游SOCKS，egress=远程出口')" "$exitmode" direct socks egress)"
     if [[ "$exitmode" == socks ]]; then
       OUT="$(prompt_value "$(tr_msg 'SOCKS upstream (input hidden)' 'SOCKS上游（隐藏输入）')" "${OUT/direct/127.0.0.1:1080}" 1)"
     else OUT="$exitmode"; fi
@@ -895,7 +895,7 @@ installation_wizard() {
     remote="$(prompt_value "$(tr_msg 'Portal host (bracket IPv6)' 'Portal地址（IPv6加方括号）')" 127.0.0.1)"
     port="$(prompt_value "$(tr_msg 'Portal port' 'Portal端口')" 2083)"
     if [[ "$ROLE" == vector ]]; then
-      carrier="$(prompt_choice "$(tr_msg 'Carrier tcp/udp' '载波 tcp/udp')" tcp tcp udp)"
+      carrier="$(prompt_choice "$(tr_msg 'Carrier: tcp / udp' '载波：tcp / udp')" tcp tcp udp)"
       INGRESS="$(prompt_value "$(tr_msg 'Local SOCKS ingress (input hidden)' '本地SOCKS入口（隐藏输入）')" "$INGRESS" 1)"
     else carrier=udp; fi
     ENDPOINT="$(prompt_value "$(tr_msg 'Portal endpoint' 'Portal端点')" "${ENDPOINT:-$remote/$carrier:$port}")"
@@ -1161,7 +1161,7 @@ menu() {
       "20. $(tr_msg 'Uninstall (config retained by default)' '卸载（默认保留配置）')" \
       "21. $(tr_msg 'Change and save language' '切换并保存语言')" "22. $(tr_msg 'Update manager script' '更新管理脚本')" \
       "0/q. $(tr_msg 'Exit' '退出')"
-    if ! read -r -p "$(tr_msg 'Choice: ' '选择：')" choice </dev/tty; then return 0; fi
+    if ! read -r -p "$(tr_msg 'Choice [0-22]: ' '请输入选项 [0-22]：')" choice </dev/tty; then return 0; fi
     [[ "$choice" != 0 && "$choice" != q ]] || return 0
     set +e
     (
@@ -1181,7 +1181,7 @@ menu() {
         20) PURGE=0; if prompt_confirm "$(tr_msg 'Also delete configuration and keys?' '同时删除配置和密钥？')"; then PURGE=1; fi; uninstall_action ;;
         21) LANG_CODE="$(prompt_choice 'Language / 语言 zh|en' "$LANG_CODE" zh en)"; save_language ;;
         22) self_update ;;
-        *) warn "$(tr_msg 'Invalid choice' '无效选项')" ;;
+        *) warn "$(tr_msg 'Invalid choice; enter 0-22 or q' '无效选项；请输入 0-22 或 q')" ;;
       esac
     )
     rc=$?
