@@ -398,16 +398,26 @@ t_ok "existing content kept"           portal "$(sed -n 's/^ROLE=//p' "$META_FIL
 t_section "build lock (flock)"
 
 if command -v flock >/dev/null 2>&1; then
+  # flock is an open-file-description lock: it must be held from a live process,
+  # so the contention checks use a separate holder process rather than $( ).
   LOCK_FILE="${BUILD_LOCK_DIR%.d}"
-  rm -f "$LOCK_FILE"; BUILD_LOCK_HELD=0
-  t_ok "free lock is acquirable"      0 "$(t_rc acquire_build_lock)"
-  t_ok "flag set after acquire"       1 "$BUILD_LOCK_HELD"
-  t_ok "acquire is idempotent"        0 "$(t_rc acquire_build_lock)"
-  # A second manager process must be refused while this one holds the lock.
-  t_ok "contention refused"           1 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock' _ "$PATCHED")"
+  rm -f "$LOCK_FILE" "$SANDBOX/held.flag"
+  bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock; printf held > "$2"; sleep 30' _ "$PATCHED" "$SANDBOX/held.flag" &
+  holder=$!
+  for _ in $(seq 1 50); do [[ -s "$SANDBOX/held.flag" ]] && break; sleep 0.1; done
+  t_ok "holder acquired the lock"      yes "$([[ -s "$SANDBOX/held.flag" ]] && echo yes || echo no)"
+  t_ok "contention refused"            1 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock' _ "$PATCHED")"
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+  rm -f "$SANDBOX/held.flag"
+  t_ok "free after holder exits"       0 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock; release_build_lock' _ "$PATCHED")"
+  # In-shell flag transitions (only safe once the lock is known to be free).
+  acquire_build_lock
+  t_ok "acquire sets held flag"        1 "$BUILD_LOCK_HELD"
+  acquire_build_lock
+  t_ok "acquire is idempotent"         0 "$?"
+  t_ok "held flag still set"           1 "$BUILD_LOCK_HELD"
   release_build_lock
-  t_ok "flag cleared after release"   0 "$BUILD_LOCK_HELD"
-  t_ok "reacquirable after release"   0 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock' _ "$PATCHED")"
+  t_ok "release clears flag"           0 "$BUILD_LOCK_HELD"
 else
   # flock is util-linux and absent on macOS; CI (Linux) runs the real branch.
   t_skip "build lock (flock unavailable on this host)"
