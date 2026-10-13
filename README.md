@@ -293,7 +293,7 @@ Nowhere V2 involves two kinds of URI:
    - Stored in `/etc/nowhere-v2/url.conf`
    - **Not** for client import (a Vector's own `vector://` link can be used by a matching client)
 2. **`nowhere://`** — a generic share URI
-   - Use it only with clients that **explicitly support V2 / ALPN nw2**
+   - Use it only with clients that **explicitly support V2 / ALPN nw2**; Anywhere **2.4 (401) and later removed NW2** — a V2 link times out on updated clients (see FAQ Q8)
 
 ### 6.2 Generating client links
 
@@ -578,6 +578,12 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 * **Cause:** the config still uses a pre-2.2 key format. Nowhere 2.2.0+ refuses to start with it (`nowhere generate-key` outputs the required form).
 * **Fix:** rotate only the key, keeping the other settings, with `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"`. Then configure the **same** text on every peer of that hop. Legacy 1-255 byte keys keep working only against Portals `<=2.1`.
 
+### Q8: V2 stopped connecting after updating the Anywhere app (2.4+)
+
+* **Cause (client-side, not a server fault):** Anywhere **2.4 (401)** replaced its embedded Nowhere implementation with NW3 — the app and network-extension binaries contain only the `nw3` ALPN and `nowhere/nw3/auth-root`, with no `nw2` implementation left. NW2 and NW3 are wire-incompatible with **no negotiation or fallback**, so on 2.4+ a V2 (`nw2`) entry keeps timing out; conversely, 2.3 and earlier cannot reach V3.
+* **Prove the server is healthy:** `sudo bash nowhere-v2.sh doctor`; from outside, `echo | openssl s_client -connect <host>:2082 -servername <name> -alpn nw2 2>&1 | grep ALPN` — `ALPN protocol: nw2` means the Portal is intact (probes with a mismatched ALPN are silently dropped by design).
+* **Choices:** keep V2 → keep the client on 2.3 or earlier; already on 2.4+ → migrate to the [V3 channel (NW3)](#13-v3-channel-nw3). One app version cannot serve both V2 and V3 on the same device.
+
 ---
 
 ## 12. V1 Stable Channel (Deployment Only)
@@ -677,6 +683,8 @@ sudo bash nowhere-v3.sh telemetry    # read-only status (NW3 removed the TUI)
 | Source build / self-update | yes / yes | no source build / yes self-update |
 
 > V3 v1.1.0 provides complete Chinese and English interaction. Firewall: allow TCP **and** UDP `2083`; an Egress host needs QUIC/UDP outbound to the Portal.
+
+> **Client versions (observed):** Anywhere **2.3 and earlier implement only NW2** (cannot reach V3); **2.4 (401) and later implement only NW3** (cannot reach V2 — the NW2 implementation is gone from its binaries). A V2 entry timing out after an app update is expected, not a server failure; prove the V2 Portal with `doctor` / `probe` and an external `-alpn nw2` probe. See [FAQ Q8](#11-troubleshooting-faq).
 
 ---
 

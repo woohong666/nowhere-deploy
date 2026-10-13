@@ -293,7 +293,7 @@ Nowhere V2 涉及两种 URI：
    - 存储在 `/etc/nowhere-v2/url.conf`
    - **不是给客户端导入用的**（Vector 的 `vector://` 链接可直接给同版本客户端使用）
 2. **`nowhere://`** —— 通用分享 URI
-   - 仅在客户端**明确支持 V2 / ALPN nw2** 时使用
+   - 仅在客户端**明确支持 V2 / ALPN nw2** 时使用；Anywhere **2.4 (401) 起已移除 NW2**——升级 App 后 V2 链接必然超时（见 FAQ Q8）
 
 ### 6.2 获取客户端连接链接
 
@@ -578,6 +578,12 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 * **根因**：配置仍是 2.2 之前的密钥格式，Nowhere 2.2.0+ 会拒绝启动（`nowhere generate-key` 输出即为要求的格式）。
 * **解决**：用 `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"` 只轮换密钥、保留其它设置，然后把**同一串文本**配置到该跳的每个对端。旧式 1-255 位密钥仅在 Portal `<=2.1` 上继续可用。
 
+### Q8: 更新 Anywhere App（2.4 起）之后 V2 连不上了
+
+* **根因（客户端侧，不是服务器故障）**：Anywhere **2.4 (401)** 把内嵌的 Nowhere 协议实现从 NW2 整体换成了 NW3——实测其主程序与网络扩展二进制只包含 `nw3` ALPN 和 `nowhere/nw3/auth-root`，不含任何 `nw2` 标识。NW2 / NW3 线协议不兼容且**没有协商与回落**，所以 2.4+ 上指向 V2（`nw2`）的配置会持续"超时"；反过来，2.3 及以下连不了 V3。
+* **自证服务器正常**：`sudo bash nowhere-v2.sh doctor`；外部再跑一条 `echo | openssl s_client -connect <host>:2082 -servername <域名> -alpn nw2 2>&1 | grep ALPN`——显示 `ALPN protocol: nw2` 即 Portal 完好（不匹配 ALPN 的探测会被静默断开，属正常设计）。
+* **选择**：继续用 V2 → 客户端保留在 **2.3 及以下**；已升级到 **2.4+** → 迁移到 [V3 通道（NW3）](#13-v3-通道nw3)。同一台设备上的一个 App 版本无法同时兼顾 V2 与 V3。
+
 ---
 
 ## 12. V1 稳定通道（仅部署）
@@ -677,6 +683,8 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计（NW3 已取消 TUI）
 | 源码编译 / 自更新 | 支持 / 支持 | 不提供源码 / 支持自更新 |
 
 > V3 v1.1.0 支持完整中文/英文交互。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需能向 Portal 发起 QUIC/UDP 出站。
+
+> **客户端版本对应（实测）**：Anywhere **2.3 及以下只有 NW2**（连不了 V3）；**2.4 (401) 起只有 NW3**（连不了 V2——其二进制中 NW2 实现已被移除）。升级 App 后 V2 配置持续超时属预期现象，不是服务器故障；V2 服务可用 `doctor` / `probe` 与外部 `-alpn nw2` 探测自证。详见 [FAQ Q8](#11-常见问题排查faq)。
 
 ---
 

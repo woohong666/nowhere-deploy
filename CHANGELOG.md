@@ -126,6 +126,7 @@ NW3 is wire-incompatible with NW2, with no negotiation or fallback.
 
 ### 📚 Documentation
 
+- **Documented the Anywhere client's NW2 → NW3 switch** (observed on 2.4 build 401): 2.3 and earlier implement only NW2; 2.4 and later only NW3 at the binary level — an updated client cannot reach V2 (`nw2`) without negotiation or fallback, while the V2 Portal itself stays healthy (`doctor`, `probe`, external `-alpn nw2`). Added FAQ Q8 (EN/zh-CN), a client-version note in §13, and the matching precondition in the V3 acceptance track.
 - README (EN/zh-CN): added the V3 (NW3) channel section — quick start, the V2/V3 isolation table, and the one-registered-Egress behavior (`v1.4.0`).
 - `ACCEPTANCE.md`: added a V3 acceptance track — persistent pin, Vector via `--url-file`, Egress registration and offline behavior, and the role-switch guard (`v1.4.0`).
 - **README (EN/zh-CN) updated for Nowhere v2.2.x** (`v1.3.0`): documented the 32-64 lowercase-hex shared-key policy, the always-on certificate verification and pin semantics for native clients, the `full8` Morph default, and `--dial4` / `--dial6`.
