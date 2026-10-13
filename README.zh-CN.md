@@ -578,6 +578,17 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [其他参数...]
 * **根因**：配置仍是 2.2 之前的密钥格式，Nowhere 2.2.0+ 会拒绝启动（`nowhere generate-key` 输出即为要求的格式）。
 * **解决**：用 `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"` 只轮换密钥、保留其它设置，然后把**同一串文本**配置到该跳的每个对端。旧式 1-255 位密钥仅在 Portal `<=2.1` 上继续可用。
 
+### Q8: 裸 `openssl s_client` 被断开，但真实客户端正常
+
+* **根因**：Nowhere 的 TLS 监听固定要求 ALPN `nw2`，不带该参数的握手会被静默断开；此时输出的 `Verify return code: 0 (ok)` 具有误导性——实际上没有交换任何证书。
+* **检查**：手动探测时必须带上 ALPN：
+
+  ```bash
+  echo | openssl s_client -connect <host>:2082 -servername <name> -alpn nw2 2>&1 | grep -E "subject=|ALPN"
+  ```
+
+  `morph=1` 的 Portal 无法用裸 TLS 探测（线路是掩码流），请改用 `nowhere-v2 probe` / `nowhere-v3 probe`。
+
 ---
 
 ## 12. V1 稳定通道（仅部署）

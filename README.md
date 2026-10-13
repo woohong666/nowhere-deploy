@@ -578,6 +578,17 @@ sudo bash nowhere-v2.sh install -y --method source --swap 4096 [options...]
 * **Cause:** the config still uses a pre-2.2 key format. Nowhere 2.2.0+ refuses to start with it (`nowhere generate-key` outputs the required form).
 * **Fix:** rotate only the key, keeping the other settings, with `sudo bash nowhere-v2.sh configure -y --config-mode quick --key "$(openssl rand -hex 32)"`. Then configure the **same** text on every peer of that hop. Legacy 1-255 byte keys keep working only against Portals `<=2.1`.
 
+### Q8: A raw `openssl s_client` probe is disconnected, but real clients work
+
+* **Cause:** the Nowhere TLS listener requires the fixed ALPN `nw2` and silently closes handshakes that do not offer it. The `Verify return code: 0 (ok)` printed by such a probe is misleading — no certificate was actually exchanged.
+* **Check:** always offer the ALPN when probing by hand:
+
+  ```bash
+  echo | openssl s_client -connect <host>:2082 -servername <name> -alpn nw2 2>&1 | grep -E "subject=|ALPN"
+  ```
+
+  On a `morph=1` portal a plain TLS probe cannot work at all (the wire is masked) — use `nowhere-v2 probe` / `nowhere-v3 probe` instead.
+
 ---
 
 ## 12. V1 Stable Channel (Deployment Only)

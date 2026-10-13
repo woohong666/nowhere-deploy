@@ -112,6 +112,7 @@ NW3 is wire-incompatible with NW2, with no negotiation or fallback.
 
 ### 📚 Documentation
 
+- README (EN/zh-CN): FAQ Q8 explains that raw TLS probes must offer ALPN `nw2`, and that a `morph=1` portal cannot be probed with plain TLS at all (`v1.4.1`).
 - README (EN/zh-CN): added the V3 (NW3) channel section — quick start, the V2/V3 isolation table, and the one-registered-Egress behavior (`v1.4.0`).
 - `ACCEPTANCE.md`: added a V3 acceptance track — persistent pin, Vector via `--url-file`, Egress registration and offline behavior, and the role-switch guard (`v1.4.0`).
 - **README (EN/zh-CN) updated for Nowhere v2.2.x** (`v1.3.0`): documented the 32-64 lowercase-hex shared-key policy, the always-on certificate verification and pin semantics for native clients, the `full8` Morph default, and `--dial4` / `--dial6`.
