@@ -244,7 +244,7 @@ Native clients (Vector, `probe`, and a chained Portal's `next`) **always** verif
 | Portal certificate | What the client needs |
 |---|---|
 | CA-signed (`tls=2`, e.g. Let's Encrypt) | Nothing extra when clients reach the Portal by a name the certificate covers; otherwise set `sni=` or `pin=` |
-| Self-managed / self-signed (`tls=2`) | `pin=<sha256>` — stable as long as you keep the certificate |
+| Self-signed or private-CA (`tls=2`) | `pin=<sha256>` — `links` fills it in automatically, because the chain does not verify against the system store; stable as long as you keep the certificate |
 | Generated (`tls=1`) | `pin=<sha256>`; the generated certificate **changes on every Portal restart**, so the pin must be refreshed — testing only |
 
 Get the fingerprint on the Portal host with `sudo bash nowhere-v2.sh fingerprint` (or from the certificate log), and treat a remotely fetched fingerprint as untrusted until it matches the Portal host. On a `tls=1` Portal, `links` auto-fills the pin into generated Vector URLs.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.4.0
+# Nowhere V2 Unified Manager v1.4.1
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,11 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.4.0"
+readonly SCRIPT_VERSION="1.4.1"
 readonly SCRIPT_CHANNEL="v2"
+# v1.4.1: pin tls=2 links whose certificate is not in the system trust store
+#   (private CA is not the same as trusted); require exactly 64 hex key characters
+#   on an exact v2.2.0 pin; take the build lock for backup and doctor --fix.
 # v1.4.0: merge in a GPT-assisted review's fixes: flock build lock; install/configure
 #   transactions with EXIT-trap recovery; paginated release resolution; integer
 #   0..2147483647 rate; real IPv6 bracket validation; Morph-aware fingerprint through
@@ -294,8 +297,17 @@ validate_port() {
 # hex characters. 64 characters stays valid on an exact v2.2.0 pin as well,
 # which is why random_key() generates 64; v2.2.1+ accepts 32-64.
 is_valid_key_value() { [[ "$1" =~ ^[0-9a-f]{32,64}$ ]]; }
+# An exact v2.2.0 pin is stricter than v2.2.1+: it requires exactly 64 hex
+# characters. Unknown/unresolved versions (latest-v2, empty) stay permissive.
+key_requires_64_hex() {
+  local v="$1"
+  [[ -n "$v" ]] && version_ge "$v" v2.2.0 && ! version_ge "$v" v2.2.1
+}
 validate_key() {
   is_valid_key_value "$1" || die "$(tr_msg "Portal/shared key must be 32-64 lowercase hex characters (Nowhere 2.2.0+; see 'nowhere generate-key')." "Portal/共享密钥必须为 32-64 位小写十六进制字符（Nowhere 2.2.0+ 规则；可用 'nowhere generate-key' 生成）。")"
+  if key_requires_64_hex "$VERSION" && [[ ! "$1" =~ ^[0-9a-f]{64}$ ]]; then
+    die "$(tr_msg "An exact v2.2.0 pin requires exactly 64 lowercase hex characters; use v2.2.1 or later for 32-character keys." "锁定到 v2.2.0 时密钥必须为恰好 64 位小写十六进制；如需 32 位密钥，请改用 v2.2.1 或更新版本。")"
+  fi
 }
 # Vector is a client: upstream keeps accepting legacy 1-255 byte keys so a
 # Vector can still reach a Portal that runs <=2.1. Keep that leniency for the
@@ -554,6 +566,9 @@ validate_next_endpoint() {
   # Nowhere 2.2.0+ validates the nested key like the Portal listener key; a
   # legacy character set would make the outer Portal refuse to start.
   is_valid_key_value "$keypart" || die "$(tr_msg "next key must be 32-64 lowercase hex characters (Nowhere 2.2.0+)." "next 密钥必须为 32-64 位小写十六进制字符（Nowhere 2.2.0+）。")"
+  if key_requires_64_hex "$VERSION" && [[ ! "$keypart" =~ ^[0-9a-f]{64}$ ]]; then
+    die "$(tr_msg "next key must be exactly 64 lowercase hex characters on an exact v2.2.0 core." "在 v2.2.0 内核上，next 密钥必须为恰好 64 位小写十六进制。")"
+  fi
   endpoint_info vector "$ep" >/dev/null || die "$(tr_msg "Invalid next endpoint" "无效的 next 端点")"
 }
 
@@ -570,10 +585,12 @@ validate_policy_against_endpoint() {
 }
 
 validate_imported_url() {
-  local u="$1"
-  if ! python3 - "$u" <<'PY'
+  local u="$1" ver="${2:-}"
+  if ! python3 - "$u" "$ver" <<'PY'
 import ipaddress,re,sys,urllib.parse
 raw=sys.argv[1]
+# An exact v2.2.0 pin accepts only 64-character keys; v2.2.1+ accepts 32-64.
+strict64 = (sys.argv[2] if len(sys.argv)>2 else '')=='v2.2.0'
 def fail(m): print(m,file=sys.stderr); sys.exit(2)
 if '\n' in raw or '\r' in raw: fail('URL contains newline')
 for m in re.finditer('%',raw):
@@ -590,7 +607,9 @@ except Exception: fail('bad shared-key encoding')
 if u.scheme=='portal':
     try: key_text=key.decode('ascii')
     except Exception: fail('Portal shared key must be 32-64 lowercase hex characters')
-    if not re.fullmatch(r'[0-9a-f]{32,64}',key_text): fail('Portal shared key must be 32-64 lowercase hex characters')
+    if strict64:
+        if not re.fullmatch(r'[0-9a-f]{64}',key_text): fail('Portal shared key must be exactly 64 lowercase hex characters on an exact v2.2.0 core')
+    elif not re.fullmatch(r'[0-9a-f]{32,64}',key_text): fail('Portal shared key must be 32-64 lowercase hex characters')
 else:
     if not (1<=len(key)<=255): fail('shared key must be 1..255 bytes')
 if b'\n' in key or b'\r' in key or b'\x00' in key: fail('shared key contains unsafe control bytes')
@@ -652,7 +671,9 @@ if u.scheme=='portal':
         if '@' not in nv: fail('next must be KEY@ENDPOINT')
         nk,ne=nv.rsplit('@',1)
         if not nk or not ne or '*' in ne: fail('invalid next endpoint')
-        if not re.fullmatch(r'[0-9a-f]{32,64}',nk): fail('next shared key must be 32-64 lowercase hex characters')
+        if strict64:
+            if not re.fullmatch(r'[0-9a-f]{64}',nk): fail('next shared key must be exactly 64 lowercase hex characters on an exact v2.2.0 core')
+        elif not re.fullmatch(r'[0-9a-f]{32,64}',nk): fail('next shared key must be 32-64 lowercase hex characters')
 else:
     if not q.get('socks'): fail('Vector requires socks=')
 PY
@@ -771,7 +792,13 @@ prompt_choice() {
 # the Vector role (client-side leniency, matching upstream), with a warning.
 key_acceptable() {
   local v="$1"
-  is_valid_key_value "$v" && return 0
+  if is_valid_key_value "$v"; then
+    if key_requires_64_hex "$VERSION" && [[ ! "$v" =~ ^[0-9a-f]{64}$ ]]; then
+      warn "$(tr_msg "An exact v2.2.0 core requires a 64-character key; 32-character keys need v2.2.1 or later." "锁定到 v2.2.0 的内核要求 64 位密钥；32 位密钥需要 v2.2.1 及以上。")"
+      return 1
+    fi
+    return 0
+  fi
   if [[ "$ROLE" == vector ]] && [[ "$v" =~ ^[A-Za-z0-9._~-]{16,255}$ ]]; then
     warn "$(tr_msg "Non-hex key accepted for the Vector role only; a 2.2.0+ Portal requires 32-64 lowercase hex characters." "非十六进制密钥仅在 Vector 角色下被接受；2.2.0+ Portal 要求 32-64 位小写十六进制字符。")"
     return 0
@@ -1158,7 +1185,7 @@ prepare_tls_files() {
 
 write_config_url() {
   local u="$1"
-  validate_imported_url "$u"
+  validate_imported_url "$u" "$VERSION"
   install -d -m 750 -o root -g "$RUN_GROUP" "$CONFIG_DIR"
   printf '%s\n' "$u" >"$URL_FILE"
   chmod 640 "$URL_FILE"; chown root:"$RUN_GROUP" "$URL_FILE"
@@ -1474,6 +1501,10 @@ warn_22_upgrade_requirements() {
       warn "$(tr_msg \
         "This Portal (or next-hop) key is not 32-64 lowercase hex. Nowhere 2.2.0+ refuses to start with a legacy key. Rotate only the key and keep every other setting: sudo bash nowhere-v2.sh configure -y --config-mode quick --key <new 64-hex key>. Then update every peer on that hop." \
         "此 Portal（或 next 跳）密钥不是 32-64 位小写十六进制。Nowhere 2.2.0+ 遇到旧格式密钥会拒绝启动。只轮换密钥、保留其它设置：sudo bash nowhere-v2.sh configure -y --config-mode quick --key <新的 64 位 hex 密钥>，然后同步更新该跳的所有对端。")"
+    elif key_requires_64_hex "$VERSION" && [[ ! "$key" =~ ^[0-9a-f]{64}$ ]]; then
+      warn "$(tr_msg \
+        "An exact v2.2.0 core requires exactly 64 hex characters for the Portal key; this one is shorter and the service will refuse to start. Regenerate a 64-character key and update every peer on that hop." \
+        "锁定到 v2.2.0 的内核要求 Portal 密钥恰好 64 位十六进制；当前密钥更短，服务会拒绝启动。请重新生成 64 位密钥并同步该跳所有对端。")"
     fi
     next="$(query_get "$u" next)"
     if [[ -n "$next" && "$next" != none ]]; then
@@ -1482,6 +1513,10 @@ warn_22_upgrade_requirements() {
         warn "$(tr_msg \
           "The next-hop key inside next= is not 32-64 lowercase hex; Nowhere 2.2.0+ will refuse it. Configure the same fresh key on both ends of that hop." \
           "next= 中的下一跳密钥不是 32-64 位小写十六进制；Nowhere 2.2.0+ 将拒绝该配置。请在该跳两端配置相同的新密钥。")"
+      elif key_requires_64_hex "$VERSION" && [[ ! "$nk" =~ ^[0-9a-f]{64}$ ]]; then
+        warn "$(tr_msg \
+          "An exact v2.2.0 core requires exactly 64 hex characters for the next-hop key; this one is shorter. Configure a 64-character key on both ends of that hop." \
+          "锁定到 v2.2.0 的内核要求下一跳密钥恰好 64 位十六进制；当前密钥更短。请在该跳两端配置 64 位密钥。")"
       fi
     fi
   fi
@@ -1564,7 +1599,7 @@ configure_action() {
   snapshot_config_state
   if [[ -n "$IMPORT_URL" ]]; then
     warn_import_url_overrides
-    validate_imported_url "$IMPORT_URL"
+    validate_imported_url "$IMPORT_URL" "$VERSION"
     ROLE="$(url_role "$IMPORT_URL")"
     u="$IMPORT_URL"
   else
@@ -1675,18 +1710,17 @@ build_native_vector_link_from_portal() {
         return 1
       fi
     elif [[ "$tls" == 2 ]]; then
-      local cert cert_rc
+      local cert needs
       cert="$(query_get "$u" crt)"
-      if certificate_is_self_signed "$cert"; then
+      certificate_needs_pin "$cert"; needs=$?
+      if [[ "$needs" == 0 ]]; then
         if ! pin="$(local_portal_fingerprint "$u")"; then
-          warn "$(tr_msg "Self-signed certificate could not be read for pinning; pass --client-pin <sha256> or check ${cert}." "自签名证书无法读取以填入 pin；请显式指定 --client-pin <sha256>，或检查 ${cert}。")"
+          warn "$(tr_msg "Self-signed or private-CA certificate could not be read for pinning; pass --client-pin <sha256> or check ${cert}." "自签名或私有 CA 证书无法读取以填入 pin；请显式指定 --client-pin <sha256>，或检查 ${cert}。")"
           return 1
         fi
-      else
-        cert_rc=$?
-        if [[ "$cert_rc" == 2 ]]; then
-          warn "$(tr_msg "Cannot inspect ${cert}; assuming normal CA verification. Pass --client-pin <sha256> if the Portal uses a self-signed certificate." "无法读取 ${cert}；将按系统 CA 验证处理。若 Portal 使用自签名证书，请显式指定 --client-pin <sha256>。")"
-        fi
+        warn "$(tr_msg "tls=2 link: the certificate does not verify against the system trust store, so the pin was auto-filled. Regenerate the links after you rotate this certificate." "tls=2 链接：证书无法通过系统信任库验证，已自动填入 pin。若轮换该证书，请重新生成链接。")"
+      elif [[ "$needs" == 2 ]]; then
+        warn "$(tr_msg "Cannot inspect ${cert}; assuming normal CA verification. Pass --client-pin <sha256> if the certificate is self-signed or signed by a private CA." "无法读取 ${cert}；将按系统 CA 验证处理。若证书为自签名或私有 CA 签发，请显式指定 --client-pin <sha256>。")"
       fi
     fi
   fi
@@ -1718,13 +1752,18 @@ PY
 
 # 0 = the certificate is self-signed, 1 = CA-signed, 2 = unreadable/unparsable.
 # Used to decide whether a tls=2 link needs a pin (see build_native_vector_link_from_portal).
-certificate_is_self_signed() {
+certificate_needs_pin() {
   local cert="$1" subj iss
   [[ -r "$cert" ]] || return 2
   subj="$(openssl x509 -in "$cert" -noout -subject 2>/dev/null || true)"; subj="${subj#*=}"
   iss="$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null || true)"; iss="${iss#*=}"
   [[ -n "$subj" && -n "$iss" ]] || return 2
-  [[ "$subj" == "$iss" ]]
+  [[ "$subj" == "$iss" ]] && return 0
+  # issuer != subject is NOT the same as system-trusted: a certificate signed by
+  # a private CA fails verification too, and a pin-less link would then be
+  # rejected by every client. Only skip the pin when the chain actually verifies.
+  openssl verify -untrusted "$cert" "$cert" >/dev/null 2>&1 && return 1
+  return 0
 }
 
 # Fetch the running local Portal's TLS certificate fingerprint. Also used to
@@ -1824,6 +1863,9 @@ doctor_action() {
     warnc=$((warnc+1))
   fi
   if [[ "$DOCTOR_FIX" -eq 1 ]]; then
+    # Repairs rewrite the unit/launcher and restart the service, so serialise
+    # them against install/configure like every other mutating action.
+    acquire_build_lock
     info "$(tr_msg "doctor --fix may rewrite V2 management files and restart ${SERVICE_NAME}." "doctor --fix 可能重写 V2 管理文件并重启 ${SERVICE_NAME}。")"
     info "$(tr_msg "Applying safe V2 management repairs..." "正在应用安全的 V2 管理修复...")"
     ensure_user; [[ -x "$CURRENT_LINK/nowhere" ]] && ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
@@ -1856,7 +1898,7 @@ rollback_action() {
 }
 
 backup_action() {
-  require_root
+  require_root; install_runtime_deps; acquire_build_lock
   local out="${1:-/root/nowhere-v2-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
   [[ ! -e "$out" ]] || die "$(tr_msg "Backup target already exists; refusing to overwrite: $out" "备份文件已存在，拒绝覆盖：$out")"
   [[ -d "$CONFIG_DIR" ]] || { warn "$(tr_msg "No V2 configuration directory found: ${CONFIG_DIR}" "未找到 V2 配置目录: ${CONFIG_DIR}")"; return 1; }

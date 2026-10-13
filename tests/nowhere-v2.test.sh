@@ -134,6 +134,10 @@ t_ok "key: 31-hex rejected"       1 "$(t_rc validate_key "$(printf 'a%.0s' $(seq
 t_ok "key: 65-hex rejected"       1 "$(t_rc validate_key "$(printf 'a%.0s' $(seq 1 65))")"
 t_ok "key: uppercase rejected"    1 "$(t_rc validate_key "$(printf 'A%.0s' $(seq 1 32))")"
 t_ok "key: non-hex rejected"      1 "$(t_rc validate_key "validkey_1234567890")"
+t_ok "key: 32-hex ok on v2.2.1"   0 "$(VERSION=v2.2.1; t_rc validate_key "$(printf 'a%.0s' $(seq 1 32))")"
+t_ok "key: 32-hex rejected on exact v2.2.0" 1 "$(VERSION=v2.2.0; t_rc validate_key "$(printf 'a%.0s' $(seq 1 32))")"
+t_ok "key: 64-hex ok on exact v2.2.0"       0 "$(VERSION=v2.2.0; t_rc validate_key "$(printf 'a%.0s' $(seq 1 64))")"
+t_ok "key: latest-v2 stays permissive"      0 "$(VERSION=latest-v2; t_rc validate_key "$(printf 'a%.0s' $(seq 1 32))")"
 t_ok "vector key: legacy ok"      0 "$(t_rc validate_vector_key "validkey_1234567890")"
 t_ok "vector key: 64-hex ok"      0 "$(t_rc validate_vector_key "$(printf 'a%.0s' $(seq 1 64))")"
 t_ok "dial4: IP ok"               0 "$(t_rc validate_dial_value 4 192.0.2.10)"
@@ -312,6 +316,15 @@ t_ok "vector 256-char key rejected" 1 "$(t_url "vector://$(printf 'A%.0s' $(seq 
 t_ok "next legacy key rejected"     1 "$(t_url "portal://$K@host:2082?tls=1&next=legacykey_1234567890@origin.example:2082")"
 t_ok "next 32-hex key accepted"     0 "$(t_url "portal://$K@host:2082?tls=1&next=$(printf 'b%.0s' $(seq 1 32))@origin.example:2082")"
 
+# An exact v2.2.0 pin is stricter: exactly 64 hex characters.
+K64="$(printf 'c%.0s' $(seq 1 64))"
+t_url_v() { t_rc validate_imported_url "$1" "$2"; }
+t_ok "portal 32-hex rejected on exact v2.2.0" 1 "$(t_url_v "portal://$K@host:2082?tls=1" v2.2.0)"
+t_ok "portal 64-hex ok on exact v2.2.0"       0 "$(t_url_v "portal://$K64@host:2082?tls=1" v2.2.0)"
+t_ok "portal 32-hex ok on v2.2.1"             0 "$(t_url_v "portal://$K@host:2082?tls=1" v2.2.1)"
+t_ok "next 32-hex rejected on exact v2.2.0"   1 "$(t_url_v "portal://$K64@host:2082?tls=1&next=$K@origin.example:2082" v2.2.0)"
+t_ok "next 32-hex ok on v2.2.1"               0 "$(t_url_v "portal://$K64@host:2082?tls=1&next=$K@origin.example:2082" v2.2.1)"
+
 # Nowhere 2.2.0 source binding: dial4/dial6 and the dial exclusivity rule.
 t_ok "dial4 valid"                  0 "$(t_url "portal://$K@host:2082?tls=1&dial4=192.0.2.10")"
 t_ok "dial6 valid"                  0 "$(t_url "portal://$K@host:2082?tls=1&dial6=2001:db8::10")"
@@ -407,6 +420,9 @@ if command -v flock >/dev/null 2>&1; then
   for _ in $(seq 1 50); do [[ -s "$SANDBOX/held.flag" ]] && break; sleep 0.1; done
   t_ok "holder acquired the lock"      yes "$([[ -s "$SANDBOX/held.flag" ]] && echo yes || echo no)"
   t_ok "contention refused"            1 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock' _ "$PATCHED")"
+  # Keep the lock probe independent of host packages; backup takes the same lock.
+  install_runtime_deps() { :; }
+  t_ok "backup refused while lock held" 1 "$(t_rc backup_action "$SANDBOX/busy-lock.tar.gz")"
   kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
   rm -f "$SANDBOX/held.flag"
   t_ok "free after holder exits"       0 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock; release_build_lock' _ "$PATCHED")"
@@ -484,35 +500,44 @@ t_ok "fifo tar refused"          1   "$(t_rc safe_extract_tar "$SANDBOX/fifo.tar
 t_ok "duplicate binary refused"  1   "$(t_rc safe_extract_tar "$SANDBOX/dup.tar.gz" "$SANDBOX/d5")"
 
 # ---------------------------------------------------------------------------
-t_section "certificate_is_self_signed"
+t_section "certificate_needs_pin (tls=2 link pinning)"
 
 if command -v openssl >/dev/null 2>&1; then
+  # A pin is required for anything the system store cannot verify: self-signed
+  # certificates AND private-CA certificates. Only a verifying chain skips it.
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=sandbox-test \
     -keyout "$SANDBOX/cs.key" -out "$SANDBOX/cs.crt" >/dev/null 2>&1
   openssl req -new -newkey rsa:2048 -nodes -subj /CN=leaf \
     -keyout "$SANDBOX/leaf.key" -out "$SANDBOX/leaf.csr" >/dev/null 2>&1
   openssl x509 -req -in "$SANDBOX/leaf.csr" -CA "$SANDBOX/cs.crt" -CAkey "$SANDBOX/cs.key" \
     -CAcreateserial -days 1 -out "$SANDBOX/leaf.crt" >/dev/null 2>&1
-  t_ok "self-signed cert detected" 0 "$(t_rc certificate_is_self_signed "$SANDBOX/cs.crt")"
-  t_ok "missing cert returns 2"    2 "$(certificate_is_self_signed "$SANDBOX/cs-missing.crt"; echo $?)"
+  t_ok "self-signed needs a pin"       0 "$(t_rc certificate_needs_pin "$SANDBOX/cs.crt")"
+  t_ok "missing cert returns 2"        2 "$(certificate_needs_pin "$SANDBOX/cs-missing.crt"; echo $?)"
   if [[ -f "$SANDBOX/leaf.crt" ]]; then
-    t_ok "CA-signed cert detected" 1 "$(t_rc certificate_is_self_signed "$SANDBOX/leaf.crt")"
+    t_ok "private-CA cert needs a pin" 0 "$(t_rc certificate_needs_pin "$SANDBOX/leaf.crt")"
   else
-    t_skip "CA-signed cert check (openssl x509 -req unavailable)"
+    t_skip "private-CA check (openssl x509 -req unavailable)"
   fi
+  # The rc=1 (system-trusted) branch cannot be produced offline; it is verified
+  # against a public Let's Encrypt certificate during review instead.
 else
-  t_skip "certificate_is_self_signed (no openssl)"
+  t_skip "certificate_needs_pin (no openssl)"
 fi
 
 # ---------------------------------------------------------------------------
 t_section "backup_action output guard"
 
-printf 'portal://AAAAAAAAAAAAAAAA@*:2082?tls=1\n' > "$URL_FILE"
-t_ok "inside config dir refused" 1   "$(t_rc backup_action "$CONFIG_DIR/self.tar.gz")"
-t_ok "no archive created"        no  "$([[ -e "$CONFIG_DIR/self.tar.gz" ]] && echo yes || echo no)"
-t_ok "outside config dir allowed" 0  "$(t_rc backup_action "$SANDBOX/ok.tar.gz")"
-t_ok "archive created"           yes "$([[ -f "$SANDBOX/ok.tar.gz" ]] && echo yes || echo no)"
-t_ok "existing backup refused"   1   "$(t_rc backup_action "$SANDBOX/ok.tar.gz")"
+if command -v flock >/dev/null 2>&1; then
+  printf 'portal://AAAAAAAAAAAAAAAA@*:2082?tls=1\n' > "$URL_FILE"
+  t_ok "inside config dir refused" 1   "$(t_rc backup_action "$CONFIG_DIR/self.tar.gz")"
+  t_ok "no archive created"        no  "$([[ -e "$CONFIG_DIR/self.tar.gz" ]] && echo yes || echo no)"
+  t_ok "outside config dir allowed" 0  "$(t_rc backup_action "$SANDBOX/ok.tar.gz")"
+  t_ok "archive created"           yes "$([[ -f "$SANDBOX/ok.tar.gz" ]] && echo yes || echo no)"
+  t_ok "existing backup refused"   1   "$(t_rc backup_action "$SANDBOX/ok.tar.gz")"
+else
+  # backup takes the build lock, which needs util-linux flock (Linux only).
+  t_skip "backup guard (flock unavailable on this host)"
+fi
 
 # ---------------------------------------------------------------------------
 t_section "resolve_version (offline, curl stubbed)"
@@ -630,6 +655,7 @@ VNP="vector://${HK32}@relay.example:2082?socks=127.0.0.1:1080"
 VPIN="vector://${HK32}@relay.example:2082?socks=127.0.0.1:1080&pin=$(printf 'c%.0s' $(seq 1 64))"
 PCHAIN="portal://${HK32}@*:2082?tls=1&next=legacykey_1234567890@origin.example:2082"
 t_ok "legacy portal key -> 2.2.1 warns"  warn  "$(w22 "$PLEG" v2.2.1 v2.1.2)"
+t_ok "32-hex key -> exact 2.2.0 warns"   warn  "$(w22 "$PHEX" v2.2.0 v2.1.2)"
 t_ok "hex portal key -> 2.2.1 quiet"     quiet "$(w22 "$PHEX" v2.2.1 v2.1.2)"
 t_ok "already on 2.2.0 quiet"            quiet "$(w22 "$PLEG" v2.2.1 v2.2.0)"
 t_ok "log=event crossing 2.1.1 warns"    warn  "$(w22 "$PEVT" v2.2.1 v2.0.2)"

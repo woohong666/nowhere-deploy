@@ -244,7 +244,7 @@ native 客户端（Vector、`probe`、链式 Portal 的 `next`）**始终**验�
 | Portal 证书 | 客户端需要什么 |
 |---|---|
 | CA 签发（`tls=2`，如 Let's Encrypt） | 客户端通过证书覆盖的域名访问时无需额外配置；否则设置 `sni=` 或 `pin=` |
-| 自管理 / 自签名（`tls=2`） | `pin=<sha256>`——只要证书不换就一直有效 |
+| 自签名 / 私有 CA（`tls=2`） | `pin=<sha256>`——`links` 会自动填入（证书无法通过系统信任库验证）；只要证书不换就一直有效 |
 | 生成的自签名（`tls=1`） | `pin=<sha256>`；生成的证书**每次 Portal 重启都会变化**，pin 必须同步更新——仅适合测试 |
 
 在 Portal 主机上用 `sudo bash nowhere-v2.sh fingerprint` 获取指纹（也可从证书日志获取）；远程拿到的指纹在与你 Portal 主机核对之前都应视为不可信。`tls=1` 时 `links` 会自动把 pin 填进生成的 Vector 链接。

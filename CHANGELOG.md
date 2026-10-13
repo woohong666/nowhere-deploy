@@ -8,7 +8,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.4.0
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.4.1
 
 #### ✨ Added
 
@@ -24,6 +24,9 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🐛 Fixed
 
+- (`v1.4.1`): `links` treated "issuer != subject" as system-trusted, so a `tls=2` certificate signed by a **private CA** produced a pin-less link that every client rejects. The decision now verifies the chain with `openssl verify` against the system store: self-signed *and* private-CA certificates get the auto-filled pin, and only genuinely trusted chains stay pin-free.
+- (`v1.4.1`): key validation accepted 32-63 hex characters regardless of the target core, but an **exact `v2.2.0` pin requires exactly 64**. `validate_key`, the wizard prompt, `next=` validation, the imported-URL checker, and the 2.2.0 upgrade warnings are now version-aware; `latest-v2` and v2.2.1+ keep accepting 32-64.
+- (`v1.4.1`): `backup` and `doctor --fix` did not take the build lock, so a concurrent `install`/`configure` could observe or produce inconsistent state. Both now serialise on the same lock as every other mutating action.
 - **Critical** (`v1.3.0`): fresh installs on a Nowhere 2.2.x core were broken. `random_key` generated base64-style keys and `validate_key` accepted any 16-255 safe characters, but a 2.2.0+ Portal refuses to start unless its listener (and each enabled native `next`) key is 32-64 lowercase hex. Keys are now generated and validated accordingly; the Vector role keeps upstream's documented 1-255 byte client leniency with a warning, so it can still reach a Portal that runs `<=2.1`.
 - **Critical** (`v1.3.0`): `tls=1` client links could never connect on 2.2.0+. Native clients now always verify the peer certificate against the system CA and the endpoint hostname, and `pin=none` no longer disables verification, so a generated certificate requires an explicit pin. `links` auto-fills it (above) and `fingerprint` remains the documented way to obtain it through a trusted channel.
 - (`v1.3.0`): `log=event` was still accepted by the validator, the advanced wizard, and the imported-URL checker although Nowhere 2.1.1 removed it and the core now refuses to start with it.
