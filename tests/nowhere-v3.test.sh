@@ -45,13 +45,14 @@ patch_script() {
     -e "s|^readonly RELEASES_DIR=.*|readonly RELEASES_DIR=\"${sb}/opt/releases\" CURRENT_LINK=\"${sb}/opt/current\"|" \
     -e "s|^readonly BIN_LINK=.*|readonly BIN_LINK=\"${sb}/bin/nowhere-v3\"|" \
     -e "s|^readonly LAUNCHER=.*|readonly LAUNCHER=\"${sb}/bin/launch-v3\"|" \
+    -e "s|^readonly SHORTCUT_PATH=.*|readonly SHORTCUT_PATH=\"${sb}/bin/nh\"|" \
     -e "s|^readonly CONFIG_DIR=.*|readonly CONFIG_DIR=\"${sb}/etc\"|" \
     -e "s|^readonly URL_FILE=.*|readonly URL_FILE=\"${sb}/etc/url.conf\" META_FILE=\"${sb}/etc/manager.conf\" TLS_DIR=\"${sb}/etc/tls\"|" \
     -e "s|^readonly UNIT_FILE=.*|readonly UNIT_FILE=\"${sb}/unit-v3.service\"|" \
     -e "s|^readonly BUILD_LOCK_DIR=.*|readonly BUILD_LOCK_DIR=\"${sb}/lock-v3.d\"|" \
     "$src" > "$dst"
 
-  for v in INSTALL_ROOT RELEASES_DIR BIN_LINK LAUNCHER CONFIG_DIR URL_FILE UNIT_FILE BUILD_LOCK_DIR; do
+  for v in INSTALL_ROOT RELEASES_DIR BIN_LINK LAUNCHER SHORTCUT_PATH CONFIG_DIR URL_FILE UNIT_FILE BUILD_LOCK_DIR; do
     grep -q "^readonly ${v}=\"${sb}" "$dst" ||
       { echo "FATAL: ${v} was not sandboxed; refusing to run" >&2; exit 2; }
   done
@@ -478,6 +479,45 @@ out="$(bash -c 'source "$1"; mutating_setup() { :; }; ROLE=egress; KEY="$2"; END
 t_ok "unattended role switch refused" 1 "$rc"
 t_ok "role-switch diagnostic reached" yes "$([[ "$out" == *allow-role-switch* ]] && echo yes || echo no)"
 t_ok "role guard preserves URL" "$ORIG_URL" "$(cat "$URL_FILE")"
+
+# ---------------------------------------------------------------------------
+t_section "nh shortcut"
+rm -f "$SHORTCUT_PATH"
+out="$(install_shortcut 2>&1)"; rc=$?
+t_ok "shortcut install succeeds" 0 "$rc"
+t_ok "shortcut file is executable" yes "$([[ -x "$SHORTCUT_PATH" ]] && echo yes || echo no)"
+t_ok "shortcut carries the ownership marker" yes "$(grep -qs 'nowhere-v3-shortcut' "$SHORTCUT_PATH" && echo yes || echo no)"
+t_ok "shortcut points at this manager" yes "$(grep -qF "$PATCHED" "$SHORTCUT_PATH" && echo yes || echo no)"
+out="$("$SHORTCUT_PATH" help 2>&1)"
+t_ok "shortcut passes arguments through" yes "$([[ "$out" == *'[ACTION]'* ]] && echo yes || echo no)"
+t_ok "shortcut without arguments opens the menu" 0 "$(t_rc "$SHORTCUT_PATH" </dev/null)"
+out="$(install_shortcut 2>&1)"; rc=$?
+t_ok "reinstall is quiet" 0 "$rc"
+t_ok "reinstall writes no extra output" "" "$out"
+printf '#!/bin/sh\necho foreign\n' >"$SHORTCUT_PATH"
+out="$(install_shortcut 2>&1)"; rc=$?
+t_ok "foreign file triggers a warning" yes "$([[ "$out" == *'[Warn]'* ]] && echo yes || echo no)"
+t_ok "foreign file left untouched" yes "$(grep -qs 'echo foreign' "$SHORTCUT_PATH" && echo yes || echo no)"
+rm -f "$SHORTCUT_PATH"; install_shortcut >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+t_section "numbered choices and y/n confirmations"
+out="$(printf '2\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_choice 'Role' portal portal vector egress)"
+t_ok "choice accepts an index" vector "$out"
+out="$(printf 'vector\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_choice 'Role' portal portal vector egress)"
+t_ok "choice still accepts the value word" vector "$out"
+out="$(printf '\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_choice 'Role' vector portal vector egress)"
+t_ok "empty input keeps the default" vector "$out"
+out="$(printf '9\n3\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_choice 'Role' portal portal vector egress 2>/dev/null)"
+t_ok "invalid index retries" egress "$out"
+out="$(printf '1\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_choice 'Morph' 0 0 1)"
+t_ok "numeric option value wins over an index" 1 "$out"
+t_ok "confirm y" 0 "$(printf 'y\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
+t_ok "confirm yes" 0 "$(printf 'yes\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
+t_ok "confirm 是" 0 "$(printf '是\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
+t_ok "confirm n" 1 "$(printf 'n\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
+t_ok "confirm no" 1 "$(printf 'no\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
+t_ok "confirm empty defaults to no" 1 "$(printf '\n' | NOWHERE_V3_PROMPT_TTY=/dev/stdin prompt_confirm 'x' >/dev/null 2>&1; echo $?)"
 
 # ---------------------------------------------------------------------------
 t_section "persistent PEM reuse"

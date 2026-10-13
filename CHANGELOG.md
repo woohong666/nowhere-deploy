@@ -76,6 +76,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 #### Added
 - **Remote certificate fingerprint**: `fingerprint` now takes an optional `nowhere://KEY@HOST:PORT?morph=0|1` share link and inspects the remote Portal's certificate with the core's `fingerprint` subcommand (over TCP/TLS even when the link says `net=udp`). The URL is validated before use, the shared key never reaches any output (the preview shows `nowhere://***@host:port`), the result is normalized to 64 lowercase hex, and a hint reminds the operator to compare it through a trusted channel before using it as a pin. The argument-less form keeps reading the local certificate.
 - Fingerprint normalization (`normalize_fingerprint`) is now shared by the local and remote paths, so colon/space-separated output from the core is accepted everywhere.
+- **`nh` shortcut**: install/configure/self-update (re)create `/usr/local/bin/nh`, a marker-owned wrapper that opens the menu or forwards arguments (`nh status`); a foreign file at that path is never overwritten, and `uninstall --purge` removes only a marker-owned shortcut.
+- **Numbered choices and y/n confirmations**: `prompt_choice` accepts an index (1..N) besides the value word — values that already look numeric win over the index — and the wizard labels list `1=... 2=...`; `prompt_confirm` accepts `y`/`yes`/`是` with a `[y/N]（y=是 n=否）` hint. Both honor `NOWHERE_V3_PROMPT_TTY` for scripted input.
 - README (EN/zh-CN) documents the remote form; the acceptance checklist gained a matching probe/privacy bullet.
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.1.0

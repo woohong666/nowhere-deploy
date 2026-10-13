@@ -691,8 +691,12 @@ sudo bash nowhere-v3.sh telemetry    # read-only status (NW3 removed the TUI)
 ### 13.3 v1.1.0 daily operations
 
 No arguments opens a looping 22-action menu. Portal, Vector and Egress have
-install/configure wizards. Failed actions restore their transaction in an isolated
-child shell before returning; unavailable terminal input exits cleanly.
+install/configure wizards. Install, configure or self-update create the `nh`
+shortcut (opens this menu; arguments pass through, e.g. `nh status`; removed by
+`uninstall --purge`). Wizard choices accept numbers (`1=both 2=tcp`; the value word
+still works) and confirmations accept `y/n` (`yes`/`no`/`是`/`否`). Failed actions
+restore their transaction in an isolated child shell before returning; unavailable
+terminal input exits cleanly.
 
 ```bash
 sudo bash nowhere-v3.sh                         # Full menu

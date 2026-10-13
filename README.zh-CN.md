@@ -691,6 +691,8 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计（NW3 已取消 TUI）
 ### 13.3 v1.1.0 日常操作
 
 无参数运行进入22项循环菜单；安装/重配提供Portal、Vector、Egress向导。
+安装/重配或自更新成功后自动生成快捷命令 `nh`（=打开本菜单；参数透传，如 `nh status`、`nh doctor`；`uninstall --purge` 时移除）。
+向导选项支持编号选择（如 `1=both 2=tcp`；编号与原值都认），确认提示支持 `y/n`（`是/否`）。
 菜单失败在独立子shell恢复事务后返回；无终端读取失败直接退出。
 
 ```bash

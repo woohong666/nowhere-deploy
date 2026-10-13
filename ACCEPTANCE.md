@@ -303,6 +303,8 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 ### 13.1 v1.1.0 菜单与自更新走查
 
 - 在测试主机运行无参数菜单：检查22项、0/q退出、无效输入与回车返回；中英文各走查一次。
+- 安装/重配后 `/usr/local/bin/nh` 存在且可执行；`nh` 打开菜单、`nh status` 等参数透传；`uninstall --purge` 后移除。
+- 向导选项输入编号（1/2/3）与原值均可；确认提示 `y`/`yes`/`是` 为真、`n`/`no`/`否`/回车为假。
 - 断开终端/stdin：应只显示一次并退出，不循环刷屏。
 - 分别通过Portal/Vector/Egress向导安装；同角色重配前后用fingerprint比较，默认pin应相同。
 - 模拟错误证书或启动失败：原配置、unit、launcher与current均恢复；V1/V2目录无变化。

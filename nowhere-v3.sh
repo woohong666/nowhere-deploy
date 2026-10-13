@@ -20,6 +20,7 @@ readonly SERVICE_NAME="nowhere-v3" RUN_USER="nowhere-v3" RUN_GROUP="nowhere-v3"
 readonly INSTALL_ROOT="/opt/nowhere-v3"
 readonly RELEASES_DIR="$INSTALL_ROOT/releases" CURRENT_LINK="$INSTALL_ROOT/current"
 readonly BIN_LINK="/usr/local/bin/nowhere-v3"
+readonly SHORTCUT_PATH="/usr/local/bin/nh"
 readonly LAUNCHER="/usr/local/libexec/nowhere-v3-launch"
 readonly CONFIG_DIR="/etc/nowhere-v3"
 readonly URL_FILE="$CONFIG_DIR/url.conf" META_FILE="$CONFIG_DIR/manager.conf" TLS_DIR="$CONFIG_DIR/tls"
@@ -93,7 +94,12 @@ require_systemd() {
 
 require_command() { has_cmd "$1" || die "$(tr_msg "Missing command: $1" "缺少命令: $1")"; }
 
-prompt_confirm() { local a; read -r -p "$1 [y/N]: " a </dev/tty || a=""; [[ "$a" =~ ^[Yy]([Ee][Ss])?$ ]]; }
+prompt_confirm() {
+  local a hint input="${NOWHERE_V3_PROMPT_TTY:-/dev/tty}"
+  hint="$(tr_msg '[y/N]' '[y/N]（y=是 n=否）')"
+  read -r -p "$1 $hint: " a <"$input" || a=""
+  [[ "$a" =~ ^([Yy]([Ee][Ss])?|是)$ ]]
+}
 
 release_build_lock() {
   if [[ "$BUILD_LOCK_HELD" -eq 1 ]]; then
@@ -665,12 +671,36 @@ prepare_configuration() {
     find "$TLS_DIR" -maxdepth 1 -type d -name 'pem.*' ! -path "$keep_dir" -exec rm -rf -- {} + 2>/dev/null || true
   fi
 }
+install_shortcut() {
+  local self target content
+  target="$SHORTCUT_PATH"
+  self="$(readlink -f -- "$MANAGER_FILE" 2>/dev/null || true)"
+  [[ -n "$self" && -f "$self" ]] || self="$MANAGER_FILE"
+  [[ -f "$self" ]] || return 0
+  content="#!/usr/bin/env bash
+# nowhere-v3-shortcut: opens the Nowhere V3 manager; delete this file to remove it.
+exec bash $(printf '%q' "$self") \"\$@\""
+  if [[ -e "$target" ]]; then
+    if ! grep -qs 'nowhere-v3-shortcut' "$target"; then
+      warn "$(tr_msg "Shortcut not created: $target already exists and is not owned by this manager" "未创建快捷命令：$target 已存在且不属于本管理器")"
+      return 0
+    fi
+    if [[ "$(cat "$target" 2>/dev/null)" == "$content" ]]; then return 0; fi
+  fi
+  if ! printf '%s\n' "$content" >"$target" 2>/dev/null; then
+    warn "$(tr_msg "Could not write the shortcut: $target" "快捷命令写入失败：$target")"
+    return 0
+  fi
+  chmod 755 "$target" 2>/dev/null || true
+  info "$(tr_msg "Shortcut ready: nh - open this menu (arguments pass through, e.g. nh status)" "快捷命令已就绪：nh——打开本菜单（参数透传，如 nh status）")"
+}
 activate() {
   write_launcher; write_unit
   systemctl enable "$SERVICE_NAME" >/dev/null
   systemctl restart "$SERVICE_NAME"
   wait_service 12 || die "$(tr_msg "V3 did not stay active; restoring state. Check journalctl -u nowhere-v3" "V3 未持续运行，触发恢复；请检查 journalctl -u nowhere-v3")"
   TX_COMMITTED=1
+  install_shortcut
 }
 mutating_setup() {
   require_root; require_systemd; install_runtime_deps; acquire_build_lock
@@ -814,7 +844,10 @@ uninstall_action() {
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   rm -f "$UNIT_FILE" "$LAUNCHER" "$BIN_LINK"
   rm -rf "$INSTALL_ROOT"
-  if [[ "$PURGE" == 1 ]]; then rm -rf "$CONFIG_DIR"; fi
+  if [[ "$PURGE" == 1 ]]; then
+    rm -rf "$CONFIG_DIR"
+    if [[ -f "$SHORTCUT_PATH" ]] && grep -qs 'nowhere-v3-shortcut' "$SHORTCUT_PATH"; then rm -f "$SHORTCUT_PATH"; fi
+  fi
   systemctl daemon-reload
   ok "$(tr_msg "V3 removed; configuration is retained unless --purge was used; V2 is unaffected" "V3 已卸载；默认保留配置，V2 不受影响")"
 }
@@ -851,15 +884,21 @@ prompt_value() {
   printf '%s' "${value:-$default}"
 }
 prompt_choice() {
-  local label="$1" default="$2" value allowed; shift 2
+  local label="$1" default="$2" value allowed entry n input="${NOWHERE_V3_PROMPT_TTY:-/dev/tty}"
+  shift 2
+  local -a opts=("$@"); n=${#opts[@]}
   while true; do
-    if ! read -r -p "$label [$default]: " value </dev/tty; then
-      for allowed in "$@"; do [[ "$default" != "$allowed" ]] || { printf '%s' "$default"; return 0; }; done
+    if ! read -r -p "$label [$default]: " value <"$input"; then
+      for allowed in "${opts[@]}"; do [[ "$default" != "$allowed" ]] || { printf '%s' "$default"; return 0; }; done
       die "$(tr_msg 'No terminal and no valid default' '无终端且没有合法默认值')"
     fi
     value="${value:-$default}"
-    for allowed in "$@"; do [[ "$value" != "$allowed" ]] || { printf '%s' "$value"; return 0; }; done
-    warn "$(tr_msg "Invalid choice; allowed: $*" "无效选项；可选：$*")"
+    for allowed in "${opts[@]}"; do [[ "$value" != "$allowed" ]] || { printf '%s' "$value"; return 0; }; done
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+      entry=$((10#$value))
+      if (( entry >= 1 && entry <= n )); then printf '%s' "${opts[entry - 1]}"; return 0; fi
+    fi
+    warn "$(tr_msg "Invalid choice; enter 1-$n or one of: $*" "无效选项；请输入1-$n的编号，或原值：$*")"
   done
 }
 generate_key() { python3 -c 'import secrets;print(secrets.token_hex(16))'; }
@@ -892,12 +931,12 @@ load_config_fields() {
 installation_wizard() {
   local preset port udp tlsmode exitmode carrier remote previous_role="$ROLE"
   [[ -n "$URL_INPUT" ]] && return 0
-  ROLE="$(prompt_choice "$(tr_msg 'Role: portal / vector / egress' '角色：portal / vector / egress')" "$ROLE" portal vector egress)"
+  ROLE="$(prompt_choice "$(tr_msg 'Role: 1=portal 2=vector 3=egress' '角色：1=portal 2=vector 3=egress')" "$ROLE" portal vector egress)"
   if [[ "$ROLE" != "$previous_role" ]]; then ENDPOINT=''; DIAL=''; DIAL4=''; DIAL6=''; PIN=''; SNI=''; CERT=''; TLS_KEY=''; OUT=direct; fi
   prompt_shared_key
   if [[ "$ROLE" == portal ]]; then
     preset=both; [[ -z "$ENDPOINT" ]] || preset=manual
-    preset="$(prompt_choice "$(tr_msg 'Listener preset: both / tcp / udp / split / manual' '监听预设：both=共用端口，tcp=仅TCP，udp=仅UDP，split=分端口，manual=手动')" "$preset" both tcp udp split manual)"
+    preset="$(prompt_choice "$(tr_msg 'Listener preset: 1=both (shared port) 2=tcp (TCP only) 3=udp (UDP only) 4=split (separate ports) 5=manual' '监听预设：1=both（共用端口）2=tcp（仅TCP）3=udp（仅UDP）4=split（分端口）5=manual（手动）')" "$preset" both tcp udp split manual)"
     if [[ "$preset" == manual ]]; then
       ENDPOINT="$(prompt_value "$(tr_msg 'Listen endpoint' '监听端点')" "${ENDPOINT:-*:2083}")"
     else
@@ -908,14 +947,14 @@ installation_wizard() {
         split) udp="$(prompt_value "$(tr_msg 'UDP port' 'UDP端口')" 2084)"; ENDPOINT="*/tcp:$port/udp:$udp" ;;
       esac
     fi
-    tlsmode="$(prompt_choice "$(tr_msg 'TLS mode: managed (persistent PEM) / supplied (own PEM)' 'TLS 模式：managed=持久PEM，supplied=自备PEM')" managed managed supplied)"
+    tlsmode="$(prompt_choice "$(tr_msg 'TLS mode: 1=managed (persistent PEM) 2=supplied (own PEM)' 'TLS 模式：1=managed（持久PEM）2=supplied（自备PEM）')" managed managed supplied)"
     if [[ "$tlsmode" == supplied ]]; then
       CERT="$(prompt_value "$(tr_msg 'Certificate PEM path' '证书PEM路径')" "$CERT")"
       TLS_KEY="$(prompt_value "$(tr_msg 'Private key PEM path' '私钥PEM路径')" "$TLS_KEY")"
       [[ -n "$CERT" && -n "$TLS_KEY" ]] || die "$(tr_msg 'Certificate and private key are required' '必须提供证书与私钥')"
     fi
     exitmode="$OUT"; [[ "$exitmode" == direct || "$exitmode" == egress ]] || exitmode=socks
-    exitmode="$(prompt_choice "$(tr_msg 'Output: direct / socks / egress' '出口：direct=直连，socks=上游SOCKS，egress=远程出口')" "$exitmode" direct socks egress)"
+    exitmode="$(prompt_choice "$(tr_msg 'Output: 1=direct 2=socks (upstream SOCKS) 3=egress (remote exit)' '出口：1=direct（直连）2=socks（上游SOCKS）3=egress（远程出口）')" "$exitmode" direct socks egress)"
     if [[ "$exitmode" == socks ]]; then
       OUT="$(prompt_value "$(tr_msg 'SOCKS upstream (input hidden)' 'SOCKS上游（隐藏输入）')" "${OUT/direct/127.0.0.1:1080}" 1)"
     else OUT="$exitmode"; fi
@@ -925,7 +964,7 @@ installation_wizard() {
     remote="$(prompt_value "$(tr_msg 'Portal host (bracket IPv6)' 'Portal地址（IPv6加方括号）')" 127.0.0.1)"
     port="$(prompt_value "$(tr_msg 'Portal port' 'Portal端口')" 2083)"
     if [[ "$ROLE" == vector ]]; then
-      carrier="$(prompt_choice "$(tr_msg 'Carrier: tcp / udp' '载波：tcp / udp')" tcp tcp udp)"
+      carrier="$(prompt_choice "$(tr_msg 'Carrier: 1=tcp 2=udp' '载波：1=tcp 2=udp')" tcp tcp udp)"
       INGRESS="$(prompt_value "$(tr_msg 'Local SOCKS ingress (input hidden)' '本地SOCKS入口（隐藏输入）')" "$INGRESS" 1)"
     else carrier=udp; fi
     ENDPOINT="$(prompt_value "$(tr_msg 'Portal endpoint' 'Portal端点')" "${ENDPOINT:-$remote/$carrier:$port}")"
@@ -940,7 +979,7 @@ installation_wizard() {
     fi
     warn "$(tr_msg 'Clients must use the Portal shared key and trust its certificate; generated client defaults alone cannot connect to an existing Portal.' '客户端必须与Portal使用相同密钥并信任其证书；客户端自动生成的默认密钥不能直接连接已有Portal。')"
   fi
-  MORPH="$(prompt_choice "$(tr_msg 'Morph (must match peers)' 'Morph（必须与对端一致）')" "$MORPH" 0 1)"
+  MORPH="$(prompt_choice "$(tr_msg 'Morph (must match peers; 0=off 1=on)' 'Morph（必须与对端一致；0=关 1=开）')" "$MORPH" 0 1)"
 }
 
 save_language() {
@@ -1007,7 +1046,7 @@ self_update() {
   remote_channel="$(sed -n 's/^readonly SCRIPT_CHANNEL="\([^"]*\)"$/\1/p' "$tmp")"
   [[ "$remote_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$remote_channel" == v3 ]] || die "$(tr_msg 'Invalid manager version or channel' '管理脚本版本或通道无效')"
   version_ge "$remote_ver" "$SCRIPT_VERSION" || die "$(tr_msg 'Refusing manager downgrade' '拒绝降级管理脚本')"
-  [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "$(tr_msg 'Manager already up to date' '管理脚本已是最新')"; return 0; }
+  [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "$(tr_msg 'Manager already up to date' '管理脚本已是最新')"; install_shortcut; return 0; }
   [[ "$ASSUME_YES" == 1 ]] || prompt_confirm "$(tr_msg "Update manager $SCRIPT_VERSION -> $remote_ver?" "更新管理脚本 $SCRIPT_VERSION -> $remote_ver？")" || return 0
   self="$(readlink -f "$MANAGER_FILE")"
   [[ -f "$self" && -w "$self" && -w "$(dirname "$self")" ]] || die "$(tr_msg 'Manager file/directory is not writable' '管理脚本或目录不可写')"
@@ -1017,6 +1056,7 @@ self_update() {
   cp -- "$tmp" "$staging"; chmod --reference="$self" "$staging"; chown --reference="$self" "$staging"
   mv -f -- "$staging" "$self"
   ok "$(tr_msg "Manager updated; backup: $backup. Restart the manager to load it." "管理脚本已更新；备份：$backup。重新启动管理器后生效。")"
+  install_shortcut
 }
 
 status_panel() {
@@ -1117,6 +1157,8 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
 language --lang zh|en 保存语言；修改类命令的显式--lang也保存。
 help/validate/generate-key/self-update只读或独立操作，不修改服务偏好。
 高级rate/etar使用--url-file；不接受NW2 socks/next/up/down/mux/log。
+安装/重配或自更新成功后生成快捷命令 nh（打开本菜单；参数透传，如 nh status）。
+向导选项可用编号（1/2/3）选择；确认提示支持 y/n（是/否）。
 Egress使用QUIC；Portal out=egress要求UDP且禁止dial*；Egress自身可使用dial*。
 EOF
   else
@@ -1155,6 +1197,8 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options]; no arguments opens the loopin
 language --lang zh|en persists the language; explicit --lang on mutations is saved too.
 help/validate/generate-key/self-update do not change service preferences.
 Advanced rate/etar: use --url-file. NW2 socks/next/up/down/mux/log are rejected.
+Install, configure or self-update create the shortcut nh (opens this menu; arguments pass through, e.g. nh status).
+Wizard choices accept numbers (1/2/3); confirmations accept y/n (yes/no).
 Egress uses QUIC. Portal out=egress requires UDP and forbids dial*; Egress itself allows dial*.
 EOF
   fi
@@ -1201,7 +1245,7 @@ menu() {
         1) menu_install portal ;; 2) menu_install vector ;; 3) menu_install egress ;;
         4) load_config_fields; installation_wizard; configure_action ;;
         5) select_version_install ;;
-        6) VERSION="$(prompt_choice "$(tr_msg 'Core version' '内核版本')" "$DEFAULT_CORE_VERSION" "$DEFAULT_CORE_VERSION" latest-v3)"; ACTION=upgrade; install_action ;;
+        6) VERSION="$(prompt_choice "$(tr_msg "Core version: 1=$DEFAULT_CORE_VERSION 2=latest-v3" "内核版本：1=$DEFAULT_CORE_VERSION 2=latest-v3")" "$DEFAULT_CORE_VERSION" "$DEFAULT_CORE_VERSION" latest-v3)"; ACTION=upgrade; install_action ;;
         7|8|9) mutating_setup; case "$choice" in 7) systemctl start "$SERVICE_NAME" ;; 8) systemctl stop "$SERVICE_NAME" ;; 9) systemctl restart "$SERVICE_NAME" ;; esac ;;
         10) show_status; telemetry_action ;;
         11) show_links ;; 12) require_root; local_pin; info "$(tr_msg 'Remote: fingerprint nowhere://KEY@HOST:PORT?morph=0|1' '远端：fingerprint nowhere://KEY@HOST:PORT?morph=0|1')" ;; 13) generate_key ;;
@@ -1209,7 +1253,7 @@ menu() {
         15) require_root; journalctl -u "$SERVICE_NAME" -f 2>&1 | redact_stream ;;
         16) doctor_action ;; 17) cleanup_old_releases ;; 18) backup_action ;; 19) rollback_action ;;
         20) PURGE=0; if prompt_confirm "$(tr_msg 'Also delete configuration and keys?' '同时删除配置和密钥？')"; then PURGE=1; fi; uninstall_action ;;
-        21) LANG_CODE="$(prompt_choice 'Language / 语言 zh|en' "$LANG_CODE" zh en)"; save_language ;;
+        21) LANG_CODE="$(prompt_choice "$(tr_msg 'Language: 1=zh 2=en' '语言：1=zh 2=en')" "$LANG_CODE" zh en)"; save_language ;;
         22) self_update ;;
         *) warn "$(tr_msg 'Invalid choice; enter 0-22 or q' '无效选项；请输入 0-22 或 q')" ;;
       esac
