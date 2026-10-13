@@ -742,7 +742,9 @@ show_links() {
   u="$(read_url)"; pin="$(local_pin)"
   v3_url links "$u" "$PUBLIC_HOST" "$pin"
   shares="$(v3_url shares "$u" "$PUBLIC_HOST" "$NODE_NAME")"
+  printf '%s\n' "$(tr_msg 'Generic share links (Anywhere etc.):' '通用分享链接（Anywhere 等客户端）：')"
   printf '%s\n' "$shares"
+  warn "$(tr_msg "If the tcp/udp variants share one port, import only ONE link - they differ only in the carrier." "若 tcp/udp 两条共用同一端口，任选一条导入即可——两者仅 carrier 参数不同。")"
   warn "$(tr_msg "Links contain a shared key; do not disclose them. NW3 clients only." "链接含密钥勿外传；仅供支持 NW3 的客户端使用。")"
   warn "$(tr_msg "Share links cannot carry pin. For self-signed certificates, add the SHA-256 from fingerprint to the client's trust list." "通用分享链接不能携带 pin；自签证书请将 fingerprint 的 SHA-256 添加到客户端信任列表。")"
   if has_cmd qrencode; then

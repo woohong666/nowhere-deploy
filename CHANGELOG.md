@@ -80,6 +80,7 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Native pinned links plus canonical pin-free share links and optional QR rendering.
 - Optional `doctor --probe` diagnostics; existing transaction, lock, PEM and role guards retained.
 - Expanded offline, non-root sandbox regression coverage and bilingual operation documentation.
+- Link output labels the share-link block and notes that a shared-port endpoint only needs one tcp/udp import (the variants differ only in carrier).
 
 #### Fixed
 - Interactive prompts (menu, wizard, confirmations) are visible again: an integration review found every `read -p` label hidden behind a stderr redirect, turning the wizard into blind input.
