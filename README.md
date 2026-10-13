@@ -726,7 +726,11 @@ The source defaults to this repository main and can be overridden with NOWHERE_V
 `links` emits pinned native Vector/Egress URLs and one share per carrier:
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`.
 Shares omit pin. For self-signed certificates, add the fingerprint command result
-to the client trust list. Optional qrencode renders QR codes; absence is silent.
+to the client trust list. Without an argument `fingerprint` reads the local certificate;
+`fingerprint 'nowhere://KEY@HOST:PORT?morph=0|1'` inspects a **remote** certificate over
+TCP/TLS (v1.2.0; the link is redacted and `net=udp` links are still inspected over TCP) —
+compare it through a trusted channel before using it as a pin. Optional qrencode renders
+QR codes; absence is silent.
 Links contain shared keys; keep them private. generate-key and fingerprint are
 explicit secret-output exceptions; status, logs and probe are redacted.
 

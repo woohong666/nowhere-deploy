@@ -722,6 +722,7 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 `links`输出带pin的原生Vector/Egress URL，以及每个carrier对应的
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`。
 分享链接不携带pin；自签证书应将`fingerprint`结果添加到客户端信任列表。
+`fingerprint` 无参数查本机；`fingerprint 'nowhere://KEY@HOST:PORT?morph=0|1'` 查**远端**证书指纹（v1.2.0 起；强制 TCP/TLS、链接打码，`net=udp` 链接同样适用）——请带外核对后再用作 pin 或客户端信任项。
 若安装了qrencode则显示二维码，否则静默跳过。链接含密钥勿外传。
 `generate-key`与`fingerprint`是明确的密钥/指纹输出例外；其他状态、日志和probe输出脱敏。
 

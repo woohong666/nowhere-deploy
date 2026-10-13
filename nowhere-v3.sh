@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.1.0
+# Nowhere V3 isolated manager v1.2.0
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
+# v1.2.0: remote certificate fingerprint (`fingerprint nowhere://...`) for
+#   out-of-band verification before pinning; shared fingerprint normalization.
 # v1.1.0: bilingual operations menu/wizards, channel-safe self-update, versions,
 #   generate-key, redacted probe, share links/optional QR and language persistence.
 # v1.0.1 integration fixes: reuse the existing staged PEM on reconfigure so the
@@ -10,7 +12,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.2.0"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -55,6 +57,7 @@ MANAGER_FILE="${BASH_SOURCE[0]}"
 NODE_NAME=Nowhere-V3
 DIAL='' DIAL4='' DIAL6='' RATE='' ETAR=''
 PROBE_TARGET=example.com:443
+FINGERPRINT_URL=''
 DOCTOR_PROBE=0
 LANG_SET=0
 WIZARD_REQUESTED=0
@@ -718,6 +721,9 @@ configure_action() {
   write_meta; activate
   ok "$(tr_msg "V3 configuration applied" "V3 配置已应用")"
 }
+normalize_fingerprint() {
+  printf '%s' "$1" | tr -d '[:space:]:' | tr 'A-F' 'a-f'
+}
 local_pin() {
   local u tls cert fp link
   u="$(read_url)"
@@ -726,14 +732,38 @@ local_pin() {
   if [[ "$tls" == 2 ]]; then
     cert="$(v3_url get "$u" crt)"
     fp="$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null)" || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
-    fp="${fp#*=}"; fp="${fp//:/}"; fp="${fp,,}"
+    fp="$(normalize_fingerprint "${fp#*=}")"
   else
     [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V3 binary missing" "V3 二进制缺失")"
     link="$(v3_url fingerprint-link "$u")"
     fp="$(timeout 12 "$BIN_LINK" fingerprint "$link" 2>/dev/null)" || die "$(tr_msg "Cannot inspect the live local certificate" "无法探测本机正在使用的证书")"
+    fp="$(normalize_fingerprint "$fp")"
   fi
   [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
   printf '%s\n' "$fp"
+}
+remote_fingerprint() {
+  local url="$1" endpoint port redacted fp
+  [[ "$url" == nowhere://*@* ]] || die "$(tr_msg "Usage: fingerprint [nowhere://KEY@HOST:PORT?morph=0|1]" "用法：fingerprint [nowhere://KEY@HOST:PORT?morph=0|1]")"
+  [[ "$url" != *[$' \t\r\n']* ]] || die "$(tr_msg "URL contains whitespace or control characters" "URL含空白或控制字符")"
+  endpoint="${url#*@}"; endpoint="${endpoint%%[?#]*}"
+  [[ "$endpoint" != :* && "$endpoint" != */* ]] || die "$(tr_msg "Usage: fingerprint [nowhere://KEY@HOST:PORT?morph=0|1]" "用法：fingerprint [nowhere://KEY@HOST:PORT?morph=0|1]")"
+  [[ "$endpoint" =~ :([0-9]{1,5})$ ]] || die "$(tr_msg "Usage: fingerprint [nowhere://KEY@HOST:PORT?morph=0|1]" "用法：fingerprint [nowhere://KEY@HOST:PORT?morph=0|1]")"
+  port="${BASH_REMATCH[1]}"; port="$((10#$port))"
+  (( port >= 1 && port <= 65535 )) || die "$(tr_msg "Invalid port in the link" "链接中的端口无效")"
+  [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V3 binary missing" "V3 二进制缺失")"
+  redacted="nowhere://***@${endpoint}"
+  info "$(tr_msg "Inspecting the remote certificate over TCP/TLS (link redacted): ${redacted}" "正在通过 TCP/TLS 探测远端证书（链接已打码）：${redacted}")"
+  fp="$(timeout 12 "$BIN_LINK" fingerprint "$url" 2>/dev/null)" || die "$(tr_msg "Remote fingerprint failed: check host/port reachability, a TCP/TLS listener, and that morph matches the Portal" "远端指纹探测失败：请检查地址/端口可达性、TCP/TLS 监听与 morph 是否与 Portal 一致")"
+  fp="$(normalize_fingerprint "$fp")"
+  [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
+  printf '%s\n' "$fp"
+  warn "$(tr_msg "Compare it through a trusted channel before using it as a pin or a client trust entry." "请先通过可信渠道核对该值，再配置为 pin 或加入客户端信任列表。")"
+}
+fingerprint_action() {
+  local url="${1:-}"
+  [[ -n "$url" ]] || { local_pin; return 0; }
+  remote_fingerprint "$url"
 }
 show_links() {
   require_root
@@ -1067,7 +1097,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  self-update             只更新管理脚本；NOWHERE_V3_SELF_URL为空时禁用
  generate-key            输出一行32位小写hex，不附加文字
  probe [HOST:PORT]        TCP Flow探测，默认example.com:443，URL打码
- links / fingerprint     原生+通用链接 / 证书SHA-256（这些命令按需输出秘密值）
+ links / fingerprint     原生+通用链接 / 证书SHA-256（秘密输出；fingerprint 无参数=本机，带 nowhere:// 链接=远端 TCP/TLS）
  status / telemetry      状态面板 / 只读统计
  doctor [--probe [目标]]  基础检查；可选探测失败仅警告
  logs / start / stop / restart / clean-releases
@@ -1105,7 +1135,7 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options]; no arguments opens the loopin
  self-update             Manager only; empty NOWHERE_V3_SELF_URL disables it
  generate-key            Exactly one line of 32 lowercase hex characters
  probe [HOST:PORT]        TCP Flow probe; default example.com:443; URL redacted
- links / fingerprint     Native+share links / certificate SHA-256 (explicit secret outputs)
+ links / fingerprint     Native+share links / certificate SHA-256 (secret output; fingerprint: no arg=local, nowhere:// link=remote TCP/TLS)
  status / telemetry      Status panel / read-only statistics
  doctor [--probe [target]] Basic checks; optional probe failure is a warning
  logs / start / stop / restart / clean-releases
@@ -1174,7 +1204,7 @@ menu() {
         6) VERSION="$(prompt_choice "$(tr_msg 'Core version' '内核版本')" "$DEFAULT_CORE_VERSION" "$DEFAULT_CORE_VERSION" latest-v3)"; ACTION=upgrade; install_action ;;
         7|8|9) mutating_setup; case "$choice" in 7) systemctl start "$SERVICE_NAME" ;; 8) systemctl stop "$SERVICE_NAME" ;; 9) systemctl restart "$SERVICE_NAME" ;; esac ;;
         10) show_status; telemetry_action ;;
-        11) show_links ;; 12) require_root; local_pin ;; 13) generate_key ;;
+        11) show_links ;; 12) require_root; local_pin; info "$(tr_msg 'Remote: fingerprint nowhere://KEY@HOST:PORT?morph=0|1' '远端：fingerprint nowhere://KEY@HOST:PORT?morph=0|1')" ;; 13) generate_key ;;
         14) PROBE_TARGET="$(prompt_value "$(tr_msg 'Probe target' '探测目标')" "$PROBE_TARGET")"; probe_action ;;
         15) require_root; journalctl -u "$SERVICE_NAME" -f 2>&1 | redact_stream ;;
         16) doctor_action ;; 17) cleanup_old_releases ;; 18) backup_action ;; 19) rollback_action ;;
@@ -1236,6 +1266,7 @@ main() {
       *)
         if [[ "$ACTION" == backup && "$1" != -* && -z "${BACKUP_PATH:-}" ]]; then BACKUP_PATH="$1"; shift
         elif [[ "$ACTION" == probe && "$1" != -* ]]; then PROBE_TARGET="$1"; shift
+        elif [[ "$ACTION" == fingerprint && "$1" != -* && -z "$FINGERPRINT_URL" ]]; then FINGERPRINT_URL="$1"; shift
         else die "$(tr_msg 'Unknown option' '未知参数')"; fi ;;
     esac
   done
@@ -1262,7 +1293,7 @@ main() {
       fi
       configure_action ;;
     links) show_links ;;
-    fingerprint) require_root; local_pin ;;
+    fingerprint) require_root; fingerprint_action "${FINGERPRINT_URL:-}" ;;
     status) show_status ;;
     telemetry) telemetry_action ;;
     logs) require_root; journalctl -u "$SERVICE_NAME" -f 2>&1 | redact_stream ;;

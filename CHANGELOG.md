@@ -71,6 +71,13 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.2.0
+
+#### Added
+- **Remote certificate fingerprint**: `fingerprint` now takes an optional `nowhere://KEY@HOST:PORT?morph=0|1` share link and inspects the remote Portal's certificate with the core's `fingerprint` subcommand (over TCP/TLS even when the link says `net=udp`). The URL is validated before use, the shared key never reaches any output (the preview shows `nowhere://***@host:port`), the result is normalized to 64 lowercase hex, and a hint reminds the operator to compare it through a trusted channel before using it as a pin. The argument-less form keeps reading the local certificate.
+- Fingerprint normalization (`normalize_fingerprint`) is now shared by the local and remote paths, so colon/space-separated output from the core is accepted everywhere.
+- README (EN/zh-CN) documents the remote form; the acceptance checklist gained a matching probe/privacy bullet.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.1.0
 
 #### Added

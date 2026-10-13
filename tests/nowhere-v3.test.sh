@@ -328,18 +328,18 @@ t_update() {
     self_update
   ' _ "$SANDBOX/self.sh" "$remote" "$mode"
 }
-for ver in 1.2.0 1.1.0 1.0.0; do
+for ver in 1.3.0 1.2.0 1.1.0; do
   printf '#!/usr/bin/env bash\nreadonly SCRIPT_VERSION="%s"\nreadonly SCRIPT_CHANNEL="v3"\n' "$ver" >"$SANDBOX/remote-$ver"
 done
-out="$(t_update "$SANDBOX/remote-1.2.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.3.0" 2>&1)"; rc=$?
 t_ok "higher manager version accepted" 0 "$rc"
-t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="1.2.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
+t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="1.3.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
 t_ok "update preserves executable bit" yes "$([[ -x "$SANDBOX/self.sh" ]] && echo yes || echo no)"
 t_ok "update saves backup" yes "$(find "$SANDBOX" -name 'self.sh.bak.*' -print -quit | grep -q . && echo yes || echo no)"
-out="$(t_update "$SANDBOX/remote-1.1.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.2.0" 2>&1)"; rc=$?
 t_ok "same version exits normally" 0 "$rc"
 t_ok "same version unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
-out="$(t_update "$SANDBOX/remote-1.0.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.1.0" 2>&1)"; rc=$?
 t_ok "downgrade refused" 1 "$rc"
 t_ok "downgrade leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
 printf '#!/bin/bash\ntrue\n' >"$SANDBOX/invalid-manager"
@@ -349,7 +349,7 @@ t_ok "invalid manager leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/
 printf '#!/bin/bash\nreadonly SCRIPT_VERSION="9.0.0"\nreadonly SCRIPT_CHANNEL="v2"\n' >"$SANDBOX/cross-manager"
 out="$(t_update "$SANDBOX/cross-manager" 2>&1)"; rc=$?
 t_ok "cross-channel manager refused" 1 "$rc"
-out="$(t_update "$SANDBOX/remote-1.2.0" offline 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.3.0" offline 2>&1)"; rc=$?
 t_ok "offline update refused" 1 "$rc"
 t_ok "offline leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
 t_ok "empty update URL disables normally" 0 "$(t_rc env NOWHERE_V3_SELF_URL= bash "$PATCHED" self-update)"
@@ -417,6 +417,41 @@ t_ok "numeric descending order" v3.0.10 "$(head -1 <<<"$versions")"
 t_ok "prerelease excluded" yes "$([[ "$versions" != *v3.0.11* ]] && echo yes || echo no)"
 t_ok "draft excluded" yes "$([[ "$versions" != *v3.0.12* ]] && echo yes || echo no)"
 t_ok "V2 releases excluded" yes "$([[ "$versions" != *v2.* ]] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+t_section "remote fingerprint"
+out="$(fingerprint_action 'http://example.com:2083' 2>&1)"; rc=$?
+t_ok "remote fingerprint rejects a non-nowhere scheme" 1 "$rc"
+t_ok "remote fingerprint prints usage" yes "$([[ "$out" == *nowhere://* ]] && echo yes || echo no)"
+out="$(fingerprint_action 'nowhere://key@relay.example' 2>&1)"; rc=$?
+t_ok "remote fingerprint requires a port" 1 "$rc"
+out="$(fingerprint_action 'nowhere://key@relay.example:0?morph=1' 2>&1)"; rc=$?
+t_ok "remote fingerprint rejects port zero" 1 "$rc"
+out="$(fingerprint_action 'nowhere://key@relay.example:2083/tcp:2083?morph=1' 2>&1)"; rc=$?
+t_ok "remote fingerprint rejects carrier paths" 1 "$rc"
+if ((HAVE_TIMEOUT)); then
+FP64_COLON="$(printf '%s' "$P64" | sed 's/../&:/g;s/:$//' | tr 'a-f' 'A-F')"
+cat > "$BIN_LINK" <<CORE
+#!/bin/sh
+printf '%s\n' "$FP64_COLON"
+CORE
+chmod +x "$BIN_LINK"
+out="$(fingerprint_action 'nowhere://should-not-leak@relay.example:2083?morph=1#Name' 2>&1)"; rc=$?
+t_ok "remote fingerprint succeeds" 0 "$rc"
+t_ok "remote fingerprint normalized lowercase hex" yes "$([[ "$out" == *"$P64"* ]] && echo yes || echo no)"
+t_ok "remote fingerprint redacts the key" yes "$([[ "$out" != *should-not-leak* ]] && echo yes || echo no)"
+t_ok "remote fingerprint shows the masked endpoint" yes "$([[ "$out" == *'nowhere://***@relay.example:2083'* ]] && echo yes || echo no)"
+cat > "$BIN_LINK" <<'CORE'
+#!/bin/sh
+exit 3
+CORE
+chmod +x "$BIN_LINK"
+out="$(fingerprint_action 'nowhere://should-not-leak@relay.example:2083?morph=1' 2>&1)"; rc=$?
+t_ok "remote fingerprint failure is nonzero" 1 "$rc"
+t_ok "remote fingerprint failure hides the key" yes "$([[ "$out" != *should-not-leak* ]] && echo yes || echo no)"
+else
+  t_skip "remote fingerprint execution (timeout unavailable on this host)"
+fi
 
 # ---------------------------------------------------------------------------
 t_section "menu and transaction regressions"
