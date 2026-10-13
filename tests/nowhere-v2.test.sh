@@ -97,6 +97,10 @@ t_ok() { # t_ok <description> <expected> <actual>
   fi
 }
 
+t_skip() { # counts as a pass so a host without the tool still reports green
+  PASS=$((PASS + 1)); printf '  skip %s\n' "$1"
+}
+
 t_rc() { # t_rc <command...> -> prints 0 on success, 1 on any failure
   # Normalised on purpose: the manager fails with 1 from `die` and with 2 from
   # its Python helpers, and every caller only tests for non-zero. Asserting a
@@ -151,6 +155,11 @@ t_ok "version: v1.8.3 rejected"   1 "$(t_rc validate_version_arg v1.8.3)"
 t_ok "version: v3.0.0 rejected"   1 "$(t_rc validate_version_arg v3.0.0)"
 t_ok "keep-releases: 20 ok"       0 "$(t_rc validate_keep_releases 20)"
 t_ok "keep-releases: 21 out"      1 "$(t_rc validate_keep_releases 21)"
+t_ok "rate: 0 ok"                 0 "$(t_rc validate_rate 0)"
+t_ok "rate: 2147483647 ok"        0 "$(t_rc validate_rate 2147483647)"
+t_ok "rate: decimal rejected"     1 "$(t_rc validate_rate 0.5)"
+t_ok "rate: nan rejected"         1 "$(t_rc validate_rate nan)"
+t_ok "rate: overflow rejected"    1 "$(t_rc validate_rate 2147483648)"
 
 # ---------------------------------------------------------------------------
 t_section "endpoint grammar (valid, per upstream docs/configuration.md)"
@@ -181,6 +190,8 @@ t_ok "port 0"                       1 "$(t_rc ep portal 'host/tcp:0')"
 t_ok "wildcard on vector"           1 "$(t_rc ep vector '*/tcp:2006')"
 t_ok "missing port"                 1 "$(t_rc ep portal 'host')"
 t_ok "unbracketed IPv6"             1 "$(t_rc ep portal '2001:db8::1:2082')"
+t_ok "bracketed garbage rejected"   1 "$(t_rc ep portal '[bad]:2082')"
+t_ok "bracketed IPv6 still valid"   0 "$(t_rc ep portal '[2001:db8::1]:2082')"
 t_ok "port out of range"            1 "$(t_rc ep portal 'host:70000')"
 t_ok "three carriers"               1 "$(t_rc ep portal 'host/tcp:1/udp:2/tcp4:3')"
 
@@ -308,6 +319,11 @@ t_ok "dial4 wrong family rejected"  1 "$(t_url "portal://$K@host:2082?tls=1&dial
 t_ok "dial6 mapped rejected"        1 "$(t_url "portal://$K@host:2082?tls=1&dial6=::ffff:192.0.2.10")"
 t_ok "dial4 bracketed rejected"     1 "$(t_url "portal://$K@host:2082?tls=1&dial4=[192.0.2.10]")"
 t_ok "dial+dial4 conflict"          1 "$(t_url "portal://$K@host:2082?tls=1&dial=auto&dial4=192.0.2.10")"
+t_ok "rate=0 accepted"              0 "$(t_url "portal://$K@host:2082?tls=1&rate=0")"
+t_ok "rate max accepted"            0 "$(t_url "portal://$K@host:2082?tls=1&rate=2147483647")"
+t_ok "rate=0.5 rejected"            1 "$(t_url "portal://$K@host:2082?tls=1&rate=0.5")"
+t_ok "rate=nan rejected"            1 "$(t_url "portal://$K@host:2082?tls=1&rate=nan")"
+t_ok "rate overflow rejected"       1 "$(t_url "portal://$K@host:2082?tls=1&rate=2147483648")"
 
 # ---------------------------------------------------------------------------
 t_section "version_ge"
@@ -379,24 +395,38 @@ t_ok "missing CORE_VERSION appended"   v2.1.0 "$(sed -n 's/^CORE_VERSION=//p' "$
 t_ok "existing content kept"           portal "$(sed -n 's/^ROLE=//p' "$META_FILE")"
 
 # ---------------------------------------------------------------------------
-t_section "build lock"
+t_section "build lock (flock)"
 
-rm -rf "$BUILD_LOCK_DIR"; BUILD_LOCK_HELD=0
-t_ok "free lock is acquirable"        0 "$(t_rc acquire_build_lock)"
-BUILD_LOCK_HELD=0; rm -rf "$BUILD_LOCK_DIR"
-mkdir -p "$BUILD_LOCK_DIR"; printf '%s\n' "$$" > "$BUILD_LOCK_DIR/pid"
-t_ok "held by a live PID -> refused"  1 "$(t_rc acquire_build_lock)"
-BUILD_LOCK_HELD=0; rm -rf "$BUILD_LOCK_DIR"
-mkdir -p "$BUILD_LOCK_DIR"; printf '999999\n' > "$BUILD_LOCK_DIR/pid"
-t_ok "stale PID -> reclaimed"         0 "$(t_rc acquire_build_lock)"
-BUILD_LOCK_HELD=0; rm -rf "$BUILD_LOCK_DIR"
-acquire_build_lock
-t_ok "flag set after acquire"         1 "$BUILD_LOCK_HELD"
-acquire_build_lock
-t_ok "acquire is idempotent"          1 "$BUILD_LOCK_HELD"
-release_build_lock
-t_ok "flag cleared after release"     0 "$BUILD_LOCK_HELD"
-t_ok "lock dir removed"               no "$([[ -d "$BUILD_LOCK_DIR" ]] && echo yes || echo no)"
+if command -v flock >/dev/null 2>&1; then
+  LOCK_FILE="${BUILD_LOCK_DIR%.d}"
+  rm -f "$LOCK_FILE"; BUILD_LOCK_HELD=0
+  t_ok "free lock is acquirable"      0 "$(t_rc acquire_build_lock)"
+  t_ok "flag set after acquire"       1 "$BUILD_LOCK_HELD"
+  t_ok "acquire is idempotent"        0 "$(t_rc acquire_build_lock)"
+  # A second manager process must be refused while this one holds the lock.
+  t_ok "contention refused"           1 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock' _ "$PATCHED")"
+  release_build_lock
+  t_ok "flag cleared after release"   0 "$BUILD_LOCK_HELD"
+  t_ok "reacquirable after release"   0 "$(t_rc bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; acquire_build_lock' _ "$PATCHED")"
+else
+  # flock is util-linux and absent on macOS; CI (Linux) runs the real branch.
+  t_skip "build lock (flock unavailable on this host)"
+fi
+
+# ---------------------------------------------------------------------------
+t_section "transaction rollback (top-level failure path)"
+
+printf 'portal://%s@*:2082?tls=1\n' "$(printf 'a%.0s' $(seq 1 32))" > "$URL_FILE"
+ORIG_URL="$(cat "$URL_FILE")"
+printf 'ORIGINAL-UNIT\n' > "$UNIT_FILE"
+ORIG_UNIT="$(cat "$UNIT_FILE")"
+out="$(bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; systemctl() { return 0; }; wait_service() { return 0; }; begin_transaction; printf "changed" > "$URL_FILE"; printf "changed" > "$UNIT_FILE"; false' _ "$PATCHED" 2>&1)"
+rc=$?
+t_ok "failure exits non-zero" 1 "$([[ "$rc" -ne 0 ]] && echo 1 || echo 0)"
+t_ok "url.conf rolled back"   "$ORIG_URL"  "$(cat "$URL_FILE")"
+t_ok "unit rolled back"       "$ORIG_UNIT" "$(cat "$UNIT_FILE")"
+out="$(bash -c 'source "$1" >/dev/null 2>&1; require_root() { :; }; systemctl() { return 0; }; wait_service() { return 0; }; begin_transaction; printf "kept" > "$URL_FILE"; TX_COMMITTED=1' _ "$PATCHED" 2>&1)"
+t_ok "committed change kept"  kept "$(cat "$URL_FILE")"
 
 # ---------------------------------------------------------------------------
 t_section "prompts never spin without a terminal"
@@ -418,23 +448,51 @@ t_section "safe_extract_tar"
 python3 - "$SANDBOX" <<'PY'
 import io, os, sys, tarfile
 sb = sys.argv[1]
-def add(t, name, link=None):
+def add(t, name, link=None, fifo=False):
     ti = tarfile.TarInfo(name); ti.mode = 0o755
     if link:
         ti.type = tarfile.SYMTYPE; ti.linkname = link; t.addfile(ti)
+    elif fifo:
+        ti.type = tarfile.FIFOTYPE; t.addfile(ti)
     else:
         b = b"binary"; ti.size = len(b); t.addfile(ti, io.BytesIO(b))
 with tarfile.open(f"{sb}/good.tar.gz", "w:gz") as t: add(t, "nowhere")
 with tarfile.open(f"{sb}/evil.tar.gz", "w:gz") as t: add(t, "nowhere", "/etc/passwd")
 with tarfile.open(f"{sb}/trav.tar.gz", "w:gz") as t: add(t, "../escape")
+with tarfile.open(f"{sb}/fifo.tar.gz", "w:gz") as t: add(t, "nowhere", fifo=True)
+with tarfile.open(f"{sb}/dup.tar.gz", "w:gz") as t:
+    add(t, "a/nowhere"); add(t, "b/nowhere")
 PY
 
-mkdir -p "$SANDBOX/d1" "$SANDBOX/d2" "$SANDBOX/d3"
+mkdir -p "$SANDBOX/d1" "$SANDBOX/d2" "$SANDBOX/d3" "$SANDBOX/d4" "$SANDBOX/d5"
 t_ok "regular tar extracts"      0   "$(t_rc safe_extract_tar "$SANDBOX/good.tar.gz" "$SANDBOX/d1")"
 t_ok "binary present"            yes "$([[ -f "$SANDBOX/d1/nowhere" ]] && echo yes || echo no)"
 t_ok "symlink tar refused"       1   "$(t_rc safe_extract_tar "$SANDBOX/evil.tar.gz" "$SANDBOX/d2")"
 t_ok "nothing extracted on refuse" no "$([[ -e "$SANDBOX/d2/nowhere" ]] && echo yes || echo no)"
 t_ok "traversal tar refused"     1   "$(t_rc safe_extract_tar "$SANDBOX/trav.tar.gz" "$SANDBOX/d3")"
+t_ok "fifo tar refused"          1   "$(t_rc safe_extract_tar "$SANDBOX/fifo.tar.gz" "$SANDBOX/d4")"
+t_ok "duplicate binary refused"  1   "$(t_rc safe_extract_tar "$SANDBOX/dup.tar.gz" "$SANDBOX/d5")"
+
+# ---------------------------------------------------------------------------
+t_section "certificate_is_self_signed"
+
+if command -v openssl >/dev/null 2>&1; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=sandbox-test \
+    -keyout "$SANDBOX/cs.key" -out "$SANDBOX/cs.crt" >/dev/null 2>&1
+  openssl req -new -newkey rsa:2048 -nodes -subj /CN=leaf \
+    -keyout "$SANDBOX/leaf.key" -out "$SANDBOX/leaf.csr" >/dev/null 2>&1
+  openssl x509 -req -in "$SANDBOX/leaf.csr" -CA "$SANDBOX/cs.crt" -CAkey "$SANDBOX/cs.key" \
+    -CAcreateserial -days 1 -out "$SANDBOX/leaf.crt" >/dev/null 2>&1
+  t_ok "self-signed cert detected" 0 "$(t_rc certificate_is_self_signed "$SANDBOX/cs.crt")"
+  t_ok "missing cert returns 2"    2 "$(certificate_is_self_signed "$SANDBOX/cs-missing.crt"; echo $?)"
+  if [[ -f "$SANDBOX/leaf.crt" ]]; then
+    t_ok "CA-signed cert detected" 1 "$(t_rc certificate_is_self_signed "$SANDBOX/leaf.crt")"
+  else
+    t_skip "CA-signed cert check (openssl x509 -req unavailable)"
+  fi
+else
+  t_skip "certificate_is_self_signed (no openssl)"
+fi
 
 # ---------------------------------------------------------------------------
 t_section "backup_action output guard"
@@ -444,6 +502,7 @@ t_ok "inside config dir refused" 1   "$(t_rc backup_action "$CONFIG_DIR/self.tar
 t_ok "no archive created"        no  "$([[ -e "$CONFIG_DIR/self.tar.gz" ]] && echo yes || echo no)"
 t_ok "outside config dir allowed" 0  "$(t_rc backup_action "$SANDBOX/ok.tar.gz")"
 t_ok "archive created"           yes "$([[ -f "$SANDBOX/ok.tar.gz" ]] && echo yes || echo no)"
+t_ok "existing backup refused"   1   "$(t_rc backup_action "$SANDBOX/ok.tar.gz")"
 
 # ---------------------------------------------------------------------------
 t_section "resolve_version (offline, curl stubbed)"
@@ -463,6 +522,23 @@ curl_github() { cp "$SANDBOX/releases.json" "$2"; }
 VERSION=latest-v2
 resolve_version
 t_ok "newest stable v2.x chosen" v2.1.10 "$VERSION"
+
+# Page 1 is full (100 items) with no match; the release only appears on page 2.
+mkdir -p "$SANDBOX/pages"
+python3 - "$SANDBOX/pages" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+p.joinpath("1.json").write_text(json.dumps([{"tag_name": "v9.0.0", "draft": False, "prerelease": False}] * 100))
+p.joinpath("2.json").write_text(json.dumps([
+    {"tag_name": "v2.0.9",  "draft": False, "prerelease": False},
+    {"tag_name": "v2.0.10", "draft": False, "prerelease": False},
+    {"tag_name": "v2.9.0",  "draft": False, "prerelease": True},
+]))
+PY
+curl_github() { local page="${1##*page=}"; cp "$SANDBOX/pages/${page}.json" "$2"; }
+VERSION=latest-v2
+resolve_version
+t_ok "pagination reaches page 2" v2.0.10 "$VERSION"
 
 # ---------------------------------------------------------------------------
 t_section "release_asset_fields (real v2.1.0 asset names)"
@@ -501,6 +577,9 @@ t_ok "reads RELEASE-INFO first" v2.1.0 "$(installed_core_version)"
 printf 'CORE_VERSION=v2.0.2\n' > "$META_FILE"
 t_ok "RELEASE-INFO wins over meta" v2.1.0 "$(installed_core_version)"
 rm -f "$SANDBOX/opt/current/RELEASE-INFO"
+printf 'tag: v2.2.0\n' > "$SANDBOX/opt/current/BUILD-INFO"
+t_ok "reads BUILD-INFO for source builds" v2.2.0 "$(installed_core_version)"
+rm -f "$SANDBOX/opt/current/BUILD-INFO"
 t_ok "falls back to manager.conf" v2.0.2 "$(installed_core_version)"
 rm -f "$META_FILE"
 t_ok "empty when nothing present" "" "$(installed_core_version)"

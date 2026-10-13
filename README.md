@@ -7,7 +7,9 @@ Production-grade one-click deployment and operations scripts built on the offici
 > **✅ Primary channel: V2** — `nowhere-v2.sh`, targeting Nowhere `v2.x`. **Use this for new deployments.**
 > It follows the newest official stable release by default (`latest-v2`, resolved to the latest `v2.x.y` at install time); pin an exact tag with `--version v2.x.y` when you need reproducibility.
 > It uses its own paths and service (`/opt/nowhere-v2`, `/etc/nowhere-v2`, `nowhere-v2.service`) and never touches a V1 install.
-> The `v2.x` line is current and fully supported: the newest official v2 release is **v2.2.1**. The upstream project has also shipped **v3.0.0 (NW3)**, which is wire-incompatible with NW2 — **this manager does not manage v3 / NW3** and refuses `v3.x` tags on purpose.
+> The `v2.x` line is current and fully supported: the newest official v2 release is **v2.2.1**. The upstream project has also shipped **v3.0.0 (NW3)**, which is wire-incompatible with NW2 — the V2 manager refuses `v3.x` tags on purpose.
+>
+> **🆕 V3 channel (NW3):** `nowhere-v3.sh` is a dedicated manager for Nowhere `v3.x` — Portal / Vector / **Egress** roles, `in=` ingress, `out=egress` remote exits, 32-hex keys, Morph on by default. It uses its own paths and service (`/opt/nowhere-v3`, `/etc/nowhere-v3`, `nowhere-v3.service`, ports 2083/1083) and never touches V2. See [§13](#13-v3-channel-nw3).
 >
 > **🔒 V1 stable channel:** `nowhere-v1.sh`, pinned to Nowhere `v1.8.3`. It does not follow `latest` and does not install V2.
 > Intended only for existing V1 nodes or when you need the Russian interface. See [§12](#12-v1-stable-channel-deployment-only).
@@ -34,6 +36,7 @@ The V2 manager combines strict SHA-256 verification of official release binaries
 - [10. File Layout and Sandbox](#10-file-layout-and-sandbox)
 - [11. Troubleshooting (FAQ)](#11-troubleshooting-faq)
 - [12. V1 Stable Channel (Deployment Only)](#12-v1-stable-channel-deployment-only)
+- [13. V3 Channel (NW3)](#13-v3-channel-nw3)
 
 ---
 
@@ -47,10 +50,12 @@ This repository contains four scripts. **V2 is the recommended default:**
 | `nowhere-v1.sh` | V1 stable | Pinned to `v1.8.3`, does not follow `latest`. For existing V1 nodes or the Russian interface |
 | `install.sh` | V1 | Automation / CI only, V1 prebuilt binary |
 | `install-source.sh` | V1 | Automation / CI only, V1 source build |
+| **`nowhere-v3.sh`** | **V3 (NW3)** | Nowhere v3.x: Portal / Vector / Egress; fixed default `v3.0.0`, `latest-v3` opt-in |
 
 **How to choose:**
 
 - **New deployment / want V2 features** → `nowhere-v2.sh` ([§3](#3-quick-start-v2)).
+- **New V3 deployment or a remote Egress exit** → `nowhere-v3.sh` ([§13](#13-v3-channel-nw3)); V2 and V3 are fully isolated and can run side by side.
 - **Existing V1 node to maintain** → `nowhere-v1.sh` ([§12](#12-v1-stable-channel-deployment-only)).
 - **Want both side by side** → install each on different ports; they are fully isolated.
 
@@ -627,12 +632,61 @@ They coexist on one VPS as long as their ports do not collide, and neither modif
 
 ---
 
+## 13. V3 Channel (NW3)
+
+> `nowhere-v3.sh` is a **separate manager** for the Nowhere **v3.x** line. It is fully isolated from V2 (own service, account, paths, ports) and never converts or touches a V2 install. NW3 is wire-incompatible with NW2, with no negotiation or fallback.
+
+### 13.1 Quick start
+
+```bash
+# Download
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh -O nowhere-v3.sh
+chmod 700 nowhere-v3.sh && bash -n nowhere-v3.sh
+
+# New Portal (fixed default core v3.0.0). Without --cert/--tls-key the manager
+# generates a persistent self-signed PEM, so the client pin stays stable.
+sudo bash nowhere-v3.sh install --version v3.0.0 --public-host relay.example.com
+
+# Or bring your own certificate
+sudo bash nowhere-v3.sh install --public-host relay.example.com \
+  --cert /etc/letsencrypt/live/relay.example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
+
+sudo bash nowhere-v3.sh doctor
+sudo bash nowhere-v3.sh links        # Vector (+ Egress) URLs, always carrying the pin
+sudo bash nowhere-v3.sh telemetry    # read-only status (NW3 removed the TUI)
+```
+
+- **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
+- **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
+- **Tracking v3.x**: the default is pinned to the verified `v3.0.0`; `upgrade --version latest-v3` opts in to newer stable v3 releases.
+
+### 13.2 V2 / V3 at a glance
+
+| | V2 (`nowhere-v2.sh`) | V3 (`nowhere-v3.sh`) |
+|---|---|---|
+| ALPN / protocol | `nw2` | `nw3` |
+| Roles | Portal / Vector | Portal / Vector / Egress |
+| Vector ingress | `socks=` | `in=` |
+| Portal exit | direct / `socks=` / `next=` | `out=direct` / SOCKS / `out=egress` |
+| up/down, Mux, native next | supported | removed (old parameters are refused) |
+| Morph default | `0` | `1` |
+| Service / config / binary | `nowhere-v2` · `/etc/nowhere-v2` · `nowhere-v2` | `nowhere-v3` · `/etc/nowhere-v3` · `nowhere-v3` |
+| Default ports | 2082 / SOCKS 1082 | 2083 / SOCKS 1083 |
+| Monitoring | TUI | `status` / `telemetry` |
+| Source build / self-update | yes / yes | no (by design) |
+
+> The V3 manager prints Chinese-first messages for now. Firewall: allow TCP **and** UDP `2083`; an Egress host needs QUIC/UDP outbound to the Portal.
+
+---
+
 ## Testing
 
-Logic is covered by a sandboxed suite that needs no root and no network:
+Logic is covered by sandboxed suites that need no root and no network:
 
 ```bash
 bash tests/nowhere-v2.test.sh
+bash tests/nowhere-v3.test.sh
 ```
 
 Before sourcing the manager it rewrites its path declarations into a temporary

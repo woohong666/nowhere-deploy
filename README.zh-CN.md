@@ -7,7 +7,9 @@
 > **✅ 主通道：V2** —— `nowhere-v2.sh`，面向 Nowhere `v2.x`。**新部署请优先使用它。**
 > 默认跟随官网最新稳定版（`latest-v2`，安装时自动解析为最新的 `v2.x.y`），也可用 `--version v2.x.y` 精确锁定。
 > 使用独立路径与服务（`/opt/nowhere-v2`、`/etc/nowhere-v2`、`nowhere-v2.service`），不会触碰任何 V1 安装。
-> `v2.x` 线目前仍然完整可用：官方最新的 v2 正式版为 **v2.2.1**。官方同时已发布 **v3.0.0（NW3）**，其线协议与 NW2 **不兼容**——**本管理器不管理 v3 / NW3**，并会明确拒绝 `v3.x` 版本标签。
+> `v2.x` 线目前仍然完整可用：官方最新的 v2 正式版为 **v2.2.1**。官方同时已发布 **v3.0.0（NW3）**，其线协议与 NW2 **不兼容**——V2 管理器会明确拒绝 `v3.x` 版本标签。
+>
+> **🆕 V3 通道（NW3）：** `nowhere-v3.sh` 是面向 Nowhere `v3.x` 的独立管理器——Portal / Vector / **Egress** 三种角色、`in=` 入口、`out=egress` 远程出口、32 位 hex 密钥、Morph 默认开启。使用独立路径与服务（`/opt/nowhere-v3`、`/etc/nowhere-v3`、`nowhere-v3.service`、端口 2083/1083），不会触碰 V2。见 [§13](#13-v3-通道nw3)。
 >
 > **🔒 V1 稳定通道：** `nowhere-v1.sh`，固定 Nowhere `v1.8.3`，不跟随 `latest`，也不支持 V2。
 > 仅用于已有 V1 节点或需要俄文界面的场景，部署方式见 [§12](#12-v1-稳定通道仅部署)。
@@ -34,6 +36,7 @@ V2 管理器融合了官方 Release 二进制 SHA-256 强校验、本地 Rust �
 - [10. 文件结构与安全沙箱布局](#10-文件结构与安全沙箱布局)
 - [11. 常见问题排查（FAQ）](#11-常见问题排查faq)
 - [12. V1 稳定通道（仅部署）](#12-v1-稳定通道仅部署)
+- [13. V3 通道（NW3）](#13-v3-通道nw3)
 
 ---
 
@@ -47,10 +50,12 @@ V2 管理器融合了官方 Release 二进制 SHA-256 强校验、本地 Rust �
 | `nowhere-v1.sh` | V1 稳定 | 固定 `v1.8.3`，不跟随 `latest`。仅用于已有 V1 节点或需要俄文界面 |
 | `install.sh` | V1 | 自动化 / CI 专用，仅 V1 预编译二进制 |
 | `install-source.sh` | V1 | 自动化 / CI 专用，仅 V1 源码编译 |
+| **`nowhere-v3.sh`** | **V3（NW3）** | Nowhere v3.x：Portal / Vector / Egress；默认固定 `v3.0.0`，`latest-v3` 显式跟进 |
 
 **怎么选：**
 
 - **全新部署 / 想用 V2 协议与特性** → 用 `nowhere-v2.sh`（[§3](#3-快速开始v2)）。
+- **全新 V3 部署 / 需要远程 Egress 出口** → 用 `nowhere-v3.sh`（[§13](#13-v3-通道nw3)）；V2 与 V3 完全隔离，可同机并存。
 - **已有 V1 节点需要继续维护** → 用 `nowhere-v1.sh`（[§12](#12-v1-稳定通道仅部署)）。
 - **想两套对比着跑** → 各自用不同端口安装即可，二者文件与服务完全隔离。
 
@@ -627,12 +632,61 @@ sudo bash nowhere-v1.sh install \
 
 ---
 
+## 13. V3 通道（NW3）
+
+> `nowhere-v3.sh` 是面向 Nowhere **v3.x** 的**独立管理器**，与 V2 完全隔离（独立服务、账户、路径、端口），不会转换或触碰 V2 安装。NW3 与 NW2 线协议不兼容，没有协商或回落。
+
+### 13.1 快速开始
+
+```bash
+# 下载
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh -O nowhere-v3.sh
+chmod 700 nowhere-v3.sh && bash -n nowhere-v3.sh
+
+# 新建 Portal（默认固定 v3.0.0）。不传 --cert/--tls-key 时自动生成持久自签 PEM，
+# 客户端 pin 永久稳定。
+sudo bash nowhere-v3.sh install --version v3.0.0 --public-host relay.example.com
+
+# 或使用你自己的证书
+sudo bash nowhere-v3.sh install --public-host relay.example.com \
+  --cert /etc/letsencrypt/live/relay.example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
+
+sudo bash nowhere-v3.sh doctor
+sudo bash nowhere-v3.sh links        # Vector（及 Egress）URL，均自带 pin
+sudo bash nowhere-v3.sh telemetry    # 只读统计（NW3 已取消 TUI）
+```
+
+- **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
+- **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
+- **跟进 v3.x**：默认固定已核验的 `v3.0.0`；用 `upgrade --version latest-v3` 显式跟进更新的稳定 v3 版本。
+
+### 13.2 V2 / V3 对照
+
+| | V2（`nowhere-v2.sh`） | V3（`nowhere-v3.sh`） |
+|---|---|---|
+| ALPN / 协议 | `nw2` | `nw3` |
+| 角色 | Portal / Vector | Portal / Vector / Egress |
+| Vector 入口 | `socks=` | `in=` |
+| Portal 出口 | direct / `socks=` / `next=` | `out=direct` / SOCKS / `out=egress` |
+| up/down、Mux、native next | 支持 | 已移除（旧参数直接拒绝） |
+| Morph 默认 | `0` | `1` |
+| 服务 / 配置 / 二进制 | `nowhere-v2` · `/etc/nowhere-v2` · `nowhere-v2` | `nowhere-v3` · `/etc/nowhere-v3` · `nowhere-v3` |
+| 默认端口 | 2082 / SOCKS 1082 | 2083 / SOCKS 1083 |
+| 监控 | TUI | `status` / `telemetry` |
+| 源码编译 / 自更新 | 支持 | 设计上不提供 |
+
+> V3 管理器目前以中文提示为主。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需能向 Portal 发起 QUIC/UDP 出站。
+
+---
+
 ## 测试
 
-逻辑部分由一套沙箱测试覆盖，**不需要 root、不联网**：
+逻辑部分由沙箱测试覆盖，**不需要 root、不联网**：
 
 ```bash
 bash tests/nowhere-v2.test.sh
+bash tests/nowhere-v3.test.sh
 ```
 
 它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.3.1
+# Nowhere V2 Unified Manager v1.4.0
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,14 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 readonly SCRIPT_CHANNEL="v2"
+# v1.4.0: merge in a GPT-assisted review's fixes: flock build lock; install/configure
+#   transactions with EXIT-trap recovery; paginated release resolution; integer
+#   0..2147483647 rate; real IPv6 bracket validation; Morph-aware fingerprint through
+#   the installed binary with colon normalization; python tar whitelist extraction;
+#   stricter release tag/asset/digest checks; TMPDIR layout for telemetry and the TUI;
+#   BUILD-INFO fallback; menu actions keep errexit and roll back on failure.
 # v1.3.1: keep the other settings of a config whose shared key is pre-2.2, so the
 #   wizard can prefill them and `configure -y --key` can rotate only the key.
 # v1.3.0: align with the Nowhere v2.2.x series: 32-64 lowercase-hex shared keys,
@@ -120,6 +126,12 @@ CLIENT_PIN="${NOWHERE_V2_CLIENT_PIN:-none}"
 
 OLD_TARGET=""
 CONFIG_SNAPSHOT_DIR=""
+TX_DIR=""
+TX_STARTED=0
+TX_COMMITTED=0
+TX_ACTIVE=0
+TX_ENABLED=0
+TX_OLD_TARGET=""
 declare -a CLEANUP_PATHS=()
 declare -A CLI_SET=()
 declare -A CLI_VAL=()
@@ -173,37 +185,62 @@ cleanup_swap() {
 
 release_build_lock() {
   if [[ "$BUILD_LOCK_HELD" -eq 1 ]]; then
-    rm -rf -- "$BUILD_LOCK_DIR" 2>/dev/null || true
+    flock -u "$BUILD_LOCK_FD" || true
+    exec {BUILD_LOCK_FD}>&-
     BUILD_LOCK_HELD=0
   fi
 }
 
 cleanup_all() {
-  local p
+  local rc=$? p
+  trap - EXIT
+  set +e
+  if [[ "$TX_STARTED" == 1 && "$TX_COMMITTED" == 0 ]]; then rollback_transaction; fi
   for p in "${CLEANUP_PATHS[@]:-}"; do [[ -n "$p" ]] && rm -rf -- "$p" 2>/dev/null || true; done
   cleanup_swap || true
   release_build_lock
+  exit "$rc"
 }
 trap cleanup_all EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+begin_transaction() {
+  [[ "$TX_STARTED" == 1 ]] && return 0
+  TX_DIR="$(mktemp -d)"; CLEANUP_PATHS+=("$TX_DIR")
+  systemctl is-active --quiet "$SERVICE_NAME" && TX_ACTIVE=1 || true
+  systemctl is-enabled --quiet "$SERVICE_NAME" && TX_ENABLED=1 || true
+  TX_OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+  [[ ! -d "$CONFIG_DIR" ]] || cp -a "$CONFIG_DIR" "$TX_DIR/config"
+  [[ ! -f "$UNIT_FILE" ]] || cp -a "$UNIT_FILE" "$TX_DIR/unit"
+  [[ ! -f "$LAUNCHER" ]] || cp -a "$LAUNCHER" "$TX_DIR/launcher"
+  TX_STARTED=1
+}
+rollback_transaction() {
+  warn "$(tr_msg "V2 operation did not finish; restoring the previous config, service unit and binary link." "V2 操作未完成，恢复之前的配置、服务定义和二进制链接")"
+  systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  rm -rf -- "$CONFIG_DIR"
+  [[ ! -d "$TX_DIR/config" ]] || cp -a "$TX_DIR/config" "$CONFIG_DIR"
+  rm -f -- "$UNIT_FILE" "$LAUNCHER"
+  [[ ! -f "$TX_DIR/unit" ]] || cp -a "$TX_DIR/unit" "$UNIT_FILE"
+  [[ ! -f "$TX_DIR/launcher" ]] || cp -a "$TX_DIR/launcher" "$LAUNCHER"
+  if [[ -n "$TX_OLD_TARGET" && -x "$TX_OLD_TARGET/nowhere" ]]; then
+    ln -sfn "$TX_OLD_TARGET" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
+  else rm -f -- "$CURRENT_LINK" "$BIN_LINK"; fi
+  systemctl daemon-reload
+  if [[ "$TX_ENABLED" == 1 ]]; then systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+  else systemctl disable "$SERVICE_NAME" >/dev/null 2>&1; fi
+  if [[ "$TX_ACTIVE" == 1 ]]; then
+    systemctl restart "$SERVICE_NAME" && wait_service 12 || warn "$(tr_msg "V2 service recovery failed; check the logs." "V2 服务恢复失败，请检查日志。")"
+  fi
+}
 
 acquire_build_lock() {
   [[ "$BUILD_LOCK_HELD" -eq 1 ]] && return 0
-  require_root
-  local pid=""
-  for _ in 1 2 3; do
-    if mkdir -m 700 "$BUILD_LOCK_DIR" 2>/dev/null; then
-      printf '%s\n' "$$" >"$BUILD_LOCK_DIR/pid"
-      BUILD_LOCK_HELD=1
-      return 0
-    fi
-    pid=""
-    [[ -r "$BUILD_LOCK_DIR/pid" ]] && IFS= read -r pid <"$BUILD_LOCK_DIR/pid" || true
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      die "$(tr_msg "Another V2 install/build/cleanup is running (PID ${pid})." "另一个 V2 安装/构建/清理正在运行（PID ${pid}）。")"
-    fi
-    rm -rf -- "$BUILD_LOCK_DIR" 2>/dev/null || true
-  done
-  die "$(tr_msg "Cannot acquire build lock." "无法获取构建锁。")"
+  require_root; require_command flock
+  exec {BUILD_LOCK_FD}>"${BUILD_LOCK_DIR%.d}"
+  flock -n "$BUILD_LOCK_FD" || die "$(tr_msg "Another V2 management operation is running." "另一个 V2 管理操作正在运行。")"
+  BUILD_LOCK_HELD=1
 }
 
 cleanup_stale_swap() {
@@ -224,15 +261,15 @@ pkg_manager() {
 
 install_runtime_deps() {
   local need=0 c pm
-  for c in curl tar python3 sha256sum; do has_cmd "$c" || need=1; done
+  for c in curl tar python3 sha256sum openssl timeout flock ss runuser; do has_cmd "$c" || need=1; done
   [[ "$need" -eq 0 ]] && return 0
   pm="$(pkg_manager)" || die "$(tr_msg "No supported package manager." "未找到受支持的软件包管理器。")"
   info "$(tr_msg "Installing runtime dependencies..." "正在安装运行依赖...")"
   case "$pm" in
-    apt-get) DEBIAN_FRONTEND=noninteractive apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates tar python3 coreutils iproute2 openssl ;;
-    dnf|yum) "$pm" install -y curl ca-certificates tar python3 coreutils iproute openssl ;;
-    apk) apk add --no-cache curl ca-certificates tar python3 coreutils iproute2 openssl ;;
-    zypper) zypper --non-interactive install curl ca-certificates tar python3 coreutils iproute2 openssl ;;
+    apt-get) DEBIAN_FRONTEND=noninteractive apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates tar python3 coreutils iproute2 openssl util-linux ;;
+    dnf|yum) "$pm" install -y curl ca-certificates tar python3 coreutils iproute openssl util-linux ;;
+    apk) apk add --no-cache curl ca-certificates tar python3 coreutils iproute2 openssl util-linux ;;
+    zypper) zypper --non-interactive install curl ca-certificates tar python3 coreutils iproute2 openssl util-linux ;;
   esac
 }
 
@@ -278,7 +315,9 @@ validate_mux() { [[ "$1" == 0 || "$1" == 1 ]] || die "$(tr_msg "mux must be 0|1"
 validate_tls() { [[ "$1" == 1 || "$1" == 2 ]] || die "$(tr_msg "tls must be 1|2" "tls 必须为 1|2")"; }
 # 'event' was removed in Nowhere 2.1.1 and now fails service startup.
 validate_log() { [[ "$1" =~ ^(none|debug|info|warn|error)$ ]] || die "$(tr_msg "invalid log level: ${1} (allowed: none|debug|info|warn|error; 'event' was removed in 2.1.1)" "无效的日志等级: ${1}（可选: none|debug|info|warn|error；'event' 已在 2.1.1 移除）")"; }
-validate_rate() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "$(tr_msg "rate/etar must be non-negative" "rate/etar 必须为非负数")"; }
+validate_rate() {
+  [[ "$1" =~ ^[0-9]{1,10}$ ]] && ((10#$1 <= 2147483647)) || die "$(tr_msg "rate/etar must be an integer 0..2147483647 Mbps" "rate/etar 必须为 0..2147483647 的整数 Mbps")"
+}
 validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) || die "$(tr_msg "keep-releases must be 0-20" "keep-releases 必须为 0-20")"; }
 validate_config_mode() { [[ "$1" == ask || "$1" == quick || "$1" == advanced ]] || die "$(tr_msg "config-mode must be ask|quick|advanced" "config-mode 必须为 ask|quick|advanced")"; }
 is_valid_memory_profile() { [[ "$1" == memory || "$1" == balanced || "$1" == throughput ]]; }
@@ -324,8 +363,7 @@ validate_dial_settings() {
 # 64 hex characters so the key also satisfies an exact v2.2.0 pin (64 only);
 # Nowhere v2.2.1+ accepts 32-64.
 random_key() {
-  if has_cmd openssl; then openssl rand -hex 32;
-  else LC_ALL=C tr -dc '0-9a-f' </dev/urandom | head -c 64; printf '\n'; fi
+  python3 -c 'import secrets; print(secrets.token_hex(32))'
 }
 
 urlencode() {
@@ -361,6 +399,9 @@ def validate_host(h,allow_star):
         if not allow_star: fail('wildcard host is Portal-only')
         return
     if not h: fail('host is empty')
+    if h.startswith('['):
+        try: ipaddress.IPv6Address(h[1:-1])
+        except ValueError: fail('invalid IPv6 literal')
     if any(ord(c)<33 for c in h): fail('invalid host')
     if ':' in h and not (h.startswith('[') and h.endswith(']')): fail('IPv6 literal must be bracketed')
     if not (h.startswith('[') and h.endswith(']')) and not re.fullmatch(r'[A-Za-z0-9._-]+',h): fail('invalid hostname')
@@ -499,7 +540,7 @@ else:
 if not m or not (1<=int(m.group(1))<=65535): sys.exit(2)
 PY
   then
-    die "$(tr_msg "Invalid SOCKS endpoint: ${v}" "无效的 SOCKS 端点: ${v}")"
+    die "$(tr_msg "Invalid SOCKS endpoint" "无效的 SOCKS 端点")"
   fi
 }
 
@@ -578,9 +619,7 @@ def oneof(k,vals,default=None):
     return v
 def rate(k):
     v=q.get(k,'0')
-    try: x=float(v)
-    except: fail(f'invalid {k}')
-    if x<0: fail(f'invalid {k}')
+    if not re.fullmatch(r'[0-9]{1,10}',v) or int(v)>2147483647: fail(f'invalid {k}')
 def dialval(k,fam):
     v=q.get(k)
     if v is None or v=='auto': return
@@ -745,7 +784,7 @@ prompt_key() {
     # Same rule as prompt_choice: no terminal must never mean an endless loop.
     if ! read -r -p "$(tr_msg "Shared key" "共享密钥") [$d]: " v </dev/tty 2>/dev/null; then
       key_acceptable "$d" ||
-        die "$(tr_msg "No terminal available to enter a shared key, and '${d}' is not a valid one." "无可用终端输入共享密钥，且 '${d}' 不是合法密钥。")"
+        die "$(tr_msg "No terminal available to enter a valid shared key." "无可用终端输入合法共享密钥。")"
       KEY="$d"; return 0
     fi
     v="${v:-$d}"
@@ -1038,6 +1077,7 @@ ExecStart=${LAUNCHER}
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=10s
+Environment=TMPDIR=/run/nowhere-v2
 Environment=NOW_TRANSPORT_MEMORY_PROFILE=${MEMORY_PROFILE}
 Environment=NOW_MORPH_TCP_PRELUDE=${MORPH_PRELUDE}
 NoNewPrivileges=true
@@ -1148,8 +1188,12 @@ restore_config_state() {
 }
 
 wait_service() {
-  local n="${1:-12}" i
-  for ((i=0;i<n;i++)); do systemctl is-active --quiet "$SERVICE_NAME" && return 0; sleep 1; done
+  local n="${1:-12}" i stable=0
+  for ((i=0;i<n;i++)); do
+    if systemctl is-active --quiet "$SERVICE_NAME"; then stable=$((stable+1)); else stable=0; fi
+    ((stable>=3)) && return 0
+    sleep 1
+  done
   return 1
 }
 
@@ -1162,23 +1206,28 @@ curl_github() {
 
 resolve_version() {
   validate_version_arg "$VERSION"
-  [[ "$VERSION" != latest-v2 ]] && return 0
+  [[ "$VERSION" == latest-v2 ]] || return 0
   install_runtime_deps
-  local tmp
+  local tmp page found best="" count
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
-  curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=50" "$tmp" || die "$(tr_msg "Cannot fetch V2 releases" "无法获取 V2 发布列表")"
-  VERSION="$(python3 - "$tmp" <<'PY'
+  for ((page=1;page<=20;page++)); do
+    curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=100&page=${page}" "$tmp" || die "$(tr_msg "Cannot fetch the official release list" "无法获取官方发布列表")"
+    found="$(python3 - "$tmp" <<'PY'
 import json,re,sys
-c=[]
-for r in json.load(open(sys.argv[1],encoding='utf-8')):
-    t=r.get('tag_name','')
-    m=re.fullmatch(r'v2\.(\d+)\.(\d+)',t)
-    if m and not r.get('draft') and not r.get('prerelease'):
-        c.append(((int(m.group(1)),int(m.group(2))),t))
-if c: print(max(c)[1])
+r=json.load(open(sys.argv[1])); assert isinstance(r,list)
+c=[(tuple(map(int,x['tag_name'][1:].split('.'))),x['tag_name']) for x in r if re.fullmatch(r'v2\.\d+\.\d+',x.get('tag_name','')) and not x.get('draft') and not x.get('prerelease')]
+print(max(c)[1] if c else '')
+print(len(r))
 PY
-)"
-  [[ "$VERSION" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "No stable v2.x release found" "未找到稳定的 v2.x 版本")"
+)" || die "$(tr_msg "Invalid release metadata" "发布元数据无效")"
+    count="${found##*$'\n'}"; found="${found%%$'\n'*}"
+    if [[ -n "$found" ]] && { [[ -z "$best" ]] || version_ge "$found" "$best"; }; then best="$found"; fi
+    if ((count<100)); then
+      [[ -n "$best" ]] || die "$(tr_msg "No stable V2 release found" "未找到稳定的 V2 版本")"
+      VERSION="$best"; return 0
+    fi
+  done
+  die "$(tr_msg "Release list exceeds the scan limit; pin a stable tag explicitly" "发布列表超过扫描上限，请显式指定稳定版标签")"
 }
 
 release_asset_fields() {
@@ -1216,19 +1265,20 @@ target_triple() {
 }
 
 safe_extract_tar() {
-  local archive="$1" dest="$2" member listing line
-  while IFS= read -r member; do
-    [[ "$member" == /* || "$member" == ../* || "$member" == */../* || "$member" == *'/..' ]] && die "$(tr_msg "Unsafe path in release tar: ${member}" "发布包中存在不安全路径: ${member}")"
-  done < <(tar -tzf "$archive")
-  # Release assets only ever contain one regular file. Refuse link members so a
-  # tampered archive cannot redirect the extraction outside $dest.
-  listing="$(tar -tvzf "$archive")" || die "$(tr_msg "Cannot inspect release tar" "无法检查发布包内容")"
-  while IFS= read -r line; do
-    case "${line:0:1}" in
-      l|h) die "$(tr_msg "Unsafe link in release tar: ${line}" "发布包中存在不安全链接: ${line}")" ;;
-    esac
-  done <<<"$listing"
-  tar -xzf "$archive" -C "$dest"
+  python3 - "$1" "$2" <<'PY'
+import sys,tarfile,pathlib,shutil
+with tarfile.open(sys.argv[1],'r:gz') as t:
+    members=t.getmembers()
+    for m in members:
+        p=pathlib.PurePosixPath(m.name)
+        if p.is_absolute() or '..' in p.parts or not (m.isfile() or m.isdir()):
+            raise SystemExit('Unsafe archive member')
+    bins=[m for m in members if m.isfile() and pathlib.PurePosixPath(m.name).name=='nowhere']
+    if len(bins)!=1: raise SystemExit('Expected exactly one nowhere binary')
+    if bins[0].size>256*1024*1024: raise SystemExit('Oversized binary')
+    with t.extractfile(bins[0]) as src, open(pathlib.Path(sys.argv[2])/'nowhere','wb') as dst:
+        shutil.copyfileobj(src,dst)
+PY
 }
 
 install_release() {
@@ -1236,10 +1286,15 @@ install_release() {
   local json fields name url digest expected actual tmp archive bin bsha target release_dir
   json="$(mktemp)"; CLEANUP_PATHS+=("$json")
   curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${VERSION}" "$json" || die "$(tr_msg "Failed to read release metadata" "读取发布元数据失败")"
+  python3 - "$json" "$VERSION" <<'PYMETA' || die "$(tr_msg "Release tag is not a matching stable release" "发布标签不是匹配的稳定正式版")"
+import json,sys
+r=json.load(open(sys.argv[1]))
+assert r.get('tag_name')==sys.argv[2] and not r.get('draft') and not r.get('prerelease')
+PYMETA
   target="$(target_triple)"
   fields="$(release_asset_fields "$json" "$target")" || die "$(tr_msg "No unambiguous Linux asset for ${target}" "找不到与 ${target} 唯一对应的 Linux 资产")"
   name="$(sed -n '1p' <<<"$fields")"; url="$(sed -n '2p' <<<"$fields")"; digest="$(sed -n '3p' <<<"$fields")"
-  [[ -n "$name" && -n "$url" ]] || die "$(tr_msg "Release asset metadata incomplete" "发布资产元数据不完整")"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ && "$url" == https://github.com/NodePassProject/Nowhere/releases/download/* ]] || die "$(tr_msg "Release asset metadata incomplete" "发布资产元数据不完整")"
   [[ "$digest" =~ ^sha256:[0-9A-Fa-f]{64}$ ]] || die "$(tr_msg "GitHub release does not expose a SHA-256 digest for ${name}; refusing binary install" "GitHub 发布未提供 ${name} 的 SHA-256 摘要；拒绝安装二进制")"
   expected="${digest#sha256:}"
   tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp"); archive="$tmp/$name"
@@ -1319,7 +1374,7 @@ installed_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 manager_channel: v2
 EOF2
   ln -sfn "$release_dir" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
-  cleanup_swap || true; release_build_lock
+  cleanup_swap || true
   ok "$(tr_msg "Built and installed Nowhere ${VERSION}" "已编译并安装 Nowhere ${VERSION}")"
 }
 
@@ -1351,6 +1406,7 @@ rollback_binary() {
 
 installed_core_version() {
   local info="$CURRENT_LINK/RELEASE-INFO" v=""
+  [[ -r "$info" ]] || info="$CURRENT_LINK/BUILD-INFO"
   [[ -r "$info" ]] && v="$(sed -n 's/^tag:[[:space:]]*//p' "$info" | head -1)"
   if [[ -z "$v" && -r "$META_FILE" ]]; then
     v="$(sed -n 's/^CORE_VERSION=//p' "$META_FILE" | head -1)"
@@ -1449,7 +1505,7 @@ warn_22_upgrade_requirements() {
 }
 
 install_action() {
-  require_root; require_systemd; ensure_user
+  require_root; require_systemd; install_runtime_deps; acquire_build_lock; begin_transaction; ensure_user
   # Serialise installs: two concurrent runs would race on the releases directory
   # and the `current` symlink. Released by the EXIT trap.
   acquire_build_lock
@@ -1491,6 +1547,7 @@ install_action() {
     # with what is actually installed.
     refresh_meta_versions
   fi
+  TX_COMMITTED=1
   cleanup_old_releases 1
   ok "$(tr_msg "Nowhere V2 ${VERSION} is active" "Nowhere V2 ${VERSION} 已正常运行")"
   show_links || true
@@ -1498,7 +1555,12 @@ install_action() {
 
 configure_action() {
   local from_install="${1:-0}" u
-  require_root; require_systemd; install_runtime_deps; ensure_user; load_meta; load_existing_config; apply_cli_overrides
+  require_root; require_systemd; install_runtime_deps; acquire_build_lock; begin_transaction; ensure_user; load_meta; load_existing_config; apply_cli_overrides
+  if [[ "$from_install" != 1 ]]; then
+    local installed_version
+    installed_version="$(installed_core_version)"
+    [[ -z "$installed_version" ]] || VERSION="$installed_version"
+  fi
   snapshot_config_state
   if [[ -n "$IMPORT_URL" ]]; then
     warn_import_url_overrides
@@ -1516,7 +1578,7 @@ configure_action() {
   fi
   # If imported tls=2 uses paths, verify service readability. We do not silently rewrite them.
   if [[ "$ROLE" == portal && "$(query_get "$u" tls)" == 2 ]]; then
-    CERT="$(query_get "$u" crt)"; TLS_KEY="$(query_get "$u" key)"; prepare_tls_files
+    TLS=2; CERT="$(query_get "$u" crt)"; TLS_KEY="$(query_get "$u" key)"; prepare_tls_files
     if [[ "$COPY_CERT" -eq 1 ]]; then
       # Rebuild imported URL with copied paths using Python, preserving first query values.
       u="$(python3 - "$u" "$CERT" "$TLS_KEY" <<'PY'
@@ -1543,6 +1605,7 @@ PY
     restore_config_state || warn "$(tr_msg "Automatic config restore was incomplete; inspect ${CONFIG_DIR}" "自动恢复配置不完整，请检查 ${CONFIG_DIR}")"
     return 1
   fi
+  [[ "$from_install" == 1 ]] || TX_COMMITTED=1
   ok "$(tr_msg "V2 configuration applied" "V2 配置已应用")"
   print_firewall_hint
   [[ "$from_install" == 1 ]] || show_links
@@ -1598,7 +1661,9 @@ build_native_vector_link_from_portal() {
   # Nowhere 2.2.0+ clients verify the system CA plus hostname by default, and
   # pin=none no longer disables verification. A generated (tls=1) certificate
   # therefore only works with an explicit pin; fill it from the running local
-  # service unless the operator supplied --client-pin.
+  # service unless the operator supplied --client-pin. For a supplied (tls=2)
+  # certificate, pin only when it is self-signed: pinning a CA-signed
+  # certificate would break every client as soon as the certificate is renewed.
   if [[ "$pin" == none || -z "$pin" ]]; then
     if [[ "$tls" == 1 ]]; then
       local auto_pin
@@ -1607,12 +1672,28 @@ build_native_vector_link_from_portal() {
         warn "$(tr_msg "tls=1 link: pin auto-filled from the local Portal certificate. A generated certificate changes when the Portal restarts - regenerate links and update the client pin after each restart; prefer tls=2 for production." "tls=1 链接：已从本机 Portal 证书自动填入 pin。生成的证书会随 Portal 重启而变化——每次重启后请重新生成链接并更新客户端 pin；生产环境建议使用 tls=2。")"
       else
         warn "$(tr_msg "tls=1 link needs an explicit pin: Nowhere 2.2.0+ rejects generated certificates without one, and the local Portal is not reachable to auto-fill it. Start the service and re-run 'links', or run 'fingerprint'." "tls=1 链接需要显式 pin：Nowhere 2.2.0+ 对生成的证书不再放行，且本机 Portal 当前不可达无法自动填充。请启动服务后重新执行 'links'，或用 'fingerprint' 获取。")"
+        return 1
+      fi
+    elif [[ "$tls" == 2 ]]; then
+      local cert cert_rc
+      cert="$(query_get "$u" crt)"
+      if certificate_is_self_signed "$cert"; then
+        if ! pin="$(local_portal_fingerprint "$u")"; then
+          warn "$(tr_msg "Self-signed certificate could not be read for pinning; pass --client-pin <sha256> or check ${cert}." "自签名证书无法读取以填入 pin；请显式指定 --client-pin <sha256>，或检查 ${cert}。")"
+          return 1
+        fi
+      else
+        cert_rc=$?
+        if [[ "$cert_rc" == 2 ]]; then
+          warn "$(tr_msg "Cannot inspect ${cert}; assuming normal CA verification. Pass --client-pin <sha256> if the Portal uses a self-signed certificate." "无法读取 ${cert}；将按系统 CA 验证处理。若 Portal 使用自签名证书，请显式指定 --client-pin <sha256>。")"
+        fi
       fi
     fi
   fi
   q="up=${eup}&down=${edown}&mux=${emux}&morph=${morph}&socks=$(urlencode "$DEFAULT_VECTOR_SOCKS")"
   [[ "$sni" == none || -z "$sni" ]] || q+="&sni=$(urlencode "$sni")"
   [[ "$pin" == none || -z "$pin" ]] || q+="&pin=${pin}"
+  validate_pin "$pin"
   printf 'vector://%s@%s?%s' "$(urlencode "$key")" "$ep" "$q"
 }
 
@@ -1622,7 +1703,7 @@ show_links() {
   local u role vlink generic name q
   IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"
   if [[ "$role" == vector ]]; then printf '%s\n' "$u"; return 0; fi
-  if ! vlink="$(build_native_vector_link_from_portal "$u")"; then warn "$(tr_msg "Set --public-host or PUBLIC_HOST to generate client links" "请设置 --public-host 或 PUBLIC_HOST 以生成客户端链接")"; return 1; fi
+  if ! vlink="$(build_native_vector_link_from_portal "$u")"; then warn "$(tr_msg "Client links were not generated; see the notes above (missing public host, or a certificate pin that cannot be verified)." "未生成客户端链接；请查看上面的提示（缺少公网地址，或无法验证证书 pin）。")"; return 1; fi
   printf '\n%s\n%s\n' "$(tr_msg "Native V2 Vector URL:" "原生 V2 Vector URL：")" "$vlink"
   # Generic nowhere:// URI: only for alternate clients explicitly confirmed to speak Nowhere V2.
   generic="${vlink/vector:\/\//nowhere://}"; generic="$(python3 - "$generic" <<'PY'
@@ -1635,32 +1716,49 @@ PY
   printf '\n%s\n%s#%s\n' "$(tr_msg "Generic V2 share URI (client must explicitly support V2/nw2):" "通用 V2 分享 URI（客户端必须明确支持 V2/nw2）：")" "$generic" "$(urlencode "$name")"
 }
 
+# 0 = the certificate is self-signed, 1 = CA-signed, 2 = unreadable/unparsable.
+# Used to decide whether a tls=2 link needs a pin (see build_native_vector_link_from_portal).
+certificate_is_self_signed() {
+  local cert="$1" subj iss
+  [[ -r "$cert" ]] || return 2
+  subj="$(openssl x509 -in "$cert" -noout -subject 2>/dev/null || true)"; subj="${subj#*=}"
+  iss="$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null || true)"; iss="${iss#*=}"
+  [[ -n "$subj" && -n "$iss" ]] || return 2
+  [[ "$subj" == "$iss" ]]
+}
+
 # Fetch the running local Portal's TLS certificate fingerprint. Also used to
-# auto-pin tls=1 client links (see build_native_vector_link_from_portal).
+# auto-pin client links (see build_native_vector_link_from_portal).
 local_portal_fingerprint() {
-  local u="$1" ep port host fp
-  ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || return 1
-  port="$(endpoint_tcp_port portal "$ep")"; host="$(endpoint_host portal "$ep")"; [[ "$host" == '*' ]] && host=127.0.0.1
-  fp="$(timeout 8 openssl s_client -alpn nw2 -connect "${host}:${port}" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)"
-  [[ -n "$fp" ]] || return 1
+  local u="$1" ep host port fp cert tls morph
+  tls="$(query_get "$u" tls)"; tls="${tls:-1}"
+  if [[ "$tls" == 2 ]]; then
+    cert="$(query_get "$u" crt)"
+    fp="$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null)" || return 1
+    fp="${fp#*=}"
+  else
+    ep="$(url_endpoint "$u")"
+    [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || return 1
+    host="$(endpoint_host portal "$ep")"; port="$(endpoint_tcp_port portal "$ep")"
+    if [[ "$host" == '*' ]]; then
+      [[ "$(endpoint_tcp_family portal "$ep")" == 6 ]] && host='[::1]' || host=127.0.0.1
+    fi
+    morph="$(query_get "$u" morph)"; morph="${morph:-0}"
+    [[ -x "$BIN_LINK" ]] || return 1
+    fp="$(timeout 12 "$BIN_LINK" fingerprint "nowhere://$(urlencode "$(url_key "$u")")@${host}:${port}?morph=${morph}" 2>/dev/null)" || return 1
+  fi
+  fp="${fp//:/}"; fp="${fp,,}"
+  [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s\n' "$fp"
 }
 
 fingerprint() {
-  require_root; install_runtime_deps; [[ -s "$URL_FILE" ]] || die "$(tr_msg "No config" "没有配置")"
-  local u role tls cert ep fp
-  IFS= read -r u <"$URL_FILE"; role="$(url_role "$u")"; [[ "$role" == portal ]] || die "$(tr_msg "Fingerprint is a Portal operation" "仅 Portal 支持获取指纹")"
-  tls="$(query_get "$u" tls)"; tls="${tls:-1}"
-  if [[ "$tls" == 2 ]]; then
-    cert="$(query_get "$u" crt)"
-    [[ -f "$cert" ]] || die "$(tr_msg "Certificate file not found: $cert" "证书文件不存在: $cert")"
-    openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' ||
-      die "$(tr_msg "Cannot read certificate fingerprint: $cert" "无法读取证书指纹: $cert")"
-    return
-  fi
-  ep="$(url_endpoint "$u")"; [[ "$(endpoint_has_tcp portal "$ep")" == 1 ]] || die "$(tr_msg "Portal has no TCP carrier; no TLS certificate to probe" "Portal 没有 TCP carrier，无法探测 TLS 证书")"
-  fp="$(local_portal_fingerprint "$u")" || die "$(tr_msg "Cannot read V2 TLS fingerprint" "无法读取 V2 TLS 指纹")"
-  printf '%s\n' "$fp"
+  require_root; install_runtime_deps
+  [[ -s "$URL_FILE" ]] || die "$(tr_msg "No configuration" "没有配置")"
+  local u
+  IFS= read -r u <"$URL_FILE"
+  [[ "$(url_role "$u")" == portal ]] || die "$(tr_msg "Fingerprint is a Portal operation" "仅 Portal 支持本机证书指纹")"
+  local_portal_fingerprint "$u" || die "$(tr_msg "Cannot read the fingerprint; a UDP-only tls=1 Portal cannot be probed - use a persistent PEM certificate." "无法获取指纹；仅 UDP + tls=1 无法探测，请使用持久 PEM 证书。")"
 }
 
 port_listening_tcp() { port_listening tcp "$1" "${2:-0}"; }
@@ -1748,7 +1846,7 @@ doctor_action() {
 }
 
 rollback_action() {
-  require_root; require_systemd
+  require_root; require_systemd; acquire_build_lock
   local current d target=""
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   while IFS= read -r d; do [[ "$d" != "$current" && -x "$d/nowhere" ]] && { target="$d"; break; }; done < <(ls -1dt "$RELEASES_DIR"/* 2>/dev/null || true)
@@ -1760,6 +1858,7 @@ rollback_action() {
 backup_action() {
   require_root
   local out="${1:-/root/nowhere-v2-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
+  [[ ! -e "$out" ]] || die "$(tr_msg "Backup target already exists; refusing to overwrite: $out" "备份文件已存在，拒绝覆盖：$out")"
   [[ -d "$CONFIG_DIR" ]] || { warn "$(tr_msg "No V2 configuration directory found: ${CONFIG_DIR}" "未找到 V2 配置目录: ${CONFIG_DIR}")"; return 1; }
   # Refuse an output path inside the directory being archived: tar would try to
   # include its own output and warn about the file changing as it is read.
@@ -1784,7 +1883,7 @@ clean_build() {
 }
 
 uninstall_action() {
-  require_root; require_systemd
+  require_root; require_systemd; acquire_build_lock
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   rm -f -- "$UNIT_FILE" "$LAUNCHER" "$BIN_LINK"; rm -rf -- "$INSTALL_ROOT"; systemctl daemon-reload
   if [[ "$PURGE" -eq 1 ]]; then rm -rf -- "$CONFIG_DIR"; userdel "$RUN_USER" 2>/dev/null || true; groupdel "$RUN_GROUP" 2>/dev/null || true; fi
@@ -1903,28 +2002,37 @@ EOF2
 
     local c
     read -r -p "$(tr_msg 'Choice [0-18]: ' '请输入选项 [0-18]: ')" c </dev/tty || exit 0
+    set +e
+    # Subshells do not run the parent EXIT trap, so re-arm cleanup/rollback here:
+    # a failing menu action must restore the transaction snapshot before the menu
+    # resumes, exactly like a failing top-level CLI action does.
+    ( set -e; trap cleanup_all EXIT
     case "$c" in
-      1) ACTION=install; INSTALL_METHOD=release; install_action || true ;;
-      2) ACTION=install; INSTALL_METHOD=source; install_action || true ;;
-      3) configure_action || true ;;
+      1) ACTION=install; INSTALL_METHOD=release; install_action ;;
+      2) ACTION=install; INSTALL_METHOD=source; install_action ;;
+      3) configure_action ;;
       4) show_status ;;
       5) show_links || true ;;
       6) info "$(tr_msg 'Press Ctrl+C to stop viewing logs.' '按 Ctrl+C 退出实时日志。')"; journalctl -u "$SERVICE_NAME" -f || true ;;
       7) systemctl restart "$SERVICE_NAME" && ok "$(tr_msg 'Restarted.' 'V2 服务已重启。')" || warn "$(tr_msg 'Restart failed.' 'V2 服务重启失败。')" ;;
-      8) [[ -x "$BIN_LINK" ]] && "$BIN_LINK" tui || warn "$(tr_msg 'V2 binary not installed.' '尚未安装 V2 二进制文件。')" ;;
+      8) [[ -x "$BIN_LINK" ]] && runuser -u "$RUN_USER" -- env TMPDIR=/run/nowhere-v2 "$BIN_LINK" tui || warn "$(tr_msg 'V2 binary not installed.' '尚未安装 V2 二进制文件。')" ;;
       9) fingerprint || true ;;
-      10) rollback_action || true ;;
-      11) DOCTOR_FIX=0; doctor_action || true ;;
-      12) DOCTOR_FIX=1; doctor_action || true ;;
-      13) cleanup_old_releases || true ;;
+      10) rollback_action ;;
+      11) DOCTOR_FIX=0; doctor_action ;;
+      12) DOCTOR_FIX=1; doctor_action ;;
+      13) cleanup_old_releases ;;
       14) clean_build ;;
       15) check_updates || true ;;
       16) show_v1_migration_note ;;
       17) prompt_confirm "$(tr_msg 'Purge V2 config too?' '是否同时删除 V2 配置和密钥？')" && PURGE=1 || PURGE=0; uninstall_action ;;
-      18) self_update || true ;;
-      0) exit 0 ;;
+      18) self_update ;;
+      0) exit 42 ;;
       *) warn "$(tr_msg 'Invalid choice.' '无效选项。')" ;;
     esac
+    )
+    local action_rc=$?
+    set -e
+    [[ "$action_rc" != 42 ]] || return 0
     printf '\n'
     read -r -p "$(tr_msg 'Press Enter to return...' '按回车键返回菜单...')" _ </dev/tty || true
   done
@@ -2135,7 +2243,7 @@ main() {
     link|links) show_links ;;
     logs|log) require_root; require_systemd; journalctl -u "$SERVICE_NAME" -f ;;
     restart|start|stop) require_root; require_systemd; systemctl "$ACTION" "$SERVICE_NAME" ;;
-    tui) require_root; [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V2 binary not installed" "尚未安装 V2 二进制")"; "$BIN_LINK" tui ;;
+    tui) require_root; [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V2 binary not installed" "尚未安装 V2 二进制")"; runuser -u "$RUN_USER" -- env TMPDIR=/run/nowhere-v2 "$BIN_LINK" tui ;;
     fingerprint) fingerprint ;;
     rollback) rollback_action ;;
     doctor|check|diagnose) doctor_action ;;

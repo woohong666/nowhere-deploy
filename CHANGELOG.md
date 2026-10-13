@@ -8,10 +8,13 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
-### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.3.1
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.4.0
 
 #### ✨ Added
 
+- **Crash-safe install / configure transactions** (`v1.4.0`): both actions snapshot `url.conf`/`manager.conf`, the unit, the launcher, and the previous binary link before mutating anything, and restore them through the EXIT trap when a step fails. The interactive menu now runs each action inside a subshell that re-arms that trap, so a failed menu action is rolled back exactly like a failed CLI action.
+- **Advisory `flock` build lock, paginated release resolution, stricter release checks** (`v1.4.0`): the lock is a real `flock` on `/run/nowhere-v2-build.lock` (no mkdir/PID recovery race); `latest-v2` walks the GitHub release list 100 items per page (up to 20 pages) and picks the newest stable `v2.x.y` numerically; a release tag must resolve to a matching non-prerelease whose asset URL is under the official release path with a SHA-256 digest.
+- **Morph-aware fingerprint probing** (`v1.4.0`): `tls=1` fingerprints are read with the installed core's `fingerprint` command, so Morph-enabled and other non-plain-TLS listeners work; fingerprints are normalized to 64 lowercase hex (no colons) before they become `pin=`, and `links` refuses to emit a client link whose pin cannot be verified.
 - **Nowhere v2.2.x support** (`v1.3.0`): the V2 manager now tracks the 2.2.x core semantics end to end. Shared keys are generated as 64 lowercase hex characters and validated as 32-64 (the 2.2.0 policy; 64 stays valid on an exact v2.2.0 pin), native `next=` keys follow the same rule, and `--dial4` / `--dial6` expose the new dual-stack outbound source binding — mutually exclusive with `dial`, with the same rule enforced for imported URLs.
 - **Upgrade warnings for the 2.1.1 / 2.2.0 admission changes** (`v1.3.0`): `install` / `upgrade` warn when an existing config crosses a boundary that would refuse it — a legacy Portal or next-hop key, `log=event` (removed in 2.1.1), or a Vector / chained hop without a pin once certificate verification became mandatory in 2.2.0. `doctor` also names a legacy Portal key when the installed core is `>=2.2.0`.
 - **Auto-pin for generated-certificate client links** (`v1.3.0`): on a `tls=1` Portal, `links` fetches the running certificate fingerprint and embeds `pin=` in the generated Vector URL, with a warning that a generated certificate changes on every Portal restart (prefer `tls=2` in production).
@@ -46,6 +49,12 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 #### 🔄 Changed
 
+- `rate` / `etar` now follow the documented integer range `0..2147483647` (`v1.4.0`); decimals, `nan`, and values above `i32` are rejected in the CLI and in imported URLs.
+- Bracketed IPv6 literals are actually parsed (`v1.4.0`): `[bad]:2082` and similar values are rejected instead of reaching the core.
+- `tls=2` links auto-pin only when the certificate is self-signed (`v1.4.0`); a CA-signed certificate is left unpinned so renewals do not break every client. Imported `tls=2` URLs now sync the TLS mode before the certificate readability check runs.
+- The unit sets `TMPDIR=/run/nowhere-v2` and the TUI runs as the service user (`v1.4.0`): upstream telemetry lives under `$TMPDIR/nowhere-telemetry-<uid>`, which `PrivateTmp=true` otherwise hides from a root TUI.
+- Release tarballs are unpacked by a Python whitelist (`v1.4.0`): regular files/directories only, exactly one `nowhere` binary, with a size cap — FIFOs and duplicates are refused. `installed_core_version` falls back to `BUILD-INFO` for source builds, and backups refuse to overwrite an existing target.
+- The hardening above originated from an independent GPT-assisted review of the v1.3.0 script (`v1.4.0`). Every reported item was reproduced here before merging, and the review's own gaps were fixed on top: menu-path rollback (the EXIT trap does not fire in plain subshells), the CA-certificate pinning policy, the misleading link-refusal message, and several single-language fallback messages.
 - `DEFAULT_MORPH_PRELUDE` is now `full8` (`v1.3.0`), matching the upstream default since 2.2.0. Persisted `MORPH_PRELUDE` values (including an explicit `low7`) are left untouched, and `low7` remains a supported explicit choice.
 - The version policy now states that `v3.x` / NW3 is out of scope (`v1.3.0`): `--version` keeps accepting only `latest-v2` or an exact `v2.x.y`, which also keeps `latest-v2` resolving to the newest stable v2 release (currently `v2.2.1`).
 - **Self-update now works out of the box** (`v1.2.8`). `SELF_UPDATE_URL` defaults to this repository's `main` branch, so menu option [18] and `self-update` no longer require `NOWHERE_V2_SELF_URL` to be configured first — previously they just warned and returned. The variable still overrides the source (point it at a fork or mirror), and setting it to an empty string disables self-update deliberately. (#12)
@@ -61,6 +70,23 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed the unused `allowed` query-key set from the imported-URL validator (`v1.3.0`). Unknown keys follow upstream first-wins/ignore semantics, so the set only documented a rule that was never enforced.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
+
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.0.1
+
+A new, fully isolated manager for the Nowhere `v3.x` line (NW3). It shares no
+files, services, accounts, or ports with the V2 manager and refuses NW2 tags;
+NW3 is wire-incompatible with NW2, with no negotiation or fallback.
+
+#### ✨ Added
+
+- **V3 (NW3) support** (`v1.0.1`): `nowhere-v3.sh` deploys `portal` / `vector` / `egress` roles against the official v3.0.0 configuration grammar — 32-character lowercase-hex keys, `in=` SOCKS ingress, `out=direct|SOCKS|egress` exits, Morph on by default, integer `rate`/`etar`, and `dial`/`dial4`/`dial6` source binding. NW2-era or unknown parameters (`socks=`, `next=`, `up`/`down`, `mux`, `log=`) are refused, so an imported V2 URL cannot silently change routing.
+- **Stable client pins by default** (`v1.0.1`): a new Portal without `--cert`/`--tls-key` gets a persistent self-signed PEM under `/etc/nowhere-v3/tls/`; `links` reads its fingerprint and refuses to print Vector/Egress URLs without a verified `pin=`. NW3 dropped the TUI, so monitoring uses `status`/`telemetry`, run as the service user with the same `TMPDIR`.
+- **Fixed verified default** (`v1.0.1`): the default core is pinned to the verified `v3.0.0`; `--version latest-v3` explicitly opts in to newer stable v3 releases through the same paginated resolver and digest checks as V2.
+- **Integration fixes** (`v1.0.1`): `configure` reuses the existing staged PEM so the client pin survives a reconfigure (pass `--cert`/`--tls-key` to rotate); a role switch requires confirmation or `--allow-role-switch`; `validate` tolerates an unreadable `manager.conf`; superseded PEM directories are pruned.
+
+> The V3 manager came from an external GPT-assisted pass written against the
+> official v3.0.0 docs, and was merged after a line-by-line review; its provenance
+> is noted in the script header. It prints Chinese-first messages for now.
 
 ### Nowhere V1 manager and installers
 
@@ -83,6 +109,8 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ### 📚 Documentation
 
+- README (EN/zh-CN): added the V3 (NW3) channel section — quick start, the V2/V3 isolation table, and the one-registered-Egress behavior (`v1.4.0`).
+- `ACCEPTANCE.md`: added a V3 acceptance track — persistent pin, Vector via `--url-file`, Egress registration and offline behavior, and the role-switch guard (`v1.4.0`).
 - **README (EN/zh-CN) updated for Nowhere v2.2.x** (`v1.3.0`): documented the 32-64 lowercase-hex shared-key policy, the always-on certificate verification and pin semantics for native clients, the `full8` Morph default, and `--dial4` / `--dial6`.
 - **Documented the official v3.0.0 / NW3 release as out of scope** (`v1.3.0`): NW3 is wire-incompatible with NW2, so the manager deliberately stays on the `v2.x` line and refuses `v3.x` tags. `latest-v2` keeps resolving to the newest stable v2 release (currently `v2.2.1`).
 - **README (EN/zh-CN) rewritten V2-first** (#6): V2 is now the primary channel and is documented end to end — script selection, release vs source, prerequisites, quick start (interactive and non-interactive, with Portal / Vector / TLS 2 / Morph examples), TLS and `--copy-cert`, per-endpoint firewall rules, client links (`vector://` vs `nowhere://`), daily operations, upgrade / rollback / backup / uninstall, the full CLI reference, file layout and sandbox hardening, and an FAQ covering the 2.1.0 Morph wire break. V1 is reduced to a deployment-only §12 that links to its detailed docs.

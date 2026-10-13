@@ -272,11 +272,39 @@ id nowhere-v2 2>&1                      # 应不存在
 
 ---
 
-## 13. 清理
+## 13. V3 管理器（NW3）验收（可选，需要 NW3 客户端）
+
+> V3 与 V2 完全隔离（服务 / 目录 / 端口均不同），可以在同一台验收机上并行执行。
+> 没有 NW3 客户端时，用官方二进制自测：`nowhere-v3 probe '<vector-url>' example.com:443`。
+
+```bash
+# 1) 新建 V3 Portal（默认固定 v3.0.0）；有域名证书时直接给 --cert/--tls-key，
+#    不传则自动生成持久自签 PEM（pin 永久稳定，不会随重启变化）
+sudo bash nowhere-v3.sh install --version v3.0.0 --public-host <公网IP或域名>
+sudo bash nowhere-v3.sh doctor
+sudo bash nowhere-v3.sh links        # 输出 Vector / Egress URL（均自带 pin）
+sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
+```
+
+| # | 检查 | 期望 |
+|---|---|---|
+| 13.1 | 服务与端口 | `nowhere-v3` 为 active；`ss -lntup` 可见 TCP **和** UDP `2083`；V2 服务不受影响 |
+| 13.2 | `cat /etc/nowhere-v3/url.conf` | 32 位小写 hex 密钥；`tls=2` 且 `crt` 指向 `/etc/nowhere-v3/tls/pem.*`；默认含 `morph=1` |
+| 13.3 | `links` 输出 | Vector tcp / udp 原生 URL，均带 64 位 `pin=`；无有效 pin 时应拒绝输出 |
+| 13.4 | Vector 客户端 | 用 `--url-file` 安装链接文件；`curl -x socks5h://127.0.0.1:1083 https://api.ipify.org` 返回 V3 侧出口 IP |
+| 13.5 | 同角色重配（`configure --key <新> --endpoint <同>`） | 重配后 `crt` 路径与 pin **不变**（PEM 复用，回归点） |
+| 13.6 | 角色切换保护 | `configure --role egress ...`（不带 `--allow-role-switch`、加 `-y`）应被拒绝 |
+| 13.7 | Egress（有第二台机器时） | `--out egress` Portal + egress:// URL 注册后 probe 成功；停掉 Egress 后请求失败且**不回退直连** |
+| 13.8 | 卸载 | `uninstall` 保留配置；`--purge` 删除配置；V2 完全不受影响 |
+
+---
+
+## 14. 清理
 
 ```bash
 sudo bash nowhere-v2.sh uninstall --purge
-rm -rf /root/tls /root/nw-backup.tar.gz /root/nowhere-v2.sh
+sudo bash nowhere-v3.sh uninstall --purge
+rm -rf /root/tls /root/nw-backup.tar.gz /root/nowhere-v2.sh /root/nowhere-v3.sh
 # 按需回滚 VPS 快照
 ```
 
@@ -298,6 +326,7 @@ rm -rf /root/tls /root/nw-backup.tar.gz /root/nowhere-v2.sh
 | 10 源码编译 | ☐ 通过 ☐ 失败 ☐ 跳过 | |
 | 11 卸载 | ☐ 通过 ☐ 失败 | |
 | 12 V1 共存 | ☐ 通过 ☐ 失败 ☐ 跳过 | |
+| 13 V3 管理器（NW3） | ☐ 通过 ☐ 失败 ☐ 跳过 | 需要 NW3 客户端或官方 probe |
 
 **环境信息（便于定位问题）**
 
@@ -307,6 +336,8 @@ rm -rf /root/tls /root/nw-backup.tar.gz /root/nowhere-v2.sh
 bash 版本     :
 脚本版本      : （grep '^readonly SCRIPT_VERSION' nowhere-v2.sh）
 core 版本     : （grep '^tag:' /opt/nowhere-v2/current/RELEASE-INFO）
+V3 脚本版本   : （grep '^readonly SCRIPT_VERSION' nowhere-v3.sh）
+V3 core 版本  : （grep '^tag:' /opt/nowhere-v3/current/RELEASE-INFO）
 ```
 
 ---
