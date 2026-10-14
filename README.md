@@ -4,21 +4,22 @@
 
 Production-grade one-click deployment and operations scripts built on the official [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) core protocol.
 
-> **✅ Primary channel: V2** — `nowhere-v2.sh`, targeting Nowhere `v2.x`. **Use this for new deployments.**
-> It follows the newest official stable release by default (`latest-v2`, resolved to the latest `v2.x.y` at install time); pin an exact tag with `--version v2.x.y` when you need reproducibility.
-> It uses its own paths and service (`/opt/nowhere-v2`, `/etc/nowhere-v2`, `nowhere-v2.service`) and never touches a V1 install.
-> The `v2.x` line is current and fully supported: the newest official v2 release is **v2.2.1**. The upstream project has also shipped **v3.0.0 (NW3)**, which is wire-incompatible with NW2 — the V2 manager refuses `v3.x` tags on purpose.
+> **⭐ Primary channel: V3 (NW3)** — `nowhere-v3.sh`, targeting Nowhere `v3.x`. **Use it for every new deployment.**
+> Portal / Vector / Egress roles, `in=` ingress, `out=egress` remote exits, 32-hex keys, Morph on by default; plus hardenings of its own: SHA-256 zero-trust installs, transactional configuration (automatic rollback), `doctor` health checks, backup / instant rollback, **remote certificate fingerprints**, **Let's Encrypt issuance with daily auto-renewal**, and the `nh` shortcut menu (numbered choices / y-n / QR codes).
+> It uses its own paths and service (`/opt/nowhere-v3`, `/etc/nowhere-v3`, `nowhere-v3.service`, ports 2083/1083) and never touches V1/V2. Full documentation: [§13](#13-v3-channel-nw3).
 >
-> **🆕 V3 channel (NW3):** `nowhere-v3.sh` is a dedicated manager for Nowhere `v3.x` — Portal / Vector / **Egress** roles, `in=` ingress, `out=egress` remote exits, 32-hex keys, Morph on by default. It uses its own paths and service (`/opt/nowhere-v3`, `/etc/nowhere-v3`, `nowhere-v3.service`, ports 2083/1083) and never touches V2. See [§13](#13-v3-channel-nw3).
+> **V2 channel (maintenance):** `nowhere-v2.sh`, targeting Nowhere `v2.x` (newest official v2: **v2.2.1**) — **for maintaining existing NW2 deployments only** (e.g. clients still on Anywhere ≤ 2.3). The full TUI, source builds, and more remain in the collapsed section below ([§3](#3-quick-start-v2) onward).
 >
-> **🔒 V1 stable channel:** `nowhere-v1.sh`, pinned to Nowhere `v1.8.3`. It does not follow `latest` and does not install V2.
-> Intended only for existing V1 nodes or when you need the Russian interface. See [§12](#12-v1-stable-channel-deployment-only).
+> **🔒 V1 stable channel (maintenance):** `nowhere-v1.sh`, pinned to `v1.8.3`, does not follow `latest` and does not install V2. Intended only for existing V1 nodes or the Russian interface; see [§12](#12-v1-stable-channel-deployment-only).
 
-The V2 manager combines strict SHA-256 verification of official release binaries, fully-optimized local Rust source compilation (Fat-LTO), a hardened systemd sandbox, TLS certificate permission isolation, and a bilingual (Chinese / English) colour terminal console.
+The V3 manager combines strict SHA-256 verification of official release binaries, transactional install/configure (automatic rollback on failure), `doctor` health checks, config backup and instant rollback, automatic Let's Encrypt issuance with daily renewal, the `nh` shortcut menu (numbered choices / y-n shorthand / QR share links / remote fingerprint checks), and bilingual documentation with a sandboxed test suite. The V2 source-build and TUI capabilities remain documented in the maintenance section below.
 
 ---
 
 ## Table of Contents
+
+<details>
+<summary>Click to expand the contents (⭐ §13 V3 is the primary channel; V1 / V2 are maintenance docs, folded into a separate block)</summary>
 
 - [0. Which Script Should I Use?](#0-which-script-should-i-use)
 - [1. Install Modes (Release / Source)](#1-install-modes-release--source)
@@ -38,37 +39,48 @@ The V2 manager combines strict SHA-256 verification of official release binaries
 - [12. V1 Stable Channel (Deployment Only)](#12-v1-stable-channel-deployment-only)
 - [13. V3 Channel (NW3)](#13-v3-channel-nw3)
 
+</details>
+
 ---
 
 ## 0. Which Script Should I Use?
 
-This repository contains four scripts. **V2 is the recommended default:**
+**Use `nowhere-v3.sh` (the NW3 primary channel) for every new deployment**; V2 is only for maintaining existing NW2 deployments, and V1 only for older V1 nodes.
 
-| Script | Channel | Purpose |
+| Script | Protocol line | Purpose |
 |---|---|---|
-| **`nowhere-v2.sh`** | **V2 (primary)** | **Recommended.** Nowhere v2.x with a full TUI menu: release install / source build / configure / doctor / rollback / backup |
-| `nowhere-v1.sh` | V1 stable | Pinned to `v1.8.3`, does not follow `latest`. For existing V1 nodes or the Russian interface |
-| `install.sh` | V1 | Automation / CI only, V1 prebuilt binary |
-| `install-source.sh` | V1 | Automation / CI only, V1 source build |
-| **`nowhere-v3.sh`** | **V3 (NW3)** | Nowhere v3.x: Portal / Vector / Egress; fixed default `v3.0.0`, `latest-v3` opt-in |
+| **`nowhere-v3.sh`** | **NW3 (v3.x)** | ⭐ **Primary**: new deployments and daily management (the `nh` menu) — see [§13](#13-v3-channel-nw3) |
+| `nowhere-v2.sh` | NW2 (v2.2.1 LTS) | Maintenance for existing V2 deployments; full TUI / source-build docs in the collapsed section ([§3](#3-quick-start-v2) onward) |
+| `nowhere-v1.sh` | V1 (pinned v1.8.3) | Existing V1 nodes / Russian interface only — see [§12](#12-v1-stable-channel-deployment-only) |
+| `install.sh` / `install-source.sh` | V1 | Automation / CI only (V1) |
 
-**How to choose:**
+### V3 highlights
 
-- **New deployment / want V2 features** → `nowhere-v2.sh` ([§3](#3-quick-start-v2)).
-- **New V3 deployment or a remote Egress exit** → `nowhere-v3.sh` ([§13](#13-v3-channel-nw3)); V2 and V3 are fully isolated and can run side by side.
-- **Existing V1 node to maintain** → `nowhere-v1.sh` ([§12](#12-v1-stable-channel-deployment-only)).
-- **Want both side by side** → install each on different ports; they are fully isolated.
+- **Modern protocol**: NW3 = TLS 1.3 (fixed `nw3` ALPN) with an optional QUIC carrier; authentication bound to the TLS exporter; exactly 32-hex shared keys; Morph on by default and must match on both ends
+- **Three roles**: Portal (listener), Vector (local SOCKS5 ingress), **Egress** (remote exit — dials out over QUIC, so **the exit host needs no inbound ports at all**)
+- **Certificates on autopilot**: one-command Let's Encrypt issuance with **daily auto-renewal** (Cloudflare DNS-01 or HTTP-01); the switch runs inside a transaction and rolls back on failure — see §13.5
+- **Management UX**: the `nh` shortcut menu (23 actions, numbered choices, y/n shorthand), client links + **QR codes**, certificate fingerprints (local and **remote**)
+- **Operations safety**: zero-trust installs (no SHA-256 digest, no install), transactional configuration, `doctor` health checks, config backup / instant rollback, `flock` concurrency guard
+- **Quality**: a full sandboxed test suite with GitHub CI regression runs; bilingual documentation and an acceptance checklist
 
-> **⚠️ Wire protocol warning:** V1 and V2 nodes are **not interoperable**. Every node on the same traffic path must run the same major version.
-> Do not point a V1 Portal / Vector / native-next client at a V2 service, or vice versa.
+### Deploy in three minutes (V3)
+
+```bash
+cd /root
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh -O nowhere-v3.sh
+chmod 700 nowhere-v3.sh
+sudo bash nowhere-v3.sh      # menu -> type 1 to install a Portal (wizard; Enter keeps defaults)
+# afterwards: nh (menu) · sudo bash nowhere-v3.sh links (links + QR)
+```
+
+> **Protocol compatibility (must read):** NW2 / NW3 are **not interoperable** — no negotiation, no fallback; the Anywhere client is **NW2-only up to 2.3 and NW3-only from 2.4** (see [FAQ Q8](#11-troubleshooting-faq)); V1 and V2 are likewise not interoperable. Every node on a path must stay on the same protocol line.
 >
-> Also note: **Morph changed its wire format in Nowhere 2.1.0.** Morph-enabled 2.1 peers cannot talk to 2.0.x peers, so every peer on a `morph=1` path must be upgraded to `>=2.1.0` together. The manager warns when an upgrade crosses that boundary.
->
-> **Nowhere 2.2.0 admission changes:** Portal listener and native `next` keys must be **32-64 lowercase hex characters** (`nowhere generate-key` prints 32; the manager generates 64). Native clients (Vector, `probe`, chained Portal `next`) now **always verify the peer certificate** against the system CA and the endpoint hostname — `pin=none` no longer disables verification. A self-signed (`tls=1`) Portal therefore requires `pin=<sha256>`, and generated certificates change on every restart, so prefer `tls=2` in production. The manager generates/validates keys accordingly, auto-pins `links`, and warns when an upgrade crosses the 2.1.1 / 2.2.0 boundaries.
->
-> **NW3 is a different protocol:** Nowhere **v3.0.0** introduced NW3 (`nw3` ALPN, remote Egress role, `egress://`). It is wire-incompatible with NW2, and there is no protocol negotiation or fallback. This manager targets the **v2.x line only**; `latest-v2` keeps resolving to the newest stable v2 release (currently `v2.2.1`).
+> **V2 maintenance notes:** since Nowhere 2.2.0 keys must be 32-64 lowercase hex and native clients always verify certificates (self-signed needs `pin=`); Morph had a breaking change in 2.1.0. Details live in the collapsed V2 documentation below.
 
 ---
+
+<details>
+<summary><b>V1 / V2 full documentation (for maintaining existing deployments; new deployments should use the V3 flow above → §13) — click to expand</b></summary>
 
 ## 1. Install Modes (Release / Source)
 
@@ -643,6 +655,8 @@ They coexist on one VPS as long as their ports do not collide, and neither modif
 
 > V1 feature details (`prepare-tls`, `client-link`, `--net`, …) live in those documents. This main README only keeps the deployment entry point.
 
+</details>
+
 ---
 
 ## 13. V3 Channel (NW3)
@@ -855,6 +869,31 @@ sudo bash nowhere-v3.sh cert --domain relay.example.com --http
 
 - DNS-01: the domain is hosted on **Cloudflare** and the token only needs **`Zone.DNS:Edit`** on that zone (**do not use a Global API Key**)
 - HTTP-01: port 80 reachable from the internet (any DNS provider); it is used briefly during issuance/renewal
+
+**Creating the Cloudflare API Token (DNS-01, ~5 minutes)**
+
+1. Open the Cloudflare dashboard and go to **API Tokens**:
+   👉 https://dash.cloudflare.com/profile/api-tokens (top-right avatar → **My Profile** → **API Tokens**)
+2. Click **Create Token**.
+3. Pick the **"Edit zone DNS"** template (recommended — its permissions are exactly `Zone → DNS → Edit`), or click **Create Custom Token** and set:
+   - **Permissions**: **Zone → DNS → Edit**
+   - **Zone Resources**: **Include → Specific zone → your domain** (e.g. `example.com`)
+   - Leave Client IP filtering and TTL at their defaults
+4. **Continue to summary → Create Token**; the token is shown **once** — copy it immediately (a long alphanumeric string, sometimes starting with `v1.0-`).
+5. Store it on the server (out of shell history, restrictive permissions):
+
+   ```bash
+   printf '%s' '<paste-the-token>' > /root/cf.token
+   chmod 600 /root/cf.token
+   ```
+
+6. Use it:
+
+   ```bash
+   sudo bash nowhere-v3.sh cert --domain your.example.com --cf-token-file /root/cf.token
+   ```
+
+> **Why not a Global API Key**: it controls **every zone in your Cloudflare account**. A scoped API Token can be limited to DNS edits on this one domain, so a leak stays contained — and if you ever suspect one, roll/delete the token on the same page.
 
 **What it does**
 

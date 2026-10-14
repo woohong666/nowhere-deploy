@@ -4,21 +4,22 @@
 
 基于 [NodePassProject/Nowhere](https://github.com/NodePassProject/Nowhere) 官方核心协议编写的生产级一键部署与运维管理脚本。
 
-> **✅ 主通道：V2** —— `nowhere-v2.sh`，面向 Nowhere `v2.x`。**新部署请优先使用它。**
-> 默认跟随官网最新稳定版（`latest-v2`，安装时自动解析为最新的 `v2.x.y`），也可用 `--version v2.x.y` 精确锁定。
-> 使用独立路径与服务（`/opt/nowhere-v2`、`/etc/nowhere-v2`、`nowhere-v2.service`），不会触碰任何 V1 安装。
-> `v2.x` 线目前仍然完整可用：官方最新的 v2 正式版为 **v2.2.1**。官方同时已发布 **v3.0.0（NW3）**，其线协议与 NW2 **不兼容**——V2 管理器会明确拒绝 `v3.x` 版本标签。
+> **⭐ 主力通道：V3（NW3）** —— `nowhere-v3.sh`，面向 Nowhere `v3.x`。**新部署一律用它。**
+> Portal / Vector / Egress 三种角色、`in=` 入口、`out=egress` 远程出口、32 位 hex 密钥、Morph 默认开启；并自带加固：安装 SHA-256 零信任校验、事务化配置（失败自动回滚）、`doctor` 体检、备份 / 秒级回滚、**远端证书指纹**、**Let's Encrypt 自动签发 + 每日自动续期**、`nh` 快捷菜单（数字选项 / y-n / 二维码）。
+> 使用独立路径与服务（`/opt/nowhere-v3`、`/etc/nowhere-v3`、`nowhere-v3.service`、端口 2083/1083），不会触碰 V1/V2。完整文档见 [§13](#13-v3-通道nw3)。
 >
-> **🆕 V3 通道（NW3）：** `nowhere-v3.sh` 是面向 Nowhere `v3.x` 的独立管理器——Portal / Vector / **Egress** 三种角色、`in=` 入口、`out=egress` 远程出口、32 位 hex 密钥、Morph 默认开启。使用独立路径与服务（`/opt/nowhere-v3`、`/etc/nowhere-v3`、`nowhere-v3.service`、端口 2083/1083），不会触碰 V2。见 [§13](#13-v3-通道nw3)。
+> **V2 通道（维护模式）：** `nowhere-v2.sh`，面向 Nowhere `v2.x`（官方最新 v2 正式版 **v2.2.1**）——**仅用于维护既有 NW2 部署**（例如客户端还停留在 Anywhere ≤2.3）。完整 TUI / 源码编译等能力保留在下方折叠区（[§3](#3-快速开始v2) 起）。
 >
-> **🔒 V1 稳定通道：** `nowhere-v1.sh`，固定 Nowhere `v1.8.3`，不跟随 `latest`，也不支持 V2。
-> 仅用于已有 V1 节点或需要俄文界面的场景，部署方式见 [§12](#12-v1-稳定通道仅部署)。
+> **🔒 V1 稳定通道（维护模式）：** `nowhere-v1.sh`，固定 Nowhere `v1.8.3`，不跟随 `latest`，也不支持 V2。仅用于已有 V1 节点或需要俄文界面的场景，部署方式见 [§12](#12-v1-稳定通道仅部署)。
 
-V2 管理器融合了官方 Release 二进制 SHA-256 强校验、本地 Rust 源码全程序优化编译（Fat-LTO）、systemd 高强度权限沙箱、TLS 证书权限隔离，以及支持中 / 英双语的终端彩色交互控制台（TUI）。
+V3 管理器融合官方 Release 二进制 SHA-256 强校验、事务化安装 / 配置（失败自动回滚）、`doctor` 体检、配置备份与秒级回滚、Let's Encrypt 证书自动签发与续期、`nh` 快捷菜单（数字选项 / y-n 缩写 / 二维码分享链接 / 远端指纹核对），以及中英双语文档与沙箱测试套件。V2 的源码编译、TUI 等能力保留在其维护区文档中。
 
 ---
 
 ## 目录
+
+<details>
+<summary>点击展开目录（⭐ 主力为 §13 V3；V1 / V2 为维护文档，已折叠）</summary>
 
 - [0. 我该用哪个脚本](#0-我该用哪个脚本)
 - [1. 安装模式对比（Release / Source）](#1-安装模式对比release--source)
@@ -38,37 +39,48 @@ V2 管理器融合了官方 Release 二进制 SHA-256 强校验、本地 Rust �
 - [12. V1 稳定通道（仅部署）](#12-v1-稳定通道仅部署)
 - [13. V3 通道（NW3）](#13-v3-通道nw3)
 
+</details>
+
 ---
 
 ## 0. 我该用哪个脚本
 
-本仓库包含四个脚本，**默认推荐 V2**：
+**新部署一律用 `nowhere-v3.sh`（NW3 主力通道）**；V2 只用于维护既有 NW2 部署，V1 只用于维护老的 V1 节点。
 
-| 脚本 | 通道 | 用途 |
+| 脚本 | 协议线 | 用途 |
 |---|---|---|
-| **`nowhere-v2.sh`** | **V2（主）** | **推荐**。Nowhere v2.x，带完整 TUI 菜单：预编译安装 / 源码编译 / 配置 / 诊断 / 回滚 / 备份 |
-| `nowhere-v1.sh` | V1 稳定 | 固定 `v1.8.3`，不跟随 `latest`。仅用于已有 V1 节点或需要俄文界面 |
-| `install.sh` | V1 | 自动化 / CI 专用，仅 V1 预编译二进制 |
-| `install-source.sh` | V1 | 自动化 / CI 专用，仅 V1 源码编译 |
-| **`nowhere-v3.sh`** | **V3（NW3）** | Nowhere v3.x：Portal / Vector / Egress；默认固定 `v3.0.0`，`latest-v3` 显式跟进 |
+| **`nowhere-v3.sh`** | **NW3（v3.x）** | ⭐ **主力**：新部署与日常管理（`nh` 快捷菜单），见 [§13](#13-v3-通道nw3) |
+| `nowhere-v2.sh` | NW2（v2.2.1 LTS） | 维护既有 V2 部署；完整 TUI / 源码编译等文档在下方折叠区（[§3](#3-快速开始v2) 起） |
+| `nowhere-v1.sh` | V1（固定 v1.8.3） | 仅维护老 V1 节点 / 俄文界面，见 [§12](#12-v1-稳定通道仅部署) |
+| `install.sh` / `install-source.sh` | V1 | 自动化 / CI 专用（V1） |
 
-**怎么选：**
+### V3 的特点与优势
 
-- **全新部署 / 想用 V2 协议与特性** → 用 `nowhere-v2.sh`（[§3](#3-快速开始v2)）。
-- **全新 V3 部署 / 需要远程 Egress 出口** → 用 `nowhere-v3.sh`（[§13](#13-v3-通道nw3)）；V2 与 V3 完全隔离，可同机并存。
-- **已有 V1 节点需要继续维护** → 用 `nowhere-v1.sh`（[§12](#12-v1-稳定通道仅部署)）。
-- **想两套对比着跑** → 各自用不同端口安装即可，二者文件与服务完全隔离。
+- **协议现代**：NW3 = TLS 1.3（固定 `nw3` ALPN）+ 可选 QUIC 载体；认证绑定 TLS exporter；共享密钥恰好 32 位 hex；Morph 默认开启、两端必须一致
+- **三种角色**：Portal（监听）、Vector（本地 SOCKS5 入口）、**Egress**（远程出口——主动出站 QUIC 回连，**出口机无需开放任何入站端口**）
+- **证书全自动**：Let's Encrypt 一键签发 + **每日自动续期**（Cloudflare DNS-01 或 HTTP-01），切换证书走事务、失败自动回滚，见 §13.5
+- **管理体验**：`nh` 快捷菜单（23 项、编号选择、y/n 缩写）、客户端链接 + **二维码**、证书指纹（本机 / **远端**核对）
+- **运维安全**：零信任安装（无 SHA-256 摘要拒装）、事务化配置、`doctor` 体检、配置备份 / 秒级回滚、flock 防并发
+- **质量保证**：完整沙箱测试套件 + GitHub CI 回归；中英双语文档与验收清单
 
-> **⚠️ 线协议警告**：V1 与 V2 节点**无法互通**。同一条流量路径上的所有节点必须使用同一个大版本。
-> 不要把 V1 Portal / Vector / native-next 客户端指向 V2 服务，反之亦然。
+### 三分钟部署（V3）
+
+```bash
+cd /root
+wget https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh -O nowhere-v3.sh
+chmod 700 nowhere-v3.sh
+sudo bash nowhere-v3.sh      # 菜单 → 输入 1 装 Portal（向导；每步回车=默认）
+# 装完：nh（快捷菜单）· sudo bash nowhere-v3.sh links（链接 + 二维码）
+```
+
+> **协议兼容（必读）**：NW2 / NW3 **不互通**、无协商无回落——Anywhere 客户端 **2.3 及以下只有 NW2，2.4 起只有 NW3**（见 [FAQ Q8](#11-常见问题排查faq)）；V1 与 V2 同样不互通。同一条链路的所有节点必须处于同一协议线。
 >
-> 另外，**Morph 在 Nowhere 2.1.0 有破坏性变更**：开启 `morph=1` 的 2.1 节点与 2.0.x 节点不兼容，整条链路上的所有对端必须一起升级到 `>=2.1.0`。管理器在升级跨越该边界时会主动告警。
->
-> **Nowhere 2.2.0 准入新规**：Portal 监听密钥与 native `next` 密钥必须为 **32-64 位小写十六进制**（`nowhere generate-key` 输出 32 位；本管理器生成 64 位）。native 客户端（Vector、`probe`、链式 Portal 的 `next`）现在**始终验证对端证书**（系统 CA + 端点主机名），`pin=none` 不再关闭验证。因此自签名（`tls=1`）Portal 必须配置 `pin=<sha256>`，且生成的证书每次重启都会变化——生产环境请优先 `tls=2`。管理器会按新规生成/校验密钥、为 `links` 自动填充 pin，并在升级跨越 2.1.1 / 2.2.0 边界时主动告警。
->
-> **NW3 是另一种协议**：Nowhere **v3.0.0** 引入了 NW3（`nw3` ALPN、远端 Egress 角色、`egress://`），与 NW2 线协议不兼容，且没有协议协商或回落。本管理器只面向 **v2.x 线**；`latest-v2` 仍解析为最新的稳定 v2 版本（当前为 `v2.2.1`）。
+> **V2 维护提示**：Nowhere 2.2.0 起密钥必须为 32-64 位小写 hex、native 客户端强制验证证书（自签需 `pin=`）；Morph 在 2.1.0 有破坏性变更。细节见下方折叠区的 V2 文档。
 
 ---
+
+<details>
+<summary><b>V1 / V2 完整文档（维护既有部署用；新部署请用上方 V3 流程 → §13）——点击展开</b></summary>
 
 ## 1. 安装模式对比（Release / Source）
 
@@ -643,6 +655,8 @@ sudo bash nowhere-v1.sh install \
 
 > V1 通道的功能细节（`prepare-tls`、`client-link`、`--net` 等）请以上述文档为准，本主 README 只保留部署入口。
 
+</details>
+
 ---
 
 ## 13. V3 通道（NW3）
@@ -842,6 +856,32 @@ sudo bash nowhere-v3.sh cert --domain relay.example.com --http
 
 - DNS-01 模式：域名托管在 **Cloudflare**，Token 只需该域的 **`Zone.DNS:Edit`** 权限（**别用 Global API Key**）
 - HTTP-01 模式：80 端口可从公网访问（DNS 在哪都行）；申请/续期时会临时占用 80 端口
+
+**Cloudflare Token 申请步骤（DNS-01 用，约 5 分钟）**
+
+1. 浏览器登录 Cloudflare，打开 **API Tokens** 页面：
+   👉 https://dash.cloudflare.com/profile/api-tokens （右上角头像 → **My Profile** → **API Tokens**）
+2. 点 **Create Token**（创建令牌）。
+3. 选模板 **「Edit zone DNS」**（推荐，最简单）——它的权限恰好就是需要的 `Zone → DNS → Edit`；
+   也可以点 **Create Custom Token** 手动配置：
+   - **Permissions（权限）**：选 **Zone → DNS → Edit**
+   - **Zone Resources（区域资源）**：**Include（包括）→ Specific zone（特定区域）→ 选中你的域名**（例如 `960606.xyz`）
+   - 其他项（Client IP、TTL）留空 / 默认即可
+4. 点 **Continue to summary → Create Token**；页面**只显示这一次 Token**，立刻复制（一长串字母数字，可能以 `v1.0-` 开头）。
+5. 在服务器保存（不进 shell 历史、权限收紧）：
+
+   ```bash
+   printf '%s' '<粘贴Token>' > /root/cf.token
+   chmod 600 /root/cf.token
+   ```
+
+6. 直接使用：
+
+   ```bash
+   sudo bash nowhere-v3.sh cert --domain 你的域名 --cf-token-file /root/cf.token
+   ```
+
+> **为什么不用 Global API Key**：它是**全账号钥匙**——你 CF 名下**所有域名**都能被改。API Token 可以只授权"这一个域名的 DNS 编辑"，泄露后损失可控；一旦怀疑泄露，去同一页面 **Roll / Delete** 该 Token 即可。
 
 **它做了什么**
 
