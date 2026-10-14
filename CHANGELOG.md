@@ -71,6 +71,14 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.3.0
+
+#### Added
+- **Let's Encrypt certificate automation (`cert`)**: issues and renews certificates with no package-manager dependency — acme.sh is installed from a pinned GitHub release tarball (3.1.6, not `curl | bash`) under `/root/.acme.sh`. Two validation modes: Cloudflare DNS-01 (API token via hidden input or `--cf-token-file`, handed to acme.sh only through the environment so it never shows up in process argv) and HTTP-01 standalone (`--http`, port 80). Files are staged to `/etc/nowhere-v3/tls/le.<domain>/` (640 root:nowhere-v3), `url.conf` is rewritten inside the transaction and the service restarts; a daily `nowhere-v3-cert-renew.timer` runs `acme.sh --cron`, and a successful renewal restarts the service. Uninstall removes the timer/service units; `--purge` removes the staged certificate with the config directory.
+- **Menu item 23** ("证书") plus CLI flags `--domain / --cf-token-file / --email / --http / --force`; help text (EN/zh-CN) documents the new action.
+- README (EN/zh-CN): new §13.5 certificate walkthrough (prerequisites, commands, staged files, renewal inspection, security notes); §13.1/§13.3 and the acceptance checklist mention `cert`.
+- 13 sandbox regression assertions: domain validation, both issuance modes, staged files, `url.conf` rewrite, timer units, and the guarantee that the token never reaches acme.sh's argv.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.2.0
 
 #### Added

@@ -669,10 +669,10 @@ bash -n nowhere-v3.sh        # syntax self-check; no output means it passed
 **Step 1 · Open the menu and install a Portal with the wizard (recommended)**
 
 ```bash
-sudo bash nowhere-v3.sh      # no arguments = the full 22-action menu
+sudo bash nowhere-v3.sh      # no arguments = the full 23-action menu
 ```
 
-The menu has three groups: **1–6 install & configure** (1=Portal 2=Vector 3=Egress 4=reconfigure 5=pick a version 6=upgrade), **7–15 service & diagnostics** (start/stop/restart, status, client links, certificate fingerprint, key generation, TCP probe, live logs), **16–22 maintenance** (health check, prune, backup, rollback, uninstall, language, update the manager).
+The menu has three groups: **1–6 install & configure** (1=Portal 2=Vector 3=Egress 4=reconfigure 5=pick a version 6=upgrade), **7–15 service & diagnostics** (start/stop/restart, status, client links, certificate fingerprint, key generation, TCP probe, live logs), **16–22 maintenance** (health check, prune, backup, rollback, uninstall, language, update the manager) and **23 certificate** (issue/renew a TLS certificate).
 
 To install a Portal, **type `1`** (Vector is `2`, Egress is `3`) and follow the wizard — **Enter keeps the default shown in brackets**:
 
@@ -706,6 +706,8 @@ sudo bash nowhere-v3.sh install --public-host relay.example.com \
 sudo bash nowhere-v3.sh install --version v3.0.0 --endpoint '*:8443' \
   --key "$(openssl rand -hex 16)"
 ```
+
+> Want an automatically issued/renewed Let's Encrypt certificate (with a domain)? After installing, run `sudo bash nowhere-v3.sh cert --domain your.example.com`, or use the menu (`nh` → `23`) — see §13.5.
 
 **Step 3 · Verify after installation**
 
@@ -755,7 +757,7 @@ nh                                 # or just reopen the menu with the shortcut
 
 ### 13.3 Daily operations
 
-No arguments opens a looping 22-action menu. Portal, Vector and Egress have
+No arguments opens a looping 23-action menu. Portal, Vector and Egress have
 install/configure wizards. Install, configure or self-update create the `nh`
 shortcut (opens this menu; arguments pass through, e.g. `nh status`; removed by
 `uninstall --purge`). Wizard choices accept numbers (`1=both 2=tcp`; the value word
@@ -771,6 +773,7 @@ bash nowhere-v3.sh check-updates
 bash nowhere-v3.sh generate-key                 # Only 32 lowercase hex characters
 sudo bash nowhere-v3.sh probe example.com:443    # Redacted URL + Result
 sudo bash nowhere-v3.sh doctor --probe           # Probe failure warns only
+sudo bash nowhere-v3.sh cert --domain relay.example.com  # Issue/renew a LE certificate (§13.5)
 sudo bash nowhere-v3.sh status
 sudo bash nowhere-v3.sh telemetry
 sudo bash nowhere-v3.sh clean-releases
@@ -829,6 +832,55 @@ Optional `backup --restore` is not implemented in this release.
 | Logs | `journalctl -u nowhere-v3` (`nh logs` to follow) |
 | Config backup | `/root/nowhere-v3-backup-YYYYmmdd-HHMMSS.tar.gz` by default (`nh backup`) |
 | Build lock | `/run/nowhere-v3-build.lock.d` (prevents concurrent management operations) |
+
+### 13.5 Automatic certificate issuance/renewal (Let's Encrypt, optional)
+
+With a domain you can have the manager issue and renew a Let's Encrypt certificate automatically (no more pin bookkeeping):
+
+```bash
+# Interactive: asks for the domain and validation mode; the Cloudflare token input is hidden
+sudo bash nowhere-v3.sh cert --domain relay.example.com
+
+# Read the token from a file (keeps it out of shell history)
+printf '%s' '<your-CF-API-token>' > /root/cf.token && chmod 600 /root/cf.token
+sudo bash nowhere-v3.sh cert --domain relay.example.com --cf-token-file /root/cf.token
+
+# No Cloudflare: HTTP-01 mode (port 80 must be reachable from the internet)
+sudo bash nowhere-v3.sh cert --domain relay.example.com --http
+
+# Menu: nh -> 23
+```
+
+**Prerequisites**
+
+- DNS-01: the domain is hosted on **Cloudflare** and the token only needs **`Zone.DNS:Edit`** on that zone (**do not use a Global API Key**)
+- HTTP-01: port 80 reachable from the internet (any DNS provider); it is used briefly during issuance/renewal
+
+**What it does**
+
+1. Installs **pinned acme.sh 3.1.6** from a GitHub release tarball (no `curl | bash`) into `/root/.acme.sh`
+2. Issues the certificate (DNS-01 or HTTP-01)
+3. Stages the files under `/etc/nowhere-v3/tls/le.<domain>/` (`fullchain.pem` / `key.pem`, 640 root:nowhere-v3)
+4. Rewrites `url.conf` inside the transaction (automatic rollback on failure)
+5. Restarts the service and creates a **daily renewal timer** `nowhere-v3-cert-renew.timer` (a successful renewal restarts the service)
+
+**Security notes**
+
+- The token is read via hidden input or `--cf-token-file` only; it reaches acme.sh through the environment and **never appears in process argv** (invisible to `ps`)
+- Credentials are kept by acme.sh in `/root/.acme.sh/account.conf` (600; the directory is created under this manager's umask 077, root-only)
+
+**Inspect and troubleshoot**
+
+```bash
+systemctl list-timers 'nowhere-v3-cert-renew*'      # next renewal
+journalctl -u nowhere-v3-cert-renew                 # renewal logs
+sudo bash nowhere-v3.sh cert --domain your.example.com --force   # force reissue
+```
+
+**Notes**
+
+- Switching from self-signed to LE **changes the fingerprint**: clients that pinned the old one must update their trust entry; `links` prints the new fingerprint/pin
+- To reissue for another domain just run `cert --domain new.example.com`; the old `le.<old-domain>` directory can be removed by hand
 
 ## Testing
 

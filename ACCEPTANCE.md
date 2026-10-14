@@ -302,7 +302,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 
 ### 13.1 v1.1.0 菜单与自更新走查
 
-- 在测试主机运行无参数菜单：检查22项、0/q退出、无效输入与回车返回；中英文各走查一次。
+- 在测试主机运行无参数菜单：检查23项、0/q退出、无效输入与回车返回；中英文各走查一次。
 - 安装/重配后 `/usr/local/bin/nh` 存在且可执行；`nh` 打开菜单、`nh status` 等参数透传；`uninstall --purge` 后移除。
 - 向导选项输入编号（1/2/3）与原值均可；确认提示 `y`/`yes`/`是` 为真、`n`/`no`/`否`/回车为假。
 - 断开终端/stdin：应只显示一次并退出，不循环刷屏。
@@ -322,6 +322,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - links 会自动尝试安装 qrencode（apt/dnf/yum/apk）：成功则输出二维码；无包管理器或安装失败时仅警告，链接照常输出。
 - 检查status、日志与probe不泄露共享密钥或pin；generate-key、fingerprint与links为明确输出例外。
 - 私有CA/自签场景手动导入客户端信任；通用分享链接本身不携带信任锚。
+- 证书（可选，需真实域名）：`cert --domain <域> --cf-token-file <文件>`（或 `--http`）成功后 `/etc/nowhere-v3/tls/le.<域>/` 出现 fullchain/key，`url.conf` 指向它且为 `tls=2`；`systemctl list-timers | grep nowhere-v3-cert-renew` 可见每日续期；vector/egress 角色实例应被拒绝；Token 不出现在 acme.sh 命令行（`ps` 不可见）。
 
 ### 13.3 自动化验收
 

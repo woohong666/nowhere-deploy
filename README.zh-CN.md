@@ -669,10 +669,10 @@ bash -n nowhere-v3.sh        # 语法自检；无输出即通过
 **Step 1 · 打开菜单，用向导安装 Portal（推荐）**
 
 ```bash
-sudo bash nowhere-v3.sh      # 不带参数 = 打开完整菜单（22 项）
+sudo bash nowhere-v3.sh      # 不带参数 = 打开完整菜单（23 项）
 ```
 
-菜单分三组：**1–6 安装与配置**（1=Portal 2=Vector 3=Egress 4=改配置 5=选版本 6=升级）、**7–15 服务与诊断**（启停重启、状态统计、客户端链接、证书指纹、生成密钥、TCP 探测、实时日志）、**16–22 维护**（体检、清理、备份、回滚、卸载、语言、更新脚本）。
+菜单分三组：**1–6 安装与配置**（1=Portal 2=Vector 3=Egress 4=改配置 5=选版本 6=升级）、**7–15 服务与诊断**（启停重启、状态统计、客户端链接、证书指纹、生成密钥、TCP 探测、实时日志）、**16–22 维护**（体检、清理、备份、回滚、卸载、语言、更新脚本）、**23 证书**（自动签发/续期 TLS 证书）。
 
 安装 Portal：**输入 `1`**（Vector 输入 `2`、Egress 输入 `3`），然后跟着向导走，**每一步直接回车 = 用括号里的默认值**：
 
@@ -706,6 +706,8 @@ sudo bash nowhere-v3.sh install --public-host relay.example.com \
 sudo bash nowhere-v3.sh install --version v3.0.0 --endpoint '*:8443' \
   --key "$(openssl rand -hex 16)"
 ```
+
+> 想要自动签发/续期 Let's Encrypt 证书（有域名时）？安装后跑 `sudo bash nowhere-v3.sh cert --domain 你的域名`，或菜单 `nh` → `23`（见 §13.5）。
 
 **Step 3 · 安装后确认**
 
@@ -755,7 +757,7 @@ nh                                 # 或直接用快捷命令回到菜单
 
 ### 13.3 日常操作
 
-无参数运行进入22项循环菜单；安装/重配提供Portal、Vector、Egress向导。
+无参数运行进入23项循环菜单；安装/重配提供Portal、Vector、Egress向导。
 安装/重配或自更新成功后自动生成快捷命令 `nh`（=打开本菜单；参数透传，如 `nh status`、`nh doctor`；`uninstall --purge` 时移除）。
 向导选项支持编号选择（如 `1=both 2=tcp`；编号与原值都认），确认提示支持 `y/n`（`是/否`）。
 菜单失败在独立子shell恢复事务后返回；无终端读取失败直接退出。
@@ -768,6 +770,7 @@ bash nowhere-v3.sh check-updates
 bash nowhere-v3.sh generate-key                 # 仅输出32位小写hex
 sudo bash nowhere-v3.sh probe example.com:443    # 脱敏URL + Result
 sudo bash nowhere-v3.sh doctor --probe          # 探测失败仅警告
+sudo bash nowhere-v3.sh cert --domain relay.example.com  # 申请/续期LE证书（见§13.5）
 sudo bash nowhere-v3.sh status
 sudo bash nowhere-v3.sh telemetry
 sudo bash nowhere-v3.sh clean-releases
@@ -816,6 +819,55 @@ Egress角色不能发起probe。Egress自身可使用dial*；只有Portal的out=
 | 日志 | `journalctl -u nowhere-v3`（`nh logs` 实时跟随） |
 | 配置备份 | 默认 `/root/nowhere-v3-backup-YYYYmmdd-HHMMSS.tar.gz`（`nh backup`） |
 | 构建锁 | `/run/nowhere-v3-build.lock.d`（防止并发管理操作） |
+
+### 13.5 自动签发/续期证书（Let's Encrypt，可选）
+
+有域名时可以让管理器全自动申请并续期 Let's Encrypt 证书（日常不用再自己管 pin）：
+
+```bash
+# 交互式：会问域名和验证方式；Cloudflare Token 输入不回显
+sudo bash nowhere-v3.sh cert --domain relay.example.com
+
+# Token 从文件读取（不进 shell 历史）
+printf '%s' '<你的CF-API-Token>' > /root/cf.token && chmod 600 /root/cf.token
+sudo bash nowhere-v3.sh cert --domain relay.example.com --cf-token-file /root/cf.token
+
+# 不用 Cloudflare：HTTP-01 模式（需 80 端口从公网可达）
+sudo bash nowhere-v3.sh cert --domain relay.example.com --http
+
+# 菜单操作：nh → 23
+```
+
+**前置条件**
+
+- DNS-01 模式：域名托管在 **Cloudflare**，Token 只需该域的 **`Zone.DNS:Edit`** 权限（**别用 Global API Key**）
+- HTTP-01 模式：80 端口可从公网访问（DNS 在哪都行）；申请/续期时会临时占用 80 端口
+
+**它做了什么**
+
+1. 安装**固定版本 acme.sh 3.1.6**（从 GitHub release tarball 安装，不走 `curl | bash`）到 `/root/.acme.sh`
+2. 签发证书（DNS-01 或 HTTP-01）
+3. 证书写入 `/etc/nowhere-v3/tls/le.<域名>/`（`fullchain.pem` / `key.pem`，640 root:nowhere-v3）
+4. `url.conf` 切换到该证书（在事务里改写，失败自动回滚）
+5. 重启服务，并创建**每日自动续期定时器** `nowhere-v3-cert-renew.timer`（续期成功后自动重启服务）
+
+**安全细节**
+
+- Token 只通过隐藏输入或 `--cf-token-file` 读取；传给 acme.sh 时走环境变量，**不会出现在进程命令行**（`ps` 看不到）
+- 凭据由 acme.sh 自管在 `/root/.acme.sh/account.conf`（600；该目录在本管理器 umask 077 下创建，仅 root 可读）
+
+**查看与排查**
+
+```bash
+systemctl list-timers 'nowhere-v3-cert-renew*'      # 下次续期时间
+journalctl -u nowhere-v3-cert-renew                 # 续期日志
+sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重签
+```
+
+**注意**
+
+- 从自签切换为 LE 后**指纹会变**：此前在 App 里 pin 过旧指纹的要更新信任项；`links` 会输出新的指纹/pin
+- 想换域名重签：再跑一次 `cert --domain 新域名`；旧目录 `le.<旧域名>` 可手动删除
 
 ## 测试
 

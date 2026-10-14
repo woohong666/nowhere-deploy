@@ -46,13 +46,14 @@ patch_script() {
     -e "s|^readonly BIN_LINK=.*|readonly BIN_LINK=\"${sb}/bin/nowhere-v3\"|" \
     -e "s|^readonly LAUNCHER=.*|readonly LAUNCHER=\"${sb}/bin/launch-v3\"|" \
     -e "s|^readonly SHORTCUT_PATH=.*|readonly SHORTCUT_PATH=\"${sb}/bin/nh\"|" \
+    -e "s|^readonly ACME_HOME=.*|readonly ACME_HOME=\"${sb}/acme\"|" \
     -e "s|^readonly CONFIG_DIR=.*|readonly CONFIG_DIR=\"${sb}/etc\"|" \
     -e "s|^readonly URL_FILE=.*|readonly URL_FILE=\"${sb}/etc/url.conf\" META_FILE=\"${sb}/etc/manager.conf\" TLS_DIR=\"${sb}/etc/tls\"|" \
     -e "s|^readonly UNIT_FILE=.*|readonly UNIT_FILE=\"${sb}/unit-v3.service\"|" \
     -e "s|^readonly BUILD_LOCK_DIR=.*|readonly BUILD_LOCK_DIR=\"${sb}/lock-v3.d\"|" \
     "$src" > "$dst"
 
-  for v in INSTALL_ROOT RELEASES_DIR BIN_LINK LAUNCHER SHORTCUT_PATH CONFIG_DIR URL_FILE UNIT_FILE BUILD_LOCK_DIR; do
+  for v in INSTALL_ROOT RELEASES_DIR BIN_LINK LAUNCHER SHORTCUT_PATH ACME_HOME CONFIG_DIR URL_FILE UNIT_FILE BUILD_LOCK_DIR; do
     grep -q "^readonly ${v}=\"${sb}" "$dst" ||
       { echo "FATAL: ${v} was not sandboxed; refusing to run" >&2; exit 2; }
   done
@@ -329,18 +330,18 @@ t_update() {
     self_update
   ' _ "$SANDBOX/self.sh" "$remote" "$mode"
 }
-for ver in 1.3.0 1.2.0 1.1.0; do
+for ver in 1.4.0 1.3.0 1.2.0; do
   printf '#!/usr/bin/env bash\nreadonly SCRIPT_VERSION="%s"\nreadonly SCRIPT_CHANNEL="v3"\n' "$ver" >"$SANDBOX/remote-$ver"
 done
-out="$(t_update "$SANDBOX/remote-1.3.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.4.0" 2>&1)"; rc=$?
 t_ok "higher manager version accepted" 0 "$rc"
-t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="1.3.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
+t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="1.4.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
 t_ok "update preserves executable bit" yes "$([[ -x "$SANDBOX/self.sh" ]] && echo yes || echo no)"
 t_ok "update saves backup" yes "$(find "$SANDBOX" -name 'self.sh.bak.*' -print -quit | grep -q . && echo yes || echo no)"
-out="$(t_update "$SANDBOX/remote-1.2.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.3.0" 2>&1)"; rc=$?
 t_ok "same version exits normally" 0 "$rc"
 t_ok "same version unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
-out="$(t_update "$SANDBOX/remote-1.1.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.2.0" 2>&1)"; rc=$?
 t_ok "downgrade refused" 1 "$rc"
 t_ok "downgrade leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
 printf '#!/bin/bash\ntrue\n' >"$SANDBOX/invalid-manager"
@@ -350,7 +351,7 @@ t_ok "invalid manager leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/
 printf '#!/bin/bash\nreadonly SCRIPT_VERSION="9.0.0"\nreadonly SCRIPT_CHANNEL="v2"\n' >"$SANDBOX/cross-manager"
 out="$(t_update "$SANDBOX/cross-manager" 2>&1)"; rc=$?
 t_ok "cross-channel manager refused" 1 "$rc"
-out="$(t_update "$SANDBOX/remote-1.3.0" offline 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-1.4.0" offline 2>&1)"; rc=$?
 t_ok "offline update refused" 1 "$rc"
 t_ok "offline leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
 t_ok "empty update URL disables normally" 0 "$(t_rc env NOWHERE_V3_SELF_URL= bash "$PATCHED" self-update)"
@@ -545,6 +546,59 @@ rm -f "$SANDBOX/bin/qrencode" "$SANDBOX/bin/apt-get"
 out="$( (PATH="$SANDBOX/bin"; ensure_qrencode) 2>&1)"; rc=$?
 t_ok "no package manager warns and fails soft" 1 "$rc"
 t_ok "warning mentions qrencode" yes "$([[ "$out" == *qrencode* ]] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+t_section "certificate issuance (stubbed acme.sh)"
+mkdir -p "$SANDBOX/acme"
+cat > "$SANDBOX/acme/acme.sh" <<'ACME'
+#!/bin/sh
+log="$(dirname "$0")/calls.log"
+printf '%s\n' "$*" >> "$log"
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --fullchain-file) printf 'CERT\n' > "$a" ;;
+    --key-file) printf 'KEY\n' > "$a" ;;
+  esac
+  prev="$a"
+done
+exit 0
+ACME
+chmod +x "$SANDBOX/acme/acme.sh"
+t_ok "domain validation accepts a hostname" 0 "$(t_rc bash -c 'source "$1"; validate_cert_domain relay.example.com' _ "$PATCHED")"
+t_ok "domain validation rejects an underscore" 1 "$(t_rc bash -c 'source "$1"; validate_cert_domain bad_domain' _ "$PATCHED")"
+printf '%s\n' 'cf-token-should-not-leak' > "$SANDBOX/cf.token"
+run_cert() { # run_cert <token-file-or-empty> [extra env assignments]
+  local tokenfile="$1" extra="${2:-}"
+  bash -c '
+    source "$1"
+    require_root() { :; }; require_systemd() { :; }; mutating_setup() { :; }
+    wait_service() { return 0; }; chown() { :; }
+    CERT_DOMAIN=relay.example.com
+    [ -z "$2" ] || CF_TOKEN_FILE="$2"
+    eval "$3"
+    cert_action
+  ' _ "$PATCHED" "$tokenfile" "$extra" 2>&1
+}
+printf 'portal://%s@*:2083?morph=1\n' "$K" > "$URL_FILE"
+out="$(run_cert "$SANDBOX/cf.token")"; rc=$?
+t_ok "cert action succeeds (CF DNS-01)" 0 "$rc"
+t_ok "cert files installed" yes "$([[ -f "$SANDBOX/etc/tls/le.relay.example.com/fullchain.pem" && -f "$SANDBOX/etc/tls/le.relay.example.com/key.pem" ]] && echo yes || echo no)"
+t_ok "url.conf switched to tls=2 with the staged cert" yes "$(grep -q 'tls=2' "$URL_FILE" && grep -q 'le.relay.example.com' "$URL_FILE" && echo yes || echo no)"
+t_ok "renewal timer written" yes "$([[ -f "$SANDBOX/unit-v3-cert-renew.timer" ]] && grep -qs 'OnCalendar=daily' "$SANDBOX/unit-v3-cert-renew.timer" && echo yes || echo no)"
+t_ok "renewal service runs acme.sh --cron" yes "$(grep -qs 'acme.sh --cron' "$SANDBOX/unit-v3-cert-renew.service" && echo yes || echo no)"
+t_ok "acme.sh argv uses DNS-01" yes "$(grep -qs -- '--dns dns_cf' "$SANDBOX/acme/calls.log" && echo yes || echo no)"
+t_ok "token never appears in acme.sh argv" yes "$([[ "$(cat "$SANDBOX/acme/calls.log")" != *cf-token-should-not-leak* ]] && echo yes || echo no)"
+rm -f "$SANDBOX/acme/calls.log"
+out="$(run_cert '' 'CERT_HTTP=1')"; rc=$?
+t_ok "cert action succeeds (HTTP-01, no token)" 0 "$rc"
+t_ok "acme.sh argv uses standalone" yes "$(grep -qs -- '--standalone' "$SANDBOX/acme/calls.log" && echo yes || echo no)"
+out="$(run_cert "$SANDBOX/missing.token")"; rc=$?
+t_ok "missing token file refused" 1 "$rc"
+printf 'vector://%s@relay.example.com/tcp:2083?morph=1&in=127.0.0.1:1083\n' "$K" > "$URL_FILE"
+out="$(run_cert "$SANDBOX/cf.token")"; rc=$?
+t_ok "non-Portal instance refused" 1 "$rc"
+printf 'portal://%s@*:2083?morph=1\n' "$K" > "$URL_FILE"
 
 # ---------------------------------------------------------------------------
 t_section "persistent PEM reuse"

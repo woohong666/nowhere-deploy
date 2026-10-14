@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.2.0
+# Nowhere V3 isolated manager v1.3.0
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
+# v1.3.0: Let's Encrypt certificate automation (`cert` action): pinned acme.sh
+#   from a GitHub release tarball, Cloudflare DNS-01 (token read hidden) or
+#   HTTP-01, files staged under /etc/nowhere-v3/tls/le.<domain>/, url.conf
+#   rewritten in a transaction, daily systemd renewal timer.
 # v1.2.0: remote certificate fingerprint (`fingerprint nowhere://...`) for
 #   out-of-band verification before pinning; shared fingerprint normalization.
 # v1.1.0: bilingual operations menu/wizards, channel-safe self-update, versions,
@@ -12,7 +16,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.3.0"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -21,6 +25,8 @@ readonly INSTALL_ROOT="/opt/nowhere-v3"
 readonly RELEASES_DIR="$INSTALL_ROOT/releases" CURRENT_LINK="$INSTALL_ROOT/current"
 readonly BIN_LINK="/usr/local/bin/nowhere-v3"
 readonly SHORTCUT_PATH="/usr/local/bin/nh"
+readonly ACME_HOME="/root/.acme.sh"
+readonly ACME_VERSION="3.1.6"
 readonly LAUNCHER="/usr/local/libexec/nowhere-v3-launch"
 readonly CONFIG_DIR="/etc/nowhere-v3"
 readonly URL_FILE="$CONFIG_DIR/url.conf" META_FILE="$CONFIG_DIR/manager.conf" TLS_DIR="$CONFIG_DIR/tls"
@@ -59,6 +65,8 @@ NODE_NAME=Nowhere-V3
 DIAL='' DIAL4='' DIAL6='' RATE='' ETAR=''
 PROBE_TARGET=example.com:443
 FINGERPRINT_URL=''
+CERT_DOMAIN='' CERT_EMAIL='' CF_TOKEN='' CF_TOKEN_FILE=''
+CERT_HTTP=0 CERT_FORCE=0
 DOCTOR_PROBE=0
 LANG_SET=0
 WIZARD_REQUESTED=0
@@ -795,6 +803,124 @@ fingerprint_action() {
   [[ -n "$url" ]] || { local_pin; return 0; }
   remote_fingerprint "$url"
 }
+validate_cert_domain() {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || die "$(tr_msg "Invalid domain name: $1" "域名无效：$1")"
+}
+ensure_acme() {
+  [[ -x "$ACME_HOME/acme.sh" ]] && return 0
+  local tmp src url
+  url="https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_VERSION}.tar.gz"
+  tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp")
+  info "$(tr_msg "Installing acme.sh ${ACME_VERSION} (pinned release tarball)" "正在安装 acme.sh ${ACME_VERSION}（固定版本 tarball）")"
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 120 -o "$tmp/acme.tar.gz" "$url" || die "$(tr_msg 'acme.sh download failed' 'acme.sh 下载失败')"
+  tar -xzf "$tmp/acme.tar.gz" -C "$tmp" || die "$(tr_msg 'acme.sh archive extraction failed' 'acme.sh 解压失败')"
+  src="$(find "$tmp" -maxdepth 2 -type f -name acme.sh | head -n 1)"
+  [[ -n "$src" ]] || die "$(tr_msg 'acme.sh not found in the archive' '压缩包中未找到 acme.sh')"
+  install -d -m 700 "$ACME_HOME"
+  install -m 700 "$src" "$ACME_HOME/acme.sh"
+  ok "$(tr_msg "acme.sh ${ACME_VERSION} installed under $ACME_HOME" "acme.sh ${ACME_VERSION} 已安装到 $ACME_HOME")"
+}
+write_cert_timer() {
+  local svc="${UNIT_FILE%.service}-cert-renew.service" tmr="${UNIT_FILE%.service}-cert-renew.timer"
+  cat >"$svc" <<EOF
+[Unit]
+Description=Renew Nowhere V3 TLS certificate (acme.sh --cron)
+Documentation=https://github.com/acmesh-official/acme.sh
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${ACME_HOME}/acme.sh --cron --home ${ACME_HOME}
+EOF
+  cat >"$tmr" <<EOF
+[Unit]
+Description=Daily Nowhere V3 certificate renewal check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now "$tmr" >/dev/null 2>&1 || warn "$(tr_msg 'Could not enable the renewal timer; enable nowhere-v3-cert-renew.timer manually' '续期定时器启用失败；请稍后手动 systemctl enable nowhere-v3-cert-renew.timer')"
+}
+cert_action() {
+  mutating_setup
+  local u role domain token mode crt key dir rc=0
+  u="$(read_url)"
+  role="$(v3_url get "$u" role)"
+  [[ "$role" == portal ]] || die "$(tr_msg "Certificate issuance is a Portal operation" "证书申请仅适用于 Portal 角色")"
+  domain="${CERT_DOMAIN:-$PUBLIC_HOST}"
+  if [[ -z "$domain" && -t 0 ]]; then
+    read -r -p "$(tr_msg 'Domain for the certificate: ' '证书域名：')" domain </dev/tty || domain=""
+  fi
+  [[ -n "$domain" ]] || die "$(tr_msg "Pass --domain (PUBLIC_HOST is empty or not a domain)" "请用 --domain 指定域名（当前 PUBLIC_HOST 为空或不是域名）")"
+  validate_cert_domain "$domain"
+  if [[ "$CERT_HTTP" != 1 && -z "$CF_TOKEN" && -z "$CF_TOKEN_FILE" && -t 0 ]]; then
+    mode="$(prompt_choice "$(tr_msg 'Validation: 1=Cloudflare DNS-01 (needs token) 2=HTTP-01 (needs port 80)' '验证方式：1=Cloudflare DNS-01（需Token）2=HTTP-01（需80端口）')" 1 1 2)"
+    [[ "$mode" == 1 ]] || CERT_HTTP=1
+  fi
+  if [[ "$CERT_HTTP" == 1 ]]; then
+    info "$(tr_msg "Using HTTP-01 standalone; port 80 must be reachable from the internet" "使用 HTTP-01 standalone；80 端口需从公网可达")"
+  else
+    token="${CF_TOKEN:-}"
+    if [[ -z "$token" && -n "$CF_TOKEN_FILE" ]]; then
+      [[ -r "$CF_TOKEN_FILE" ]] || die "$(tr_msg "Cannot read token file: $CF_TOKEN_FILE" "无法读取 Token 文件：$CF_TOKEN_FILE")"
+      token="$(tr -d ' \t\r\n' <"$CF_TOKEN_FILE")"
+    fi
+    if [[ -z "$token" && -t 0 ]]; then
+      read -r -s -p "$(tr_msg 'Cloudflare API Token (hidden input, Zone.DNS Edit scope): ' 'Cloudflare API Token（输入不回显，需该域 Zone.DNS 编辑权限）：')" token </dev/tty || token=""
+      printf '\n' >&2
+    fi
+    [[ -n "$token" ]] || die "$(tr_msg "Missing Cloudflare API Token: pass --cf-token-file or run interactively" "缺少 Cloudflare API Token：请传 --cf-token-file 或交互运行")"
+  fi
+  ensure_acme
+  if [[ -n "$CERT_EMAIL" ]]; then
+    "$ACME_HOME/acme.sh" --home "$ACME_HOME" --register-account -m "$CERT_EMAIL" >/dev/null 2>&1 || warn "$(tr_msg 'Account email registration failed; continuing without it' '邮箱注册未成功；将继续申请（可不带邮箱）')"
+  fi
+  dir="$TLS_DIR/le.${domain}"
+  crt="$dir/fullchain.pem"; key="$dir/key.pem"
+  install -d -m 750 "$dir" 2>/dev/null || mkdir -p "$dir"
+  chown root:"$RUN_GROUP" "$dir" 2>/dev/null || true
+  info "$(tr_msg "Requesting a Let's Encrypt certificate for ${domain} ..." "正在为 ${domain} 申请 Let's Encrypt 证书 ...")"
+  local -a issue_args=(--issue)
+  if [[ "$CERT_HTTP" == 1 ]]; then issue_args+=(--standalone); else issue_args+=(--dns dns_cf); fi
+  issue_args+=(-d "$domain")
+  [[ "$CERT_FORCE" == 1 ]] && issue_args+=(--force)
+  set +e
+  if [[ "$CERT_HTTP" == 1 ]]; then
+    "$ACME_HOME/acme.sh" --home "$ACME_HOME" "${issue_args[@]}" >/dev/null 2>&1; rc=$?
+  else
+    CF_Token="$token" "$ACME_HOME/acme.sh" --home "$ACME_HOME" "${issue_args[@]}" >/dev/null 2>&1; rc=$?
+  fi
+  set -e
+  case "$rc" in
+    0|2) ;;
+    *) die "$(tr_msg "Certificate issuance failed (acme.sh exit $rc): check the token scope / the domain being on Cloudflare, or port 80 for --http" "证书申请失败（acme.sh 退出码 $rc）：请检查 Token 权限/域名是否在 Cloudflare，或 --http 模式的 80 端口")" ;;
+  esac
+  "$ACME_HOME/acme.sh" --home "$ACME_HOME" --install-cert -d "$domain" \
+    --fullchain-file "$crt" --key-file "$key" \
+    --reloadcmd "systemctl try-restart $SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg 'Failed to install the certificate files' '证书文件安装失败')"
+  chown root:"$RUN_GROUP" "$crt" "$key" 2>/dev/null || true
+  chmod 640 "$crt" "$key"
+  chmod 600 "$ACME_HOME/account.conf" 2>/dev/null || true
+  begin_transaction
+  u="$(v3_url rewrite-pem "$u" "$crt" "$key")"
+  printf '%s\n' "$u" >"$URL_FILE.new"
+  chown root:"$RUN_GROUP" "$URL_FILE.new" 2>/dev/null || true
+  chmod 640 "$URL_FILE.new"
+  mv -f "$URL_FILE.new" "$URL_FILE"
+  write_cert_timer
+  systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg 'Service restart failed after the certificate switch' '切换证书后服务重启失败')"
+  wait_service 12 || die "$(tr_msg "V3 did not stay active after the certificate switch" "切换证书后 V3 未持续运行")"
+  TX_COMMITTED=1
+  ok "$(tr_msg "Certificate installed: $crt" "证书已安装：$crt")"
+  info "$(tr_msg 'Automatic renewal: systemd timer nowhere-v3-cert-renew (check with systemctl list-timers)' '自动续期：systemd 定时器 nowhere-v3-cert-renew（systemctl list-timers 可查）')"
+  warn "$(tr_msg 'Clients that pinned the old self-signed certificate must re-import links or update their trust entry' '此前 pin 过旧自签证书的客户端需要重新导入链接或更新信任项')"
+}
 ensure_qrencode() {
   has_cmd qrencode && return 0
   if has_cmd apt-get; then
@@ -854,7 +980,9 @@ uninstall_action() {
     [[ "$answer" == REMOVE-V3 ]] || return 0
   fi
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "${UNIT_FILE%.service}-cert-renew.timer" >/dev/null 2>&1 || true
   rm -f "$UNIT_FILE" "$LAUNCHER" "$BIN_LINK"
+  rm -f "${UNIT_FILE%.service}-cert-renew.service" "${UNIT_FILE%.service}-cert-renew.timer"
   rm -rf "$INSTALL_ROOT"
   if [[ "$PURGE" == 1 ]]; then
     rm -rf "$CONFIG_DIR"
@@ -1154,6 +1282,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  doctor [--probe [目标]]  基础检查；可选探测失败仅警告
  logs / start / stop / restart / clean-releases
  backup [路径] / rollback / uninstall [--purge] / language
+ cert [--domain 域名] [--cf-token-file 文件] [--http] 申请/续期LE证书（仅Portal；默认CF DNS-01）
 
  --role portal|vector|egress --key KEY --endpoint HOST:PORT或carrier路径
  --url 'V3 URL' --url-file FILE（避免密钥写入shell历史）
@@ -1194,6 +1323,7 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root);
  doctor [--probe [target]] Basic checks; optional probe failure is a warning
  logs / start / stop / restart / clean-releases
  backup [path] / rollback / uninstall [--purge] / language
+ cert [--domain D] [--cf-token-file F] [--http] Issue/renew a LE certificate (Portal only; default CF DNS-01)
 
  --role portal|vector|egress --key KEY --endpoint HOST:PORT or carrier path
  --url 'V3 URL' --url-file FILE (avoids shared keys in shell history)
@@ -1246,8 +1376,10 @@ menu() {
       "18. $(tr_msg 'Backup configuration' '备份配置')" "19. $(tr_msg 'Rollback binary' '回滚二进制')" \
       "20. $(tr_msg 'Uninstall (config retained by default)' '卸载（默认保留配置）')" \
       "21. $(tr_msg 'Change and save language' '切换并保存语言')" "22. $(tr_msg 'Update manager script' '更新管理脚本')" \
+      "$(tr_msg '--- Certificate ---' '--- 证书 ---')" \
+      "23. $(tr_msg 'Issue/renew a Let'\''s Encrypt certificate' '申请/续期 TLS 证书（Let'\''s Encrypt）')" \
       "0/q. $(tr_msg 'Exit' '退出')"
-    if ! read -r -p "$(tr_msg 'Choice [0-22]: ' '请输入选项 [0-22]：')" choice </dev/tty; then return 0; fi
+    if ! read -r -p "$(tr_msg 'Choice [0-23]: ' '请输入选项 [0-23]：')" choice </dev/tty; then return 0; fi
     [[ "$choice" != 0 && "$choice" != q ]] || return 0
     set +e
     (
@@ -1267,7 +1399,8 @@ menu() {
         20) PURGE=0; if prompt_confirm "$(tr_msg 'Also delete configuration and keys?' '同时删除配置和密钥？')"; then PURGE=1; fi; uninstall_action ;;
         21) LANG_CODE="$(prompt_choice "$(tr_msg 'Language: 1=zh 2=en' '语言：1=zh 2=en')" "$LANG_CODE" zh en)"; save_language ;;
         22) self_update ;;
-        *) warn "$(tr_msg 'Invalid choice; enter 0-22 or q' '无效选项；请输入 0-22 或 q')" ;;
+        23) cert_action ;;
+        *) warn "$(tr_msg 'Invalid choice; enter 0-23 or q' '无效选项；请输入 0-23 或 q')" ;;
       esac
     )
     rc=$?
@@ -1313,6 +1446,11 @@ main() {
       --libc) LIBC="${2:?}"; shift 2 ;;
       --keep-releases) KEEP_RELEASES="${2:?}"; shift 2 ;;
       --lang) LANG_CODE="${2:?}"; LANG_SET=1; shift 2 ;;
+      --domain) CERT_DOMAIN="${2:?}"; shift 2 ;;
+      --cf-token-file) CF_TOKEN_FILE="${2:?}"; shift 2 ;;
+      --email) CERT_EMAIL="${2:?}"; shift 2 ;;
+      --http) CERT_HTTP=1; shift ;;
+      --force) CERT_FORCE=1; shift ;;
       --probe) DOCTOR_PROBE=1; shift; if (($#)) && [[ "$1" != -* ]]; then PROBE_TARGET="$1"; shift; fi ;;
       --wizard) WIZARD_REQUESTED=1; shift ;;
       -y|--yes) ASSUME_YES=1; shift ;;
@@ -1358,6 +1496,7 @@ main() {
     probe) probe_action ;;
     rollback) rollback_action ;;
     backup) backup_action ;;
+    cert) cert_action ;;
     clean-releases) cleanup_old_releases ;;
     versions) versions_action ;;
     check-updates) VERSION=latest-v3; resolve_version; printf '%s\n' "$VERSION" ;;
