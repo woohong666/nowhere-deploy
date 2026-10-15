@@ -50,3 +50,8 @@ jobs:
 
       - name: Test suite (V3)
         run: bash tests/nowhere-v3.test.sh
+
+      # Offline targeted regressions for reviewed fix batches (stubbed
+      # systemd/ACME; a local flock/install shim keeps it non-root friendly).
+      - name: Targeted regression tests (Python)
+        run: python3 tests/test_fixes.py .

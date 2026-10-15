@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.4.1
+# Nowhere V2 Unified Manager v1.4.2
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,8 +9,10 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.4.1"
+readonly SCRIPT_VERSION="1.4.2"
 readonly SCRIPT_CHANNEL="v2"
+# v1.4.2: fail closed on unreadable certificates; preserve Vector key compatibility;
+#   transactional doctor repair with explicit restart failures and fresh checks.
 # v1.4.1: pin tls=2 links whose certificate is not in the system trust store
 #   (private CA is not the same as trusted); require exactly 64 hex key characters
 #   on an exact v2.2.0 pin; take the build lock for backup and doctor --fix.
@@ -793,7 +795,7 @@ prompt_choice() {
 key_acceptable() {
   local v="$1"
   if is_valid_key_value "$v"; then
-    if key_requires_64_hex "$VERSION" && [[ ! "$v" =~ ^[0-9a-f]{64}$ ]]; then
+    if [[ "$ROLE" != vector ]] && key_requires_64_hex "$VERSION" && [[ ! "$v" =~ ^[0-9a-f]{64}$ ]]; then
       warn "$(tr_msg "An exact v2.2.0 core requires a 64-character key; 32-character keys need v2.2.1 or later." "锁定到 v2.2.0 的内核要求 64 位密钥；32 位密钥需要 v2.2.1 及以上。")"
       return 1
     fi
@@ -1697,7 +1699,7 @@ build_native_vector_link_from_portal() {
   # pin=none no longer disables verification. A generated (tls=1) certificate
   # therefore only works with an explicit pin; fill it from the running local
   # service unless the operator supplied --client-pin. For a supplied (tls=2)
-  # certificate, pin only when it is self-signed: pinning a CA-signed
+  # certificate, pin when its chain is untrusted: pinning a trusted CA-signed
   # certificate would break every client as soon as the certificate is renewed.
   if [[ "$pin" == none || -z "$pin" ]]; then
     if [[ "$tls" == 1 ]]; then
@@ -1712,7 +1714,7 @@ build_native_vector_link_from_portal() {
     elif [[ "$tls" == 2 ]]; then
       local cert needs
       cert="$(query_get "$u" crt)"
-      certificate_needs_pin "$cert"; needs=$?
+      if certificate_needs_pin "$cert"; then needs=0; else needs=$?; fi
       if [[ "$needs" == 0 ]]; then
         if ! pin="$(local_portal_fingerprint "$u")"; then
           warn "$(tr_msg "Self-signed or private-CA certificate could not be read for pinning; pass --client-pin <sha256> or check ${cert}." "自签名或私有 CA 证书无法读取以填入 pin；请显式指定 --client-pin <sha256>，或检查 ${cert}。")"
@@ -1720,7 +1722,8 @@ build_native_vector_link_from_portal() {
         fi
         warn "$(tr_msg "tls=2 link: the certificate does not verify against the system trust store, so the pin was auto-filled. Regenerate the links after you rotate this certificate." "tls=2 链接：证书无法通过系统信任库验证，已自动填入 pin。若轮换该证书，请重新生成链接。")"
       elif [[ "$needs" == 2 ]]; then
-        warn "$(tr_msg "Cannot inspect ${cert}; assuming normal CA verification. Pass --client-pin <sha256> if the certificate is self-signed or signed by a private CA." "无法读取 ${cert}；将按系统 CA 验证处理。若证书为自签名或私有 CA 签发，请显式指定 --client-pin <sha256>。")"
+        warn "$(tr_msg "Cannot inspect ${cert}; refusing to emit an unverified link. Check the certificate or pass --client-pin." "无法读取 ${cert}；拒绝生成未验证链接。请检查证书或显式传入 --client-pin。")"
+        return 1
       fi
     fi
   fi
@@ -1750,7 +1753,7 @@ PY
   printf '\n%s\n%s#%s\n' "$(tr_msg "Generic V2 share URI (client must explicitly support V2/nw2):" "通用 V2 分享 URI（客户端必须明确支持 V2/nw2）：")" "$generic" "$(urlencode "$name")"
 }
 
-# 0 = the certificate is self-signed, 1 = CA-signed, 2 = unreadable/unparsable.
+# 0 = certificate needs pin, 1 = system-trusted chain, 2 = unreadable/unparsable.
 # Used to decide whether a tls=2 link needs a pin (see build_native_vector_link_from_portal).
 certificate_needs_pin() {
   local cert="$1" subj iss
@@ -1815,6 +1818,25 @@ port_listening() {
 
 doctor_action() {
   require_root; require_systemd; install_runtime_deps
+  if [[ "$DOCTOR_FIX" -eq 1 ]]; then
+    # Repairs rewrite the unit/launcher and restart the service, so serialise
+    # them against install/configure like every other mutating action.
+    acquire_build_lock; begin_transaction
+    [[ -s "$URL_FILE" && -x "$CURRENT_LINK/nowhere" ]] || die "$(tr_msg "Doctor repair requires an existing config and binary" "Doctor 修复需要已有配置和内核")"
+    info "$(tr_msg "doctor --fix may rewrite V2 management files and restart ${SERVICE_NAME}." "doctor --fix 可能重写 V2 管理文件并重启 ${SERVICE_NAME}。")"
+    info "$(tr_msg "Applying safe V2 management repairs..." "正在应用安全的 V2 管理修复...")"
+    ensure_user; [[ -x "$CURRENT_LINK/nowhere" ]] && ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
+    # write_unit interpolates MEMORY_PROFILE and MORPH_PRELUDE. Without re-reading
+    # manager.conf first, a repair would silently reset a configured value to the
+    # script default while manager.conf kept the original.
+    load_meta
+    write_launcher; write_unit
+    [[ -s "$URL_FILE" ]] && { chmod 640 "$URL_FILE"; chown root:"$RUN_GROUP" "$URL_FILE"; }
+    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg "Doctor: enable failed" "Doctor：启用服务失败")"
+    systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg "Doctor: restart failed" "Doctor：重启服务失败")"
+    wait_service 8 || die "$(tr_msg "Doctor: service did not stay active" "Doctor：服务未持续运行")"
+    TX_COMMITTED=1
+  fi
   local fail=0 warnc=0 u role ep p fam tls f ik kk nx
   printf '\n%b%s%b\n' "$C_CYAN" "$(tr_msg 'Nowhere V2 Doctor' 'Nowhere V2 健康检查')" "$C_NC"
   if [[ -x "$CURRENT_LINK/nowhere" ]]; then ok "$(tr_msg "V2 binary exists" "V2 二进制文件存在")"; else warn "$(tr_msg "V2 binary missing" "V2 二进制文件缺失")"; fail=$((fail+1)); fi
@@ -1825,7 +1847,7 @@ doctor_action() {
   else warn "$(tr_msg "V2 binary link missing/broken" "V2 二进制软链接缺失或损坏")"; fail=$((fail+1)); fi
   if [[ -s "$URL_FILE" ]]; then
     IFS= read -r u <"$URL_FILE"
-    if ( validate_imported_url "$u" ) >/dev/null 2>&1; then ok "$(tr_msg "V2 config URL validates" "V2 配置 URL 校验通过")"; else warn "$(tr_msg "V2 config URL is invalid" "V2 配置 URL 无效")"; fail=$((fail+1)); u=""; fi
+    if ( validate_imported_url "$u" "$(installed_core_version)" ) >/dev/null 2>&1; then ok "$(tr_msg "V2 config URL validates" "V2 配置 URL 校验通过")"; else warn "$(tr_msg "V2 config URL is invalid" "V2 配置 URL 无效")"; fail=$((fail+1)); u=""; fi
   else warn "$(tr_msg "V2 config missing" "V2 配置缺失")"; fail=$((fail+1)); u=""; fi
   if id "$RUN_USER" >/dev/null 2>&1; then ok "$(tr_msg "Dedicated user exists" "V2 专用用户存在")"; else warn "$(tr_msg "Dedicated V2 user missing" "V2 专用用户缺失")"; fail=$((fail+1)); fi
   systemctl is-enabled --quiet "$SERVICE_NAME" && ok "$(tr_msg "Service enabled" "服务已设置开机启动")" || { warn "$(tr_msg "Service not enabled" "服务未设置开机启动")"; warnc=$((warnc+1)); }
@@ -1861,23 +1883,6 @@ doctor_action() {
   if systemctl list-unit-files --no-legend nowhere.service 2>/dev/null | grep -q '^nowhere\.service'; then
     warn "$(tr_msg "V1 service definition detected. V2 files are isolated, but network ports must not collide." "检测到 V1 服务。V1/V2 文件已隔离，但监听端口不能冲突。")"
     warnc=$((warnc+1))
-  fi
-  if [[ "$DOCTOR_FIX" -eq 1 ]]; then
-    # Repairs rewrite the unit/launcher and restart the service, so serialise
-    # them against install/configure like every other mutating action.
-    acquire_build_lock
-    info "$(tr_msg "doctor --fix may rewrite V2 management files and restart ${SERVICE_NAME}." "doctor --fix 可能重写 V2 管理文件并重启 ${SERVICE_NAME}。")"
-    info "$(tr_msg "Applying safe V2 management repairs..." "正在应用安全的 V2 管理修复...")"
-    ensure_user; [[ -x "$CURRENT_LINK/nowhere" ]] && ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
-    # write_unit interpolates MEMORY_PROFILE and MORPH_PRELUDE. Without re-reading
-    # manager.conf first, a repair would silently reset a configured value to the
-    # script default while manager.conf kept the original.
-    load_meta
-    write_launcher; write_unit
-    [[ -s "$URL_FILE" ]] && { chmod 640 "$URL_FILE"; chown root:"$RUN_GROUP" "$URL_FILE"; }
-    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
-    [[ -s "$URL_FILE" && -x "$CURRENT_LINK/nowhere" ]] && systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
-    wait_service 8 && ok "$(tr_msg "Doctor --fix restarted V2 service" "Doctor --fix 已重启 V2 服务")" || true
   fi
   if ((fail>0)); then
     printf '\n'; journalctl -u "$SERVICE_NAME" -n 30 --no-pager 2>/dev/null || true

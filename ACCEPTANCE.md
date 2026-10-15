@@ -291,7 +291,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 |---|---|---|
 | 13.1 | 服务与端口 | `nowhere-v3` 为 active；`ss -lntup` 可见 TCP **和** UDP `2083`；V2 服务不受影响 |
 | 13.2 | `cat /etc/nowhere-v3/url.conf` | 32 位小写 hex 密钥；`tls=2` 且 `crt` 指向 `/etc/nowhere-v3/tls/pem.*`；默认含 `morph=1` |
-| 13.3 | `links` 输出 | Vector tcp / udp 原生 URL，均带 64 位 `pin=`；无有效 pin 时应拒绝输出 |
+| 13.3 | `links` 输出 | Vector tcp / udp 原生 URL：证书在系统信任库可验证（含主机名）时**不带 pin**，否则带 64 位 `pin=`；证书不可读取时拒绝输出 |
 | 13.4 | Vector 客户端 | 用 `--url-file` 安装链接文件；`curl -x socks5h://127.0.0.1:1083 https://api.ipify.org` 返回 V3 侧出口 IP |
 | 13.5 | 同角色重配（`configure --key <新> --endpoint <同>`） | 重配后 `crt` 路径与 pin **不变**（PEM 复用，回归点） |
 | 13.6 | 角色切换保护 | `configure --role egress ...`（不带 `--allow-role-switch`、加 `-y`）应被拒绝 |
@@ -322,7 +322,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - links 会自动尝试安装 qrencode（apt/dnf/yum/apk）：成功则输出二维码；无包管理器或安装失败时仅警告，链接照常输出。
 - 检查status、日志与probe不泄露共享密钥或pin；generate-key、fingerprint与links为明确输出例外。
 - 私有CA/自签场景手动导入客户端信任；通用分享链接本身不携带信任锚。
-- 证书（可选，需真实域名）：`cert --domain <域> --cf-token-file <文件>`（或 `--http`）成功后 `/etc/nowhere-v3/tls/le.<域>/` 出现 fullchain/key，`url.conf` 指向它且为 `tls=2`；`systemctl list-timers | grep nowhere-v3-cert-renew` 可见每日续期；vector/egress 角色实例应被拒绝；Token 不出现在 acme.sh 命令行（`ps` 不可见）。
+- 证书（可选，需真实域名）：`cert --domain <域> --cf-token-file <文件>`（或 `--http`）成功后 `/etc/nowhere-v3/tls/le.<域>/` 出现 fullchain/key，`url.conf` 指向它且为 `tls=2`；`systemctl list-timers | grep nowhere-v3-cert-renew` 可见每日续期；vector/egress 角色实例应被拒绝；Token 不出现在 acme.sh 命令行（`ps` 不可见）；acme.sh 与 `dns_cf` 插件位于 `/etc/nowhere-v3/acme`（纳入 `backup`），签发显式使用 `--server letsencrypt`。
 
 ### 13.3 自动化验收
 

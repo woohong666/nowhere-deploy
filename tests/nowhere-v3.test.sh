@@ -330,15 +330,15 @@ t_update() {
     self_update
   ' _ "$SANDBOX/self.sh" "$remote" "$mode"
 }
-for ver in 1.4.0 1.3.0 1.2.0; do
+for ver in 99.0.0 "$SCRIPT_VERSION" 1.2.0; do
   printf '#!/usr/bin/env bash\nreadonly SCRIPT_VERSION="%s"\nreadonly SCRIPT_CHANNEL="v3"\n' "$ver" >"$SANDBOX/remote-$ver"
 done
-out="$(t_update "$SANDBOX/remote-1.4.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-99.0.0" 2>&1)"; rc=$?
 t_ok "higher manager version accepted" 0 "$rc"
-t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="1.4.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
+t_ok "higher manager installed" yes "$(grep -q 'SCRIPT_VERSION="99.0.0"' "$SANDBOX/self.sh" && echo yes || echo no)"
 t_ok "update preserves executable bit" yes "$([[ -x "$SANDBOX/self.sh" ]] && echo yes || echo no)"
 t_ok "update saves backup" yes "$(find "$SANDBOX" -name 'self.sh.bak.*' -print -quit | grep -q . && echo yes || echo no)"
-out="$(t_update "$SANDBOX/remote-1.3.0" 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-$SCRIPT_VERSION" 2>&1)"; rc=$?
 t_ok "same version exits normally" 0 "$rc"
 t_ok "same version unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
 out="$(t_update "$SANDBOX/remote-1.2.0" 2>&1)"; rc=$?
@@ -351,7 +351,7 @@ t_ok "invalid manager leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/
 printf '#!/bin/bash\nreadonly SCRIPT_VERSION="9.0.0"\nreadonly SCRIPT_CHANNEL="v2"\n' >"$SANDBOX/cross-manager"
 out="$(t_update "$SANDBOX/cross-manager" 2>&1)"; rc=$?
 t_ok "cross-channel manager refused" 1 "$rc"
-out="$(t_update "$SANDBOX/remote-1.4.0" offline 2>&1)"; rc=$?
+out="$(t_update "$SANDBOX/remote-99.0.0" offline 2>&1)"; rc=$?
 t_ok "offline update refused" 1 "$rc"
 t_ok "offline leaves file unchanged" 0 "$(t_rc cmp "$PATCHED" "$SANDBOX/self.sh")"
 t_ok "empty update URL disables normally" 0 "$(t_rc env NOWHERE_V3_SELF_URL= bash "$PATCHED" self-update)"
@@ -549,7 +549,8 @@ t_ok "warning mentions qrencode" yes "$([[ "$out" == *qrencode* ]] && echo yes |
 
 # ---------------------------------------------------------------------------
 t_section "certificate issuance (stubbed acme.sh)"
-mkdir -p "$SANDBOX/acme"
+mkdir -p "$SANDBOX/acme/dnsapi"
+printf ":\n" > "$SANDBOX/acme/dnsapi/dns_cf.sh"
 cat > "$SANDBOX/acme/acme.sh" <<'ACME'
 #!/bin/sh
 log="$(dirname "$0")/calls.log"

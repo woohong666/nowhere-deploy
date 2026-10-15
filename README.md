@@ -809,7 +809,7 @@ V3 channel and numeric version, rejects downgrades and replaces atomically in th
 same directory with a backup. It changes no service, configuration or core binary.
 The source defaults to this repository main and can be overridden with NOWHERE_V3_SELF_URL.
 
-`links` emits pinned native Vector/Egress URLs and one share per carrier:
+`links` emits native Vector/Egress URLs (no pin when the certificate is system-CA verified, otherwise a leaf pin) and one share per carrier:
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`.
 Shares omit pin. For self-signed certificates, add the fingerprint command result
 to the client trust list. Without an argument `fingerprint` reads the local certificate;
@@ -897,16 +897,16 @@ sudo bash nowhere-v3.sh cert --domain relay.example.com --http
 
 **What it does**
 
-1. Installs **pinned acme.sh 3.1.6** from a GitHub release tarball (no `curl | bash`) into `/root/.acme.sh`
-2. Issues the certificate (DNS-01 or HTTP-01)
+1. Installs **pinned acme.sh 3.1.6** and its `dns_cf` plugin from a GitHub release tarball (no `curl | bash`) into `/etc/nowhere-v3/acme` (covered by config backups and transaction rollback; the legacy `/root/.acme.sh` is left untouched)
+2. Issues the certificate (DNS-01 or HTTP-01; **explicitly on Let's Encrypt** — acme.sh defaults to ZeroSSL)
 3. Stages the files under `/etc/nowhere-v3/tls/le.<domain>/` (`fullchain.pem` / `key.pem`, 640 root:nowhere-v3)
-4. Rewrites `url.conf` inside the transaction (automatic rollback on failure)
-5. Restarts the service and creates a **daily renewal timer** `nowhere-v3-cert-renew.timer` (a successful renewal restarts the service)
+4. Rewrites `url.conf` inside the transaction (a failed re-issue restores the **previous certificate**)
+5. Restarts the service and, only after the liveness check passes, creates the **daily renewal timer** `nowhere-v3-cert-renew.timer` (it shares the management flock — contention skips quietly)
 
 **Security notes**
 
 - The token is read via hidden input or `--cf-token-file` only; it reaches acme.sh through the environment and **never appears in process argv** (invisible to `ps`)
-- Credentials are kept by acme.sh in `/root/.acme.sh/account.conf` (600; the directory is created under this manager's umask 077, root-only)
+- Credentials are kept by acme.sh in `/etc/nowhere-v3/acme/account.conf` (600; the whole directory is created under this manager's umask 077, root-only, and is included in config backups)
 
 **Inspect and troubleshoot**
 
@@ -919,6 +919,7 @@ sudo bash nowhere-v3.sh cert --domain your.example.com --force   # force reissue
 **Notes**
 
 - Switching from self-signed to LE **changes the fingerprint**: clients that pinned the old one must update their trust entry; `links` prints the new fingerprint/pin
+- **Pin policy for native links**: when the certificate verifies against the system CA for the public host (chain + hostname), `links` emits Vector/Egress URLs **without** `pin=` — nothing to re-import after a renewal; self-signed / private-CA certificates still get a leaf pin; an unreadable certificate refuses to emit a link (fix the file or pass an explicit pin)
 - To reissue for another domain just run `cert --domain new.example.com`; the old `le.<old-domain>` directory can be removed by hand
 
 ## Testing
@@ -928,13 +929,15 @@ Logic is covered by sandboxed suites that need no root and no network:
 ```bash
 bash tests/nowhere-v2.test.sh
 bash tests/nowhere-v3.test.sh
+python3 tests/test_fixes.py .
 ```
 
 Before sourcing the manager it rewrites its path declarations into a temporary
 directory, so the suite can never touch a real `/etc/nowhere-v2` or systemd — and
 it aborts if a declaration has been renamed rather than silently falling through
 to the real paths. CI runs it on every push together with `bash -n` and
-`shellcheck`.
+`shellcheck`. `tests/test_fixes.py` holds the targeted offline regressions for
+reviewed fix batches (stubbed systemd/ACME); CI runs it as well.
 
 **Integration is not covered automatically.** The install, upgrade, and systemd
 flows have never been executed by the test suite. Run

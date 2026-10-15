@@ -80,6 +80,7 @@ trap cleanup_sandbox EXIT
 
 LANG_CODE=en
 require_root() { :; }
+install_runtime_deps() { :; }
 
 # ---------------------------------------------------------------------------
 # Assertions

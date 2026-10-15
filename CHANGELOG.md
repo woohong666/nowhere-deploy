@@ -8,6 +8,14 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.4.2
+
+#### 🐛 Fixed
+- **`links` no longer aborts on a trusted certificate**: `certificate_needs_pin` returning 1 (system-trusted chain) was called as a bare command while building a `tls=2` Vector link — under `errexit` the safest path could terminate link generation before anything was printed. The call now runs in an `if` branch and captures the status safely.
+- **Unreadable certificates fail closed**: when the certificate cannot be inspected (status 2), the manager no longer assumes normal CA verification and emits a link that may not verify; it refuses with guidance to check the file or pass an explicit `--client-pin`.
+- **Vector keys keep upstream compatibility**: the exact-v2.2.0 rule (64 lowercase hex) now applies to Portal and native `next` keys only; the Vector-role wizard again accepts upstream's documented 1-255 byte client keys instead of rejecting short ones.
+- **`doctor --fix` is a real transaction**: repairs run first, under the build lock and a config snapshot; `enable` / `restart` / liveness failures now exit non-zero and roll back through the EXIT trap instead of being ignored, and the report afterwards reflects the repaired state instead of pre-repair counters. Config URL validation now uses the installed core version.
+
 ### Nowhere V2 manager (`nowhere-v2.sh`) — v1.1.3 → v1.4.0
 
 #### ✨ Added
@@ -70,6 +78,21 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed the unused `allowed` query-key set from the imported-URL validator (`v1.3.0`). Unknown keys follow upstream first-wins/ignore semantics, so the set only documented a rule that was never enforced.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
+
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.3.1
+
+#### 🐛 Fixed
+- **DNS-01 could never run**: `ensure_acme` copied only the acme.sh main script; the `dns_cf` plugin is now installed alongside it (`dnsapi/dns_cf.sh`) and its presence is verified before use.
+- **The CA is pinned explicitly**: account registration and issuance now pass `--server letsencrypt`; acme.sh 3.1.6 otherwise defaults to ZeroSSL, so what was issued did not match the documented "Let's Encrypt" behaviour.
+- **Isolated ACME state**: acme.sh now lives under `/etc/nowhere-v3/acme`, covered by config backups and transaction rollback; the legacy shared `/root/.acme.sh` is left untouched.
+- **Early certificate rollback**: the transaction opens before any ACME or certificate-file change, so a failed re-issue restores the previous `le.<domain>` certificate; the renewal timer is created only after the service passes its post-switch liveness check.
+- **Renewal is serialized with management**: the timer runs `acme.sh --cron` under the same flock as install/configure (`flock -n -E 0`, so lock contention skips quietly instead of marking the unit failed).
+- **Stable renewal paths**: on reconfigure a managed `le.<domain>` fullchain/key pair stays at its original path (no longer copied into a `pem.*` staging directory), so renewals keep updating the file the service actually loads.
+- **CA-aware native links**: `links` omits `pin=` when the certificate verifies against the system trust store for the public host (chain, purpose and hostname/IP checked with `openssl verify`), so routine renewals no longer break pinned Vector/Egress links; self-signed and private-CA certificates keep the leaf pin.
+- **Shortcut symlink safety**: `install_shortcut` refuses to write through an existing symlink at `/usr/local/bin/nh`.
+- Tests: the V3 suite's self-update fixtures now derive from the live `SCRIPT_VERSION` and include a `dns_cf` fixture; the V2 suite disables real dependency installation. New offline targeted regressions live in `tests/test_fixes.py` (13 checks) and run in CI, with a local `flock`/`install` shim keeping them runnable without root or util-linux.
+
+> Review provenance: fix package produced by GPT from byte-identical baselines (patches verified to reproduce the builds exactly, SHA256SUMS all pass). This review added the `-E 0` conflict-exit refinement and the test-environment shims.
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.3.0
 

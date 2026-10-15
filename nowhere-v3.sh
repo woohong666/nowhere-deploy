@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.3.0
+# Nowhere V3 isolated manager v1.3.1
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
+# v1.3.1: isolated ACME state/plugin, explicit LE CA, early certificate rollback,
+#   serialized renewal, stable renewal paths and CA-verified native links.
 # v1.3.0: Let's Encrypt certificate automation (`cert` action): pinned acme.sh
 #   from a GitHub release tarball, Cloudflare DNS-01 (token read hidden) or
 #   HTTP-01, files staged under /etc/nowhere-v3/tls/le.<domain>/, url.conf
@@ -16,7 +18,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.3.1"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -25,10 +27,11 @@ readonly INSTALL_ROOT="/opt/nowhere-v3"
 readonly RELEASES_DIR="$INSTALL_ROOT/releases" CURRENT_LINK="$INSTALL_ROOT/current"
 readonly BIN_LINK="/usr/local/bin/nowhere-v3"
 readonly SHORTCUT_PATH="/usr/local/bin/nh"
-readonly ACME_HOME="/root/.acme.sh"
 readonly ACME_VERSION="3.1.6"
 readonly LAUNCHER="/usr/local/libexec/nowhere-v3-launch"
 readonly CONFIG_DIR="/etc/nowhere-v3"
+# Dedicated ACME state is covered by config backups and transaction rollback.
+readonly ACME_HOME="$CONFIG_DIR/acme"
 readonly URL_FILE="$CONFIG_DIR/url.conf" META_FILE="$CONFIG_DIR/manager.conf" TLS_DIR="$CONFIG_DIR/tls"
 readonly UNIT_FILE="/etc/systemd/system/nowhere-v3.service"
 readonly BUILD_LOCK_DIR="/run/nowhere-v3-build.lock.d"
@@ -544,10 +547,12 @@ else:
         public,pin=sys.argv[3:]
         if ':' in public and not public.startswith('['):public='['+public+']'
         host(public)
-        if not re.fullmatch(r'[0-9a-f]{64}',pin):fail('Verified local certificate pin required')
+        if pin and not re.fullmatch(r'[0-9a-f]{64}',pin):fail('Verified local certificate pin required')
         for typ,fam,p in entries:
             # Let public DNS choose a family unless it is an explicit IP.
-            query=U.urlencode({'morph':q.get('morph','1'),'pin':pin})
+            params={'morph':q.get('morph','1')}
+            if pin:params['pin']=pin
+            query=U.urlencode(params)
             print(f'Vector {typ}: vector://{key}@{public}/{typ}:{p}?{query}&in=127.0.0.1:1083')
             if typ=='udp' and q.get('out')=='egress':print(f'Egress: egress://{key}@{public}/udp:{p}?{query}')
     elif op=='ports':
@@ -625,7 +630,12 @@ stage_pem() {
   cp="$(openssl x509 -in "$d/cert.pem" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum)"
   kp="$(openssl pkey -in "$d/key.pem" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum)"
   [[ "$cp" == "$kp" ]] || die "$(tr_msg "Certificate and key mismatch; only unencrypted service keys are supported" "证书与私钥不匹配（仅支持无口令服务私钥）")"
-  CERT="$d/cert.pem"; TLS_KEY="$d/key.pem"
+  if [[ "$cert" == "$TLS_DIR"/le.*/fullchain.pem && "$key" == "${cert%/*}/key.pem" && "${cert#"$TLS_DIR"/le.}" != */*/* ]]; then
+    rm -rf -- "$d"
+    CERT="$cert"; TLS_KEY="$key"
+  else
+    CERT="$d/cert.pem"; TLS_KEY="$d/key.pem"
+  fi
 }
 prepare_configuration() {
   local u crt pk
@@ -688,6 +698,10 @@ install_shortcut() {
   content="#!/usr/bin/env bash
 # nowhere-v3-shortcut: opens the Nowhere V3 manager; delete this file to remove it.
 exec bash $(printf '%q' "$self") \"\$@\""
+  if [[ -L "$target" ]]; then
+    warn "$(tr_msg "Shortcut path is a symlink; leaving it unchanged" "快捷命令路径是软链接，保留原状")"
+    return 0
+  fi
   if [[ -e "$target" ]]; then
     if ! grep -qs 'nowhere-v3-shortcut' "$target"; then
       warn "$(tr_msg "Shortcut not created: $target already exists and is not owned by this manager" "未创建快捷命令：$target 已存在且不属于本管理器")"
@@ -807,7 +821,7 @@ validate_cert_domain() {
   [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || die "$(tr_msg "Invalid domain name: $1" "域名无效：$1")"
 }
 ensure_acme() {
-  [[ -x "$ACME_HOME/acme.sh" ]] && return 0
+  [[ -x "$ACME_HOME/acme.sh" && -r "$ACME_HOME/dnsapi/dns_cf.sh" ]] && return 0
   local tmp src url
   url="https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_VERSION}.tar.gz"
   tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp")
@@ -817,7 +831,10 @@ ensure_acme() {
   src="$(find "$tmp" -maxdepth 2 -type f -name acme.sh | head -n 1)"
   [[ -n "$src" ]] || die "$(tr_msg 'acme.sh not found in the archive' '压缩包中未找到 acme.sh')"
   install -d -m 700 "$ACME_HOME"
+  [[ -r "$(dirname "$src")/dnsapi/dns_cf.sh" ]] || die "$(tr_msg "acme.sh archive lacks dns_cf plugin" "acme.sh 压缩包缺少 dns_cf 插件")"
   install -m 700 "$src" "$ACME_HOME/acme.sh"
+  install -d -m 700 "$ACME_HOME/dnsapi"
+  install -m 600 "$(dirname "$src")/dnsapi/dns_cf.sh" "$ACME_HOME/dnsapi/dns_cf.sh"
   ok "$(tr_msg "acme.sh ${ACME_VERSION} installed under $ACME_HOME" "acme.sh ${ACME_VERSION} 已安装到 $ACME_HOME")"
 }
 write_cert_timer() {
@@ -830,7 +847,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=${ACME_HOME}/acme.sh --cron --home ${ACME_HOME}
+ExecStart=/usr/bin/flock -n -E 0 ${BUILD_LOCK_DIR%.d} ${ACME_HOME}/acme.sh --cron --home ${ACME_HOME}
 EOF
   cat >"$tmr" <<EOF
 [Unit]
@@ -877,16 +894,17 @@ cert_action() {
     fi
     [[ -n "$token" ]] || die "$(tr_msg "Missing Cloudflare API Token: pass --cf-token-file or run interactively" "缺少 Cloudflare API Token：请传 --cf-token-file 或交互运行")"
   fi
+  begin_transaction
   ensure_acme
   if [[ -n "$CERT_EMAIL" ]]; then
-    "$ACME_HOME/acme.sh" --home "$ACME_HOME" --register-account -m "$CERT_EMAIL" >/dev/null 2>&1 || warn "$(tr_msg 'Account email registration failed; continuing without it' '邮箱注册未成功；将继续申请（可不带邮箱）')"
+    "$ACME_HOME/acme.sh" --home "$ACME_HOME" --server letsencrypt --register-account -m "$CERT_EMAIL" >/dev/null 2>&1 || warn "$(tr_msg 'Account email registration failed; continuing without it' '邮箱注册未成功；将继续申请（可不带邮箱）')"
   fi
   dir="$TLS_DIR/le.${domain}"
   crt="$dir/fullchain.pem"; key="$dir/key.pem"
   install -d -m 750 "$dir" 2>/dev/null || mkdir -p "$dir"
   chown root:"$RUN_GROUP" "$dir" 2>/dev/null || true
   info "$(tr_msg "Requesting a Let's Encrypt certificate for ${domain} ..." "正在为 ${domain} 申请 Let's Encrypt 证书 ...")"
-  local -a issue_args=(--issue)
+  local -a issue_args=(--issue --server letsencrypt)
   if [[ "$CERT_HTTP" == 1 ]]; then issue_args+=(--standalone); else issue_args+=(--dns dns_cf); fi
   issue_args+=(-d "$domain")
   [[ "$CERT_FORCE" == 1 ]] && issue_args+=(--force)
@@ -907,16 +925,15 @@ cert_action() {
   chown root:"$RUN_GROUP" "$crt" "$key" 2>/dev/null || true
   chmod 640 "$crt" "$key"
   chmod 600 "$ACME_HOME/account.conf" 2>/dev/null || true
-  begin_transaction
   u="$(v3_url rewrite-pem "$u" "$crt" "$key")"
   printf '%s\n' "$u" >"$URL_FILE.new"
   chown root:"$RUN_GROUP" "$URL_FILE.new" 2>/dev/null || true
   chmod 640 "$URL_FILE.new"
   mv -f "$URL_FILE.new" "$URL_FILE"
-  write_cert_timer
   systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg 'Service restart failed after the certificate switch' '切换证书后服务重启失败')"
   wait_service 12 || die "$(tr_msg "V3 did not stay active after the certificate switch" "切换证书后 V3 未持续运行")"
   TX_COMMITTED=1
+  write_cert_timer
   ok "$(tr_msg "Certificate installed: $crt" "证书已安装：$crt")"
   info "$(tr_msg 'Automatic renewal: systemd timer nowhere-v3-cert-renew (check with systemctl list-timers)' '自动续期：systemd 定时器 nowhere-v3-cert-renew（systemctl list-timers 可查）')"
   warn "$(tr_msg 'Clients that pinned the old self-signed certificate must re-import links or update their trust entry' '此前 pin 过旧自签证书的客户端需要重新导入链接或更新信任项')"
@@ -933,11 +950,26 @@ ensure_qrencode() {
   has_cmd qrencode || { warn "$(tr_msg 'qrencode is unavailable; QR output skipped (install it and rerun links)' 'qrencode 不可用，已跳过二维码（安装后重跑 links 即可显示）')"; return 1; }
   info "$(tr_msg 'qrencode installed for QR output' 'qrencode 已自动安装（用于显示二维码）')"
 }
+certificate_trusted_for_host() {
+  local cert="$1" host="${2#[}"; host="${host%]}"
+  [[ -r "$cert" && -n "$host" ]] || return 1
+  local -a verify=(-purpose sslserver -untrusted "$cert")
+  if python3 -c 'import ipaddress,sys;ipaddress.ip_address(sys.argv[1])' "$host" 2>/dev/null; then
+    verify+=(-verify_ip "$host")
+  else
+    verify+=(-verify_hostname "$host")
+  fi
+  openssl verify "${verify[@]}" "$cert" >/dev/null 2>&1
+}
 show_links() {
   require_root
   [[ -n "$PUBLIC_HOST" ]] || die "$(tr_msg "Set --public-host first" "请用 --public-host 指定公网地址")"
   local u pin shares line
   u="$(read_url)"; pin="$(local_pin)"
+  if [[ "$(v3_url get "$u" tls)" == 2 ]] && certificate_trusted_for_host "$(v3_url get "$u" crt)" "$PUBLIC_HOST"; then
+    # Normal CA/hostname verification survives automated certificate renewal.
+    pin=""
+  fi
   v3_url links "$u" "$PUBLIC_HOST" "$pin"
   shares="$(v3_url shares "$u" "$PUBLIC_HOST" "$NODE_NAME")"
   printf '%s\n' "$(tr_msg 'Generic share links (Anywhere etc.):' '通用分享链接（Anywhere 等客户端）：')"

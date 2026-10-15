@@ -803,7 +803,7 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 自更新验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
 不更新服务、配置或内核。来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
 
-`links`输出带pin的原生Vector/Egress URL，以及每个carrier对应的
+`links`输出原生Vector/Egress URL（证书经系统CA验证时**不带pin**，否则带叶证书pin），以及每个carrier对应的
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`。
 分享链接不携带pin；自签证书应将`fingerprint`结果添加到客户端信任列表。
 `fingerprint` 无参数查本机；`fingerprint 'nowhere://KEY@HOST:PORT?morph=0|1'` 查**远端**证书指纹（v1.2.0 起；强制 TCP/TLS、链接打码，`net=udp` 链接同样适用）——请带外核对后再用作 pin 或客户端信任项。
@@ -885,16 +885,16 @@ sudo bash nowhere-v3.sh cert --domain relay.example.com --http
 
 **它做了什么**
 
-1. 安装**固定版本 acme.sh 3.1.6**（从 GitHub release tarball 安装，不走 `curl | bash`）到 `/root/.acme.sh`
-2. 签发证书（DNS-01 或 HTTP-01）
+1. 安装**固定版本 acme.sh 3.1.6** 及其 `dns_cf` 插件（从 GitHub release tarball 安装，不走 `curl | bash`）到 `/etc/nowhere-v3/acme`（随配置一起备份 / 事务回滚；旧版 `/root/.acme.sh` 原样保留、不会被改动）
+2. 签发证书（DNS-01 或 HTTP-01；**显式指定 Let's Encrypt**——acme.sh 默认 CA 是 ZeroSSL）
 3. 证书写入 `/etc/nowhere-v3/tls/le.<域名>/`（`fullchain.pem` / `key.pem`，640 root:nowhere-v3）
-4. `url.conf` 切换到该证书（在事务里改写，失败自动回滚）
-5. 重启服务，并创建**每日自动续期定时器** `nowhere-v3-cert-renew.timer`（续期成功后自动重启服务）
+4. `url.conf` 切换到该证书（在事务里改写；申请中途失败会恢复到**之前的证书**）
+5. 重启服务并通过存活检查后，创建**每日自动续期定时器** `nowhere-v3-cert-renew.timer`（与管理操作共用同一把锁，互斥时本轮静默跳过）
 
 **安全细节**
 
 - Token 只通过隐藏输入或 `--cf-token-file` 读取；传给 acme.sh 时走环境变量，**不会出现在进程命令行**（`ps` 看不到）
-- 凭据由 acme.sh 自管在 `/root/.acme.sh/account.conf`（600；该目录在本管理器 umask 077 下创建，仅 root 可读）
+- 凭据由 acme.sh 自管在 `/etc/nowhere-v3/acme/account.conf`（600；整个目录在本管理器 umask 077 下创建，仅 root 可读，且纳入配置备份）
 
 **查看与排查**
 
@@ -907,6 +907,7 @@ sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重�
 **注意**
 
 - 从自签切换为 LE 后**指纹会变**：此前在 App 里 pin 过旧指纹的要更新信任项；`links` 会输出新的指纹/pin
+- **原生链接的 pin 策略**：证书能被系统 CA 验证（证书链 + 主机名）时，`links` 输出**不带 pin** 的 Vector/Egress 链接——续期后无需重新导入；自签 / 私有 CA 证书仍输出叶证书 pin；证书不可读取时拒绝输出，请修复文件或显式传 pin
 - 想换域名重签：再跑一次 `cert --domain 新域名`；旧目录 `le.<旧域名>` 可手动删除
 
 ## 测试
@@ -916,11 +917,13 @@ sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重�
 ```bash
 bash tests/nowhere-v2.test.sh
 bash tests/nowhere-v3.test.sh
+python3 tests/test_fixes.py .
 ```
 
 它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的
 `/etc/nowhere-v2` 或 systemd**；而且一旦某条声明被改名，测试会**直接中止**，而不是悄悄
 落到真实路径上。CI 每次 push 都会连同 `bash -n` 与 `shellcheck` 一起跑它。
+`tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。
