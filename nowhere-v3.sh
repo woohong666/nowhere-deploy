@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.3.1
+# Nowhere V3 isolated manager v1.4.0
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
 # v1.3.1: isolated ACME state/plugin, explicit LE CA, early certificate rollback,
 #   serialized renewal, stable renewal paths and CA-verified native links.
@@ -18,7 +18,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.0.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -28,6 +28,9 @@ readonly RELEASES_DIR="$INSTALL_ROOT/releases" CURRENT_LINK="$INSTALL_ROOT/curre
 readonly BIN_LINK="/usr/local/bin/nowhere-v3"
 readonly SHORTCUT_PATH="/usr/local/bin/nh"
 readonly ACME_VERSION="3.1.6"
+readonly ACME_ARCHIVE_SHA256="0d3f9000ac44a6331314742a88c475f79134e24fc991997883652adc59efc486"
+readonly ACME_MAIN_SHA256="c7d68b021cfd6380ea83a82962abde5b484779fee0b97d38681dfa1396bbc8d7"
+readonly ACME_CF_SHA256="9628ee8238cb3f9cfa1b1a985c0e9593436a3e4f8a9d65a6f775b981be9e76c8"
 readonly LAUNCHER="/usr/local/libexec/nowhere-v3-launch"
 readonly CONFIG_DIR="/etc/nowhere-v3"
 # Dedicated ACME state is covered by config backups and transaction rollback.
@@ -80,6 +83,11 @@ TX_COMMITTED=0
 TX_ACTIVE=0
 TX_ENABLED=0
 TX_STARTED=0
+RENEW_ATTEMPT=0
+TX_TIMER_ACTIVE=0
+TX_TIMER_ENABLED=0
+DRY_RUN=0
+DIAG_OUTPUT=''
 declare -a CLEANUP_PATHS=()
 info() { printf '%b[Nowhere V3]%b %s\n' "$C_BLUE" "$C_NC" "$*"; }
 
@@ -588,6 +596,13 @@ begin_transaction() {
   [[ ! -d "$CONFIG_DIR" ]] || cp -a "$CONFIG_DIR" "$TX_DIR/config"
   [[ ! -f "$UNIT_FILE" ]] || cp -a "$UNIT_FILE" "$TX_DIR/unit"
   [[ ! -f "$LAUNCHER" ]] || cp -a "$LAUNCHER" "$TX_DIR/launcher"
+  local part
+  for part in service timer; do
+    [[ ! -f "${UNIT_FILE%.service}-cert-renew.$part" ]] || cp -a "${UNIT_FILE%.service}-cert-renew.$part" "$TX_DIR/cert.$part"
+  done
+  [[ ! -d "$INSTALL_ROOT/manager" ]] || cp -a "$INSTALL_ROOT/manager" "$TX_DIR/manager"
+  systemctl is-active --quiet "$(basename "${UNIT_FILE%.service}-cert-renew.timer")" && TX_TIMER_ACTIVE=1 || true
+  systemctl is-enabled --quiet "$(basename "${UNIT_FILE%.service}-cert-renew.timer")" && TX_TIMER_ENABLED=1 || true
   TX_STARTED=1
 }
 finish() {
@@ -605,13 +620,25 @@ finish() {
     if [[ -n "$OLD_TARGET" && -x "$OLD_TARGET/nowhere" ]]; then
       ln -sfn "$OLD_TARGET" "$CURRENT_LINK"; ln -sfn "$CURRENT_LINK/nowhere" "$BIN_LINK"
     else rm -f "$CURRENT_LINK" "$BIN_LINK"; fi
+    local part timer
+    timer="$(basename "${UNIT_FILE%.service}-cert-renew.timer")"
+    systemctl stop "$timer" >/dev/null 2>&1
+    for part in service timer; do
+      rm -f "${UNIT_FILE%.service}-cert-renew.$part"
+      [[ ! -f "$TX_DIR/cert.$part" ]] || cp -a "$TX_DIR/cert.$part" "${UNIT_FILE%.service}-cert-renew.$part"
+    done
+    rm -rf "$INSTALL_ROOT/manager"
+    [[ ! -d "$TX_DIR/manager" ]] || cp -a "$TX_DIR/manager" "$INSTALL_ROOT/manager"
     systemctl daemon-reload
+    if [[ "$TX_TIMER_ENABLED" == 1 ]]; then systemctl enable "$timer" >/dev/null 2>&1; else systemctl disable "$timer" >/dev/null 2>&1; fi
+    [[ "$TX_TIMER_ACTIVE" != 1 ]] || systemctl start "$timer" >/dev/null 2>&1
     if [[ "$TX_ENABLED" == 1 ]]; then systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
     else systemctl disable "$SERVICE_NAME" >/dev/null 2>&1; fi
     if [[ "$TX_ACTIVE" == 1 ]]; then
       systemctl restart "$SERVICE_NAME" && wait_service 12 || warn "$(tr_msg "Service recovery failed; inspect the logs" "服务恢复失败，请检查日志")"
     fi
   fi
+  if [[ "$RENEW_ATTEMPT" == 1 && "$rc" != 0 ]]; then record_renewal_result failed; fi
   for p in "${CLEANUP_PATHS[@]}"; do [[ -z "$p" ]] || rm -rf -- "$p"; done
   release_build_lock
   exit "$rc"
@@ -821,15 +848,30 @@ validate_cert_domain() {
   [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || die "$(tr_msg "Invalid domain name: $1" "域名无效：$1")"
 }
 ensure_acme() {
-  [[ -x "$ACME_HOME/acme.sh" && -r "$ACME_HOME/dnsapi/dns_cf.sh" ]] && return 0
+  if [[ -x "$ACME_HOME/acme.sh" && -r "$ACME_HOME/dnsapi/dns_cf.sh" ]]; then
+    local ah dh
+    ah="$(sha256sum "$ACME_HOME/acme.sh")"; dh="$(sha256sum "$ACME_HOME/dnsapi/dns_cf.sh")"
+    [[ "${ah%% *}" != "$ACME_MAIN_SHA256" || "${dh%% *}" != "$ACME_CF_SHA256" ]] || return 0
+  fi
   local tmp src url
   url="https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_VERSION}.tar.gz"
   tmp="$(mktemp -d)"; CLEANUP_PATHS+=("$tmp")
   info "$(tr_msg "Installing acme.sh ${ACME_VERSION} (pinned release tarball)" "正在安装 acme.sh ${ACME_VERSION}（固定版本 tarball）")"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 120 -o "$tmp/acme.tar.gz" "$url" || die "$(tr_msg 'acme.sh download failed' 'acme.sh 下载失败')"
-  tar -xzf "$tmp/acme.tar.gz" -C "$tmp" || die "$(tr_msg 'acme.sh archive extraction failed' 'acme.sh 解压失败')"
-  src="$(find "$tmp" -maxdepth 2 -type f -name acme.sh | head -n 1)"
-  [[ -n "$src" ]] || die "$(tr_msg 'acme.sh not found in the archive' '压缩包中未找到 acme.sh')"
+  local archive_hash
+  archive_hash="$(sha256sum "$tmp/acme.tar.gz")"
+  [[ "${archive_hash%% *}" == "$ACME_ARCHIVE_SHA256" ]] || die "$(tr_msg 'ACME archive checksum mismatch' 'ACME 压缩包校验值不匹配')"
+  python3 - "$tmp/acme.tar.gz" "$tmp" <<'PYACME'
+import sys,tarfile,pathlib
+root=pathlib.Path(sys.argv[2])/'verified';root.mkdir()
+with tarfile.open(sys.argv[1],'r:gz') as t:
+ for rel in ('acme.sh','dnsapi/dns_cf.sh'):
+  m=t.getmember('acme.sh-3.1.6/'+rel)
+  if not m.isfile() or m.size>2*1024**2:raise SystemExit('Invalid ACME member')
+  p=root/rel;p.parent.mkdir(exist_ok=True)
+  with t.extractfile(m) as f:p.write_bytes(f.read())
+PYACME
+  src="$tmp/verified/acme.sh"
   install -d -m 700 "$ACME_HOME"
   [[ -r "$(dirname "$src")/dnsapi/dns_cf.sh" ]] || die "$(tr_msg "acme.sh archive lacks dns_cf plugin" "acme.sh 压缩包缺少 dns_cf 插件")"
   install -m 700 "$src" "$ACME_HOME/acme.sh"
@@ -838,16 +880,22 @@ ensure_acme() {
   ok "$(tr_msg "acme.sh ${ACME_VERSION} installed under $ACME_HOME" "acme.sh ${ACME_VERSION} 已安装到 $ACME_HOME")"
 }
 write_cert_timer() {
-  local svc="${UNIT_FILE%.service}-cert-renew.service" tmr="${UNIT_FILE%.service}-cert-renew.timer"
+  local svc="${UNIT_FILE%.service}-cert-renew.service" tmr="${UNIT_FILE%.service}-cert-renew.timer" runner
+  runner="$INSTALL_ROOT/manager/nowhere-v3.sh"
+  install -d -m 700 "$INSTALL_ROOT/manager"
+  if [[ "$(readlink -f "$MANAGER_FILE")" != "$(readlink -f "$runner" 2>/dev/null || true)" ]]; then
+    install -m 700 "$MANAGER_FILE" "$runner.new"; bash -n "$runner.new"; mv -f "$runner.new" "$runner"
+  fi
   cat >"$svc" <<EOF
 [Unit]
-Description=Renew Nowhere V3 TLS certificate (acme.sh --cron)
+Description=Renew Nowhere V3 TLS certificate with validation and rollback
 Documentation=https://github.com/acmesh-official/acme.sh
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -n -E 0 ${BUILD_LOCK_DIR%.d} ${ACME_HOME}/acme.sh --cron --home ${ACME_HOME}
+ExecStart=/bin/bash "${runner}" cert-renew
+TimeoutStartSec=30min
 EOF
   cat >"$tmr" <<EOF
 [Unit]
@@ -861,8 +909,10 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now "$tmr" >/dev/null 2>&1 || warn "$(tr_msg 'Could not enable the renewal timer; enable nowhere-v3-cert-renew.timer manually' '续期定时器启用失败；请稍后手动 systemctl enable nowhere-v3-cert-renew.timer')"
+  systemctl daemon-reload || die "$(tr_msg 'Renewal unit reload failed' '续期服务定义重载失败')"
+  local timer; timer="$(basename "$tmr")"
+  systemctl enable --now "$timer" || die "$(tr_msg 'Renewal timer enable failed' '续期定时器启用失败')"
+  systemctl is-enabled --quiet "$timer" && systemctl is-active --quiet "$timer" || die "$(tr_msg 'Renewal timer is not enabled and active' '续期定时器未处于启用且运行状态')"
 }
 cert_action() {
   mutating_setup
@@ -876,6 +926,7 @@ cert_action() {
   fi
   [[ -n "$domain" ]] || die "$(tr_msg "Pass --domain (PUBLIC_HOST is empty or not a domain)" "请用 --domain 指定域名（当前 PUBLIC_HOST 为空或不是域名）")"
   validate_cert_domain "$domain"
+  domain="${domain,,}"
   if [[ "$CERT_HTTP" != 1 && -z "$CF_TOKEN" && -z "$CF_TOKEN_FILE" && -t 0 ]]; then
     mode="$(prompt_choice "$(tr_msg 'Validation: 1=Cloudflare DNS-01 (needs token) 2=HTTP-01 (needs port 80)' '验证方式：1=Cloudflare DNS-01（需Token）2=HTTP-01（需80端口）')" 1 1 2)"
     [[ "$mode" == 1 ]] || CERT_HTTP=1
@@ -896,6 +947,7 @@ cert_action() {
   fi
   begin_transaction
   ensure_acme
+  clear_acme_deploy_hooks "$domain"
   if [[ -n "$CERT_EMAIL" ]]; then
     "$ACME_HOME/acme.sh" --home "$ACME_HOME" --server letsencrypt --register-account -m "$CERT_EMAIL" >/dev/null 2>&1 || warn "$(tr_msg 'Account email registration failed; continuing without it' '邮箱注册未成功；将继续申请（可不带邮箱）')"
   fi
@@ -919,12 +971,7 @@ cert_action() {
     0|2) ;;
     *) die "$(tr_msg "Certificate issuance failed (acme.sh exit $rc): check the token scope / the domain being on Cloudflare, or port 80 for --http" "证书申请失败（acme.sh 退出码 $rc）：请检查 Token 权限/域名是否在 Cloudflare，或 --http 模式的 80 端口")" ;;
   esac
-  "$ACME_HOME/acme.sh" --home "$ACME_HOME" --install-cert -d "$domain" \
-    --fullchain-file "$crt" --key-file "$key" \
-    --reloadcmd "systemctl try-restart $SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg 'Failed to install the certificate files' '证书文件安装失败')"
-  chown root:"$RUN_GROUP" "$crt" "$key" 2>/dev/null || true
-  chmod 640 "$crt" "$key"
-  chmod 600 "$ACME_HOME/account.conf" 2>/dev/null || true
+  deploy_acme_certificate "$domain"
   u="$(v3_url rewrite-pem "$u" "$crt" "$key")"
   printf '%s\n' "$u" >"$URL_FILE.new"
   chown root:"$RUN_GROUP" "$URL_FILE.new" 2>/dev/null || true
@@ -932,12 +979,189 @@ cert_action() {
   mv -f "$URL_FILE.new" "$URL_FILE"
   systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || die "$(tr_msg 'Service restart failed after the certificate switch' '切换证书后服务重启失败')"
   wait_service 12 || die "$(tr_msg "V3 did not stay active after the certificate switch" "切换证书后 V3 未持续运行")"
-  TX_COMMITTED=1
   write_cert_timer
+  TX_COMMITTED=1
   ok "$(tr_msg "Certificate installed: $crt" "证书已安装：$crt")"
   info "$(tr_msg 'Automatic renewal: systemd timer nowhere-v3-cert-renew (check with systemctl list-timers)' '自动续期：systemd 定时器 nowhere-v3-cert-renew（systemctl list-timers 可查）')"
   warn "$(tr_msg 'Clients that pinned the old self-signed certificate must re-import links or update their trust entry' '此前 pin 过旧自签证书的客户端需要重新导入链接或更新信任项')"
 }
+# Managed renewal does not run arbitrary ACME cron entries: only the current Portal.
+managed_cert_domain() {
+  local u crt domain
+  u="$(read_url)"
+  [[ "$(v3_url get "$u" role)" == portal ]] || die "$(tr_msg 'Managed certificates require Portal' '托管证书仅适用于 Portal')"
+  crt="$(v3_url get "$u" crt)"
+  domain="${crt#"$TLS_DIR/le."}"; domain="${domain%/fullchain.pem}"
+  [[ "$crt" == "$TLS_DIR/le.$domain/fullchain.pem" ]] || die "$(tr_msg 'Current certificate is not a managed ACME certificate' '当前证书不是托管 ACME 证书')"
+  validate_cert_domain "$domain"
+  [[ "$(v3_url get "$u" key)" == "$TLS_DIR/le.$domain/key.pem" ]] || die "$(tr_msg 'Managed key path mismatch' '托管私钥路径不匹配')"
+  printf '%s' "$domain"
+}
+clear_acme_deploy_hooks() {
+  # ACME loads domain.conf as shell. Do not source it here. Remove old automatic
+  # deployment/restart hooks so validation precedes every live-file change.
+  python3 - "$ACME_HOME" "$1" <<'PY'
+import pathlib,sys
+root=pathlib.Path(sys.argv[1]);domain=sys.argv[2]
+keys={'Le_RealCertPath','Le_RealCACertPath','Le_RealKeyPath','Le_RealFullChainPath','Le_ReloadCmd','Le_PreHook','Le_PostHook','Le_RenewHook','Le_DeployHook'}
+for name in (domain,domain+'_ecc'):
+ p=root/name/(domain+'.conf')
+ if p.is_file():
+  lines=[s for s in p.read_text().splitlines() if s.split('=',1)[0] not in keys]
+  p.write_text('\n'.join(lines)+'\n');p.chmod(0o600)
+PY
+}
+acme_domain_dir() {
+  local domain="$1"
+  if [[ -d "$ACME_HOME/${domain}_ecc" ]]; then printf '%s' "$ACME_HOME/${domain}_ecc"
+  elif [[ -d "$ACME_HOME/$domain" ]]; then printf '%s' "$ACME_HOME/$domain"
+  else return 1; fi
+}
+deploy_acme_certificate() {
+  local domain="$1" source_dir crt key
+  source_dir="$(acme_domain_dir "$domain")" || die "$(tr_msg 'ACME certificate files missing' 'ACME 证书文件缺失')"
+  crt="$TLS_DIR/le.$domain/fullchain.pem"; key="$TLS_DIR/le.$domain/key.pem"
+  validate_pem_pair "$source_dir/fullchain.cer" "$source_dir/$domain.key" "$domain" || die "$(tr_msg 'New certificate invalid, expired, mismatched or wrong-domain; keeping old state' '新证书无效、过期、密钥不匹配或域名不符，保留旧状态')"
+  local -a args=(--home "$ACME_HOME" --install-cert -d "$domain")
+  [[ "$source_dir" != *_ecc ]] || args+=(--ecc)
+  install -d -m 750 -o root -g "$RUN_GROUP" "$TLS_DIR/le.$domain"
+  "$ACME_HOME/acme.sh" "${args[@]}" --fullchain-file "$crt" --key-file "$key" --reloadcmd ':' >/dev/null 2>&1 || die "$(tr_msg 'Certificate deployment failed' '证书部署失败')"
+  chown root:"$RUN_GROUP" "$crt" "$key"; chmod 640 "$crt" "$key"
+  validate_pem_pair "$crt" "$key" "$domain" || die "$(tr_msg 'Deployed certificate validation failed' '部署后的证书校验失败')"
+}
+record_renewal_result() {
+  [[ -d "$CONFIG_DIR" ]] || return 0
+  python3 - "$CONFIG_DIR/renewal-status.json" "$1" <<'PY'
+import pathlib,sys,json,datetime,os,tempfile
+p=pathlib.Path(sys.argv[1]);fd,tmp=tempfile.mkstemp(dir=p.parent,prefix='.renewal-')
+with os.fdopen(fd,'w') as f:json.dump({'status':sys.argv[2],'time_utc':datetime.datetime.now(datetime.timezone.utc).isoformat()},f)
+os.replace(tmp,p)
+PY
+}
+cert_renew_action() {
+  require_root; require_systemd; require_command flock
+  # Busy is a logged skip, not a failed renewal or a false "renewed" event.
+  if [[ "$BUILD_LOCK_HELD" != 1 ]]; then
+    exec {BUILD_LOCK_FD}>"${BUILD_LOCK_DIR%.d}"
+    if ! flock -n "$BUILD_LOCK_FD"; then
+      exec {BUILD_LOCK_FD}>&-
+      info "$(tr_msg 'Renewal skipped: another management operation holds the lock; next timer run will retry' '续期已跳过：管理锁被占用，下次定时任务重试')"; return 0
+    fi
+    BUILD_LOCK_HELD=1
+  fi
+  local domain source_dir rc=0
+  domain="$(managed_cert_domain)"
+  [[ -x "$ACME_HOME/acme.sh" ]] || die "$(tr_msg 'ACME is not initialized; use cert first' 'ACME 尚未初始化，请先运行 cert')"
+  begin_transaction; RENEW_ATTEMPT=1
+  ensure_acme
+  source_dir="$(acme_domain_dir "$domain")" || die 'ACME domain state missing'
+  clear_acme_deploy_hooks "$domain"
+  local -a args=(--home "$ACME_HOME" --renew --server letsencrypt -d "$domain")
+  [[ "$source_dir" != *_ecc ]] || args+=(--ecc)
+  if "$ACME_HOME/acme.sh" "${args[@]}" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ "$rc" == 0 || "$rc" == 2 ]] || die "$(tr_msg "Renewal failed (exit $rc); restoring previous state" "续期失败（退出码 $rc），恢复旧状态")"
+  if [[ "$rc" == 2 ]]; then
+    # Clear legacy hooks, but do not restart a service just because a timer ran.
+    TX_COMMITTED=1; record_renewal_result not_due
+    ok "$(tr_msg 'Certificate not due; no restart performed' '证书尚未到续期时间，没有重启服务')"; return 0
+  fi
+  deploy_acme_certificate "$domain"
+  if [[ "$TX_ACTIVE" == 1 ]]; then
+    systemctl restart "$SERVICE_NAME" || die "$(tr_msg 'Renewed certificate restart failed' '新证书重启失败')"
+    wait_service 12 || die "$(tr_msg 'Service unhealthy after renewal' '续期后服务未持续运行')"
+  fi
+  TX_COMMITTED=1; record_renewal_result renewed
+  ok "$(tr_msg 'Certificate renewed; previously stopped services stay stopped' '证书续期完成；原本停止的服务保持停止')"
+}
+cert_timer_action() {
+  mutating_setup
+  managed_cert_domain >/dev/null
+  begin_transaction; ensure_acme; write_cert_timer; TX_COMMITTED=1
+  ok "$(tr_msg 'Managed renewal timer installed and enabled' '受管理的续期定时器已安装并启用')"
+}
+cert_status_action() {
+  require_root
+  local u crt key
+  u="$(read_url)"; crt="$(v3_url get "$u" crt)"; key="$(v3_url get "$u" key)"
+  [[ "$(v3_url get "$u" tls)" == 2 && -n "$crt" ]] || { info "$(tr_msg 'No persistent PEM certificate; tls=1 certificates are ephemeral' '没有持久 PEM 证书；tls=1 使用临时证书')"; return 0; }
+  printf '%s: %q\n' "$(tr_msg 'Certificate' '证书')" "$crt"
+  openssl x509 -in "$crt" -noout -dates || die "$(tr_msg 'Cannot parse certificate' '无法解析证书')"
+  validate_pem_pair "$crt" "$key" || die "$(tr_msg 'Certificate expired or key mismatched' '证书过期或私钥不匹配')"
+  openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null || warn "$(tr_msg 'Certificate expires within 30 days' '证书将在 30 天内到期')"
+  local expiry
+  expiry="$(openssl x509 -in "$crt" -noout -enddate)"
+  python3 - "$expiry" <<'PYDAYS'
+import datetime,sys
+end=datetime.datetime.strptime(sys.argv[1].partition('=')[2],'%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
+print('DaysRemaining:',int((end-datetime.datetime.now(datetime.timezone.utc)).total_seconds()//86400))
+PYDAYS
+  if [[ -f "${UNIT_FILE%.service}-cert-renew.service" ]] && ! grep -q ' cert-renew' "${UNIT_FILE%.service}-cert-renew.service"; then
+    warn "$(tr_msg 'Legacy renewal timer detected; run cert-timer to migrate without issuing a new certificate' '检测到旧续期定时器；运行 cert-timer 即可迁移，无需重新申请证书')"
+  fi
+  local timer; timer="$(basename "${UNIT_FILE%.service}-cert-renew.timer")"
+  systemctl show "$timer" --property=ActiveState,UnitFileState,NextElapseUSecRealtime --no-pager
+  python3 - "$CONFIG_DIR/renewal-status.json" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+try:
+ d=json.loads(p.read_text());status=d.get('status')
+ if status not in ('renewed','not_due','failed'):raise ValueError()
+ print('Last renewal:',status,'|',str(d.get('time_utc',''))[:40].encode('unicode_escape').decode())
+except (OSError,ValueError):print('Last renewal: no managed result recorded')
+PY
+}
+preview_action() {
+  require_root
+  local candidate old='' cert="$CERT" key="$TLS_KEY" old_role=''
+  [[ ! -s "$URL_FILE" ]] || old="$(read_url)"
+  if [[ -n "$URL_INPUT" ]]; then
+    candidate="$URL_INPUT"; v3_url validate "$candidate" >/dev/null
+    cert="$(v3_url get "$candidate" crt)"; key="$(v3_url get "$candidate" key)"
+  else
+    [[ -n "$KEY" && -n "$ENDPOINT" ]] || die "$(tr_msg 'Preview needs existing configuration or explicit key and endpoint' '预览需要已有配置或明确的密钥与端点')"
+    if [[ "$ROLE" == portal && -z "$cert$key" && -n "$old" && "$(v3_url get "$old" role)" == portal ]]; then
+      cert="$(v3_url get "$old" crt)"; key="$(v3_url get "$old" key)"
+    fi
+    if [[ "$ROLE" == portal && -z "$cert$key" ]]; then
+      info "$(tr_msg 'Apply will generate a persistent certificate; preview creates no files' '应用时将生成持久证书；预览不会创建文件')"
+      cert="$TLS_DIR/pem.NEW/cert.pem"; key="$TLS_DIR/pem.NEW/key.pem"
+    fi
+    candidate="$(v3_url build "$ROLE" "$KEY" "$ENDPOINT" "$MORPH" "$OUT" "$INGRESS" "$PIN" "$SNI" "$cert" "$key")"
+    candidate="$(v3_url set-dial "$candidate" "$DIAL" "$DIAL4" "$DIAL6")"
+    candidate="$(v3_url set-advanced "$candidate" "$RATE" "$ETAR")"
+  fi
+  if [[ -n "$cert$key" && "$cert" != "$TLS_DIR/pem.NEW/cert.pem" ]]; then
+    validate_pem_pair "$cert" "$key" || die "$(tr_msg 'Preview: invalid certificate/key' '预览：证书或私钥无效')"
+  fi
+  if [[ -n "$old" ]]; then
+    old_role="$(v3_url get "$old" role)"
+    [[ "$old_role" == "$(v3_url get "$candidate" role)" || "$ALLOW_ROLE_SWITCH" == 1 ]] || die "$(tr_msg 'Preview: role change requires --allow-role-switch' '预览：切换角色需要 --allow-role-switch')"
+  fi
+  # Allowlisted comparison: never print raw URLs, shared keys, SOCKS credentials or pins.
+  python3 - "$old" "$candidate" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" <<'PY'
+import sys,urllib.parse as U,json
+old,new,public,memory,prelude=sys.argv[1:]
+def fields(raw):
+ if not raw:return {}
+ u=U.urlsplit(raw);q=dict(U.parse_qsl(u.query));d={'role':u.scheme,'endpoint':u.netloc.rsplit('@',1)[-1]+u.path}
+ for k in ('morph','tls','dial','dial4','dial6','rate','etar','crt','key','sni'):
+  if k in q:d['private_key_path' if k=='key' else k]=q[k]
+ for k in ('out','in'):
+  if k in q:d[k]=q[k].rsplit('@',1)[-1] if '@' in q[k] else q[k]
+ return d
+before,after=fields(old),fields(new)
+a=U.urlsplit(old);b=U.urlsplit(new)
+for k in sorted(set(before)|set(after)):
+ if before.get(k)!=after.get(k):print(k+': '+json.dumps(before.get(k),ensure_ascii=False)+' -> '+json.dumps(after.get(k),ensure_ascii=False))
+print('shared_key: '+('changed (hidden)' if a.username!=b.username else 'unchanged (hidden)'))
+qa=dict(U.parse_qsl(a.query));qb=dict(U.parse_qsl(b.query))
+for k in ('pin','out','in'):
+ if qa.get(k)!=qb.get(k):print(k+': changed (sensitive fields hidden)')
+print(json.dumps({'public_host':public,'memory_profile':memory,'morph_prelude':prelude},ensure_ascii=False))
+PY
+  info "$(tr_msg 'Preview only. Applying configure will restart the service; supplied PEM files are staged into managed storage.' '仅预览。实际 configure 会重启服务；自备 PEM 文件会复制到托管目录。')"
+}
+
 ensure_qrencode() {
   has_cmd qrencode && return 0
   if has_cmd apt-get; then
@@ -995,14 +1219,204 @@ rollback_action() {
   validate_version_arg "$VERSION"; write_meta; activate
   ok "$(tr_msg "V3 binary rolled back; config is not converted across versions" "V3 二进制已回滚；配置不跨版本转换")"
 }
+# Backup format 1: bounded regular files only, channel and SHA-256 manifest.
+archive_config() {
+  python3 - "$1" "$2" "$3" "$SCRIPT_CHANNEL" <<'PY'
+import os,sys,tarfile,pathlib,tempfile,hashlib,json,io,shutil
+op,src,dst,channel=sys.argv[1:]; limit=1024**3; manifest='BACKUP-MANIFEST.json'
+def fail():raise ValueError('Invalid, unsafe, damaged or wrong-channel backup')
+def digest(path):
+ h=hashlib.sha256()
+ with open(path,'rb') as f:
+  for b in iter(lambda:f.read(1048576),b''):h.update(b)
+ return h.hexdigest()
+try:
+ if op=='backup':
+  root=pathlib.Path(src); out=pathlib.Path(dst); parent=out.parent.resolve()
+  if not root.is_dir() or root.is_symlink() or os.path.lexists(out):fail()
+  if parent==root.resolve() or root.resolve() in parent.parents:fail()
+  entries=sorted(root.rglob('*')); total=0; hashes={}
+  if len(entries)>10000:fail()
+  for p in entries:
+   if p.is_symlink() or not (p.is_file() or p.is_dir()) or p.name==manifest:fail()
+   if p.is_file():
+    total+=p.stat().st_size
+    if total>limit or p.stat().st_size>256*1024**2:fail()
+    hashes[p.relative_to(root).as_posix()]=digest(p)
+  fd,tmp=tempfile.mkstemp(prefix='.nowhere-backup-',dir=parent);os.close(fd)
+  try:
+   with tarfile.open(tmp,'w:gz') as t:
+    t.add(root,arcname=root.name,recursive=False)
+    for p in entries:t.add(p,arcname=root.name+'/'+p.relative_to(root).as_posix(),recursive=False)
+    data=json.dumps({'format':1,'channel':channel,'sha256':hashes},sort_keys=True).encode()
+    m=tarfile.TarInfo(root.name+'/'+manifest);m.size=len(data);m.mode=0o600;t.addfile(m,io.BytesIO(data))
+   # Verify the stored payload, not just the gzip header.
+   with tarfile.open(tmp,'r:gz') as t:
+    for m in t:
+     rel='/'.join(pathlib.PurePosixPath(m.name).parts[1:])
+     if m.isfile() and rel!=manifest:
+      h=hashlib.sha256()
+      with t.extractfile(m) as f:
+       for b in iter(lambda:f.read(1048576),b''):h.update(b)
+      if h.hexdigest()!=hashes[rel]:fail()
+   os.chmod(tmp,0o600)
+   with open(tmp,'rb') as f:os.fsync(f.fileno())
+   os.link(tmp,out) # atomic publication, never overwrite a file or a dangling link
+  finally:
+   if os.path.exists(tmp):os.unlink(tmp)
+ elif op=='extract':
+  target=pathlib.Path(dst); seen=set(); members=[]; total=0; roots=set()
+  with tarfile.open(src,'r:gz') as t:
+   for m in t:
+    p=pathlib.PurePosixPath(m.name)
+    if p.is_absolute() or '..' in p.parts or not p.parts or not(m.isdir() or m.isfile()):fail()
+    if any(ord(c)<32 or ord(c)==127 for c in m.name) or str(p) in seen:fail()
+    seen.add(str(p));roots.add(p.parts[0]);total+=m.size
+    if len(seen)>10000 or total>limit or m.size>256*1024**2:fail()
+    members.append((m,p))
+   if len(roots)!=1:fail()
+   types={str(p):m.isdir() for m,p in members}
+   for m,p in members:
+    if any(str(a) in types and not types[str(a)] for a in p.parents if str(a)!='.'):fail()
+   for m,p in members:
+    dest=target.joinpath(*p.parts[1:])
+    if len(p.parts)==1:
+     if not m.isdir():fail()
+     continue
+    dest.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if m.isdir():dest.mkdir(exist_ok=True,mode=0o700)
+    else:
+     with t.extractfile(m) as a,open(dest,'xb') as b:shutil.copyfileobj(a,b)
+     os.chmod(dest,0o600)
+  meta=target/'manager.conf'
+  if not meta.is_file() or meta.stat().st_size>65536:fail()
+  pairs={}
+  for line in meta.read_text().splitlines():
+   if '=' in line:
+    k,v=line.split('=',1)
+    if k in pairs:fail()
+    pairs[k]=v
+  if pairs.get('SCRIPT_CHANNEL')!=channel or not (target/'url.conf').is_file():fail()
+  mf=target/manifest
+  if mf.exists():
+   doc=json.loads(mf.read_text())
+   if doc.get('format')!=1 or doc.get('channel')!=channel:fail()
+   actual={p.relative_to(target).as_posix():digest(p) for p in target.rglob('*') if p.is_file() and p!=mf}
+   if actual!=doc.get('sha256'):fail()
+   mf.unlink()
+  else:print('Legacy backup: no integrity manifest; structural/channel validation only',file=sys.stderr)
+ else:fail()
+except (OSError,ValueError,KeyError,tarfile.TarError,UnicodeError,StopIteration,EOFError):
+ print('Backup validation/transfer failed (no live configuration was replaced by this helper)',file=sys.stderr);sys.exit(1)
+PY
+}
+
 backup_action() {
   require_root; acquire_build_lock
-  local out="${BACKUP_PATH:-/root/nowhere-v3-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
-  [[ -d "$CONFIG_DIR" ]] || die "$(tr_msg "No V3 configuration" "没有 V3 配置")"
-  [[ ! -e "$out" ]] || die "$(tr_msg "Backup target exists; refusing overwrite" "备份目标已存在，拒绝覆盖")"
-  case "$(realpath -m "$out")" in "$CONFIG_DIR"/*) die "$(tr_msg "Backup must be outside the config directory" "备份必须位于配置目录之外")" ;; esac
-  tar -czf "$out" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"
-  chmod 600 "$out"; ok "$(tr_msg "Backup saved to $out (contains keys; keep it private)" "已备份到 $out（包含密钥，请妥善保管）")"
+  local out="${1:-${BACKUP_PATH:-/root/nowhere-${SCRIPT_CHANNEL}-backup-$(date +%Y%m%d-%H%M%S).tar.gz}}"
+  archive_config backup "$CONFIG_DIR" "$out" || die "$(tr_msg 'Backup failed; destination was not overwritten' '备份失败；没有覆盖目标文件')"
+  ok "$(tr_msg "Backup saved: $out (contains secrets; mode 600)" "备份已保存：$out（含密钥，权限 600）")"
+}
+
+validate_pem_pair() {
+  local crt="$1" key="$2" host="${3:-}" a b
+  [[ -f "$crt" && -f "$key" ]] || return 1
+  openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1 || return 1
+  a="$(openssl x509 -in "$crt" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)" || return 1
+  b="$(openssl pkey -in "$key" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum)" || return 1
+  [[ "$a" == "$b" ]] || return 1
+  if [[ -n "$host" ]]; then
+    host="${host#[}"; host="${host%]}"
+    if python3 -c 'import ipaddress,sys;ipaddress.ip_address(sys.argv[1])' "$host" 2>/dev/null; then
+      openssl x509 -in "$crt" -noout -checkip "$host" >/dev/null 2>&1
+    else openssl x509 -in "$crt" -noout -checkhost "$host" >/dev/null 2>&1; fi
+  fi
+}
+
+restore_action() {
+  require_root; require_systemd; acquire_build_lock
+  local archive="${BACKUP_PATH:-}" staging u crt key installed prior
+  [[ -f "$archive" && -x "$CURRENT_LINK/nowhere" ]] || die "$(tr_msg 'Restore requires a backup file and an installed core' '恢复需要备份文件和已安装的内核')"
+  staging="$(mktemp -d)"; CLEANUP_PATHS+=("$staging")
+  archive_config extract "$archive" "$staging" || die "$(tr_msg 'Backup rejected before any service change' '备份校验失败，未修改服务')"
+  u="$(head -n 1 "$staging/url.conf")"
+  if [[ "$SCRIPT_CHANNEL" == v2 ]]; then
+    installed="$(installed_core_version)"; validate_imported_url "$u" "$installed"
+    crt="$(query_get "$u" crt)"; key="$(query_get "$u" key)"
+  else
+    installed="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"; validate_version_arg "$installed"
+    v3_url validate "$u" >/dev/null; crt="$(v3_url get "$u" crt)"; key="$(v3_url get "$u" key)"
+  fi
+  if [[ -n "$crt$key" ]]; then
+    [[ "$crt" != "$CONFIG_DIR/"* ]] || crt="$staging/${crt#"$CONFIG_DIR/"}"
+    [[ "$key" != "$CONFIG_DIR/"* ]] || key="$staging/${key#"$CONFIG_DIR/"}"
+    validate_pem_pair "$crt" "$key" || die "$(tr_msg 'Backup certificate/key invalid, expired or unavailable' '备份证书/私钥无效、过期或缺失')"
+  fi
+  # Never source manager.conf: validate only the settings interpolated into units.
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in MEMORY_PROFILE) validate_memory_profile "$v" ;; MORPH_PRELUDE) validate_morph_prelude "$v" ;; esac
+  done <"$staging/manager.conf"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    info "$(tr_msg 'Backup valid; restore would replace configuration and restart the installed core. No changes made.' '备份校验通过；恢复将替换配置并重启当前内核。本次未修改。')"; return 0
+  fi
+  [[ "$ASSUME_YES" == 1 ]] || prompt_confirm "$(tr_msg 'Restore this trusted backup and restart the service?' '确认恢复此可信备份并重启服务？')" || return 0
+  prior="${archive}.before-restore-$(date +%Y%m%d-%H%M%S)-$$.tar.gz"
+  [[ ! -d "$CONFIG_DIR" ]] || backup_action "$prior"
+  begin_transaction; ensure_user
+  # Preserve the currently installed core; restore config, never archive executables outside it.
+  python3 - "$staging/manager.conf" "$installed" "$SCRIPT_VERSION" <<'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]);rows=[s for s in p.read_text().splitlines() if not s.startswith(('CORE_VERSION=','SCRIPT_VERSION='))]
+p.write_text('\n'.join(rows+['CORE_VERSION='+sys.argv[2],'SCRIPT_VERSION='+sys.argv[3]])+'\n')
+PY
+  systemctl stop "$SERVICE_NAME"
+  rm -rf -- "$CONFIG_DIR"; install -d -m 750 "$CONFIG_DIR"; cp -a "$staging/." "$CONFIG_DIR/"
+  chown -R root:"$RUN_GROUP" "$CONFIG_DIR"
+  find "$CONFIG_DIR" -type d -exec chmod 750 {} +
+  find "$CONFIG_DIR" -type f -exec chmod 640 {} +
+  if [[ "$SCRIPT_CHANNEL" == v3 && -d "$ACME_HOME" ]]; then
+    chown -R root:root "$ACME_HOME"; find "$ACME_HOME" -type d -exec chmod 700 {} +; find "$ACME_HOME" -type f -exec chmod 600 {} +
+    [[ ! -f "$ACME_HOME/acme.sh" ]] || chmod 700 "$ACME_HOME/acme.sh"
+  fi
+  load_meta; write_launcher; write_unit
+  systemctl restart "$SERVICE_NAME" || die "$(tr_msg 'Restore restart failed; rolling back' '恢复后重启失败，正在回滚')"
+  wait_service 12 || die "$(tr_msg 'Restored service unhealthy; rolling back' '恢复后服务未持续运行，正在回滚')"
+  TX_COMMITTED=1
+  ok "$(tr_msg 'Configuration restored; core unchanged' '配置恢复成功；内核未更换')"
+  if [[ "$SCRIPT_CHANNEL" == v3 ]]; then warn "$(tr_msg 'Run cert-timer to refresh renewal integration when using managed ACME certificates' '若使用托管 ACME 证书，请运行 cert-timer 更新续期集成')"; fi
+}
+
+# Structured allowlist: do not export raw URLs, logs, environment, keys or tokens.
+diagnostics_action() {
+  require_root
+  python3 - "$SCRIPT_CHANNEL" "$SCRIPT_VERSION" "$URL_FILE" "$SERVICE_NAME" "${DIAG_OUTPUT:-}" <<'PY'
+import sys,json,subprocess,pathlib,urllib.parse as U,datetime,os
+channel,version,urlfile,service,out=sys.argv[1:]
+def command(args):
+ try:return subprocess.run(args,capture_output=True,text=True,timeout=8).stdout.strip()
+ except (OSError,subprocess.TimeoutExpired):return 'unavailable'
+r={'channel':channel,'manager_version':version,'time_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'configuration':'missing','service':{}}
+for key in ('ActiveState','SubState','NRestarts','Result','UnitFileState'):
+ value=command(['systemctl','show',service,'--property='+key,'--value'])
+ r['service'][key]=value if len(value)<100 and all(c.isalnum() or c in '-_.' for c in value) else 'unavailable'
+try:
+ u=U.urlsplit(pathlib.Path(urlfile).read_text().splitlines()[0]);q=dict(U.parse_qsl(u.query));r['configuration']='present';r['role']=u.scheme if u.scheme in ('portal','vector','egress') else 'invalid'
+ r['morph']=q.get('morph','default') if q.get('morph','default') in ('0','1','default') else 'invalid'
+ r['tls']=q.get('tls','default') if q.get('tls','default') in ('1','2','default') else 'invalid'
+ if q.get('crt'):
+  value=command(['openssl','x509','-in',q['crt'],'-noout','-enddate'])
+  try:
+   expiry=datetime.datetime.strptime(value.partition('=')[2],'%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
+   r['certificate']={'expires_utc':expiry.isoformat(),'days_remaining':int((expiry-datetime.datetime.now(datetime.timezone.utc)).total_seconds()//86400)}
+  except ValueError:r['certificate']={'status':'unreadable'}
+except (OSError,ValueError,IndexError):r['configuration']='unreadable_or_invalid'
+data=json.dumps(r,ensure_ascii=False,indent=2)+'\n'
+if out:
+ fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+ with os.fdopen(fd,'w') as f:f.write(data)
+else:print(data,end='')
+PY
 }
 uninstall_action() {
   mutating_setup
@@ -1032,6 +1446,8 @@ doctor_action() {
   local u; u="$(read_url)"
   if [[ "$(v3_url get "$u" tls)" == 2 ]]; then
     runuser -u "$RUN_USER" -- test -r "$(v3_url get "$u" crt)" || die "$(tr_msg "Service account cannot read the certificate" "服务账户不能读取证书")"
+    validate_pem_pair "$(v3_url get "$u" crt)" "$(v3_url get "$u" key)" || die "$(tr_msg 'Certificate expired, invalid or mismatched' '证书过期、无效或私钥不匹配')"
+    openssl x509 -in "$(v3_url get "$u" crt)" -noout -checkend 2592000 >/dev/null 2>&1 || warn "$(tr_msg 'Certificate expires within 30 days' '证书将在 30 天内到期')"
     runuser -u "$RUN_USER" -- test -r "$(v3_url get "$u" key)" || die "$(tr_msg "Service account cannot read the private key" "服务账户不能读取私钥")"
   fi
   if [[ "$DOCTOR_PROBE" == 1 ]]; then
@@ -1294,6 +1710,16 @@ print(m[1] if m else "")')"
 }
 usage() {
   if [[ "$LANG_CODE" == zh ]]; then
+    printf '%s\n' '证书：cert-status / cert-renew / cert-timer；预览：configure --dry-run [选项] 或 preview [选项]'
+  else
+    printf '%s\n' 'Certificates: cert-status / cert-renew / cert-timer; preview: configure --dry-run [options] or preview [options]'
+  fi
+  if [[ "$LANG_CODE" == zh ]]; then
+    printf '%s\n' '新增：restore 备份.tar.gz [--dry-run] [-y]；diagnostics [--output 报告.json]'
+  else
+    printf '%s\n' 'New: restore BACKUP.tar.gz [--dry-run] [-y]; diagnostics [--output report.json]'
+  fi
+  if [[ "$LANG_CODE" == zh ]]; then
     cat <<EOF
 Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + systemd，Bash >=4.3）
 默认固定 v3.0.0；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
@@ -1410,8 +1836,11 @@ menu() {
       "21. $(tr_msg 'Change and save language' '切换并保存语言')" "22. $(tr_msg 'Update manager script' '更新管理脚本')" \
       "$(tr_msg '--- Certificate ---' '--- 证书 ---')" \
       "23. $(tr_msg 'Issue/renew a Let'\''s Encrypt certificate' '申请/续期 TLS 证书（Let'\''s Encrypt）')" \
+      "24. $(tr_msg 'Certificate status' '证书状态')" "25. $(tr_msg 'Renew current certificate' '续期当前证书')" \
+      "26. $(tr_msg 'Install/refresh renewal timer' '安装/更新续期定时器')" "27. $(tr_msg 'Restore backup' '恢复配置备份')" \
+      "28. $(tr_msg 'Redacted diagnostics' '脱敏诊断报告')" "29. $(tr_msg 'Preview configuration' '预览配置')" \
       "0/q. $(tr_msg 'Exit' '退出')"
-    if ! read -r -p "$(tr_msg 'Choice [0-23]: ' '请输入选项 [0-23]：')" choice </dev/tty; then return 0; fi
+    if ! read -r -p "$(tr_msg 'Choice [0-29]: ' '请输入选项 [0-29]：')" choice </dev/tty; then return 0; fi
     [[ "$choice" != 0 && "$choice" != q ]] || return 0
     set +e
     (
@@ -1432,7 +1861,13 @@ menu() {
         21) LANG_CODE="$(prompt_choice "$(tr_msg 'Language: 1=zh 2=en' '语言：1=zh 2=en')" "$LANG_CODE" zh en)"; save_language ;;
         22) self_update ;;
         23) cert_action ;;
-        *) warn "$(tr_msg 'Invalid choice; enter 0-23 or q' '无效选项；请输入 0-23 或 q')" ;;
+        24) cert_status_action ;;
+        25) cert_renew_action ;;
+        26) cert_timer_action ;;
+        27) BACKUP_PATH="$(prompt_value 'Backup path' '')"; restore_action ;;
+        28) diagnostics_action ;;
+        29) load_config_fields; installation_wizard; preview_action ;;
+        *) warn "$(tr_msg 'Invalid choice; enter 0-29 or q' '无效选项；请输入 0-29 或 q')" ;;
       esac
     )
     rc=$?
@@ -1450,11 +1885,13 @@ main() {
   # load them before parsing so explicit CLI arguments below still win. Runs as
   # root against a valid existing config only, so a non-root call still reaches
   # the clean require-root error in the action itself.
-  if [[ "$ACTION" == configure && "$(id -u)" -eq 0 && -s "$URL_FILE" ]]; then
+  if [[ ( "$ACTION" == configure || "$ACTION" == preview ) && "$(id -u)" -eq 0 && -s "$URL_FILE" ]]; then
     if v3_url validate "$(head -n 1 "$URL_FILE")" >/dev/null 2>&1; then load_config_fields; fi
   fi
   while (($#)); do
     case "$1" in
+      --dry-run) DRY_RUN=1; shift ;;
+      --output) DIAG_OUTPUT="${2:?}"; shift 2 ;;
       --version) VERSION="${2:?}"; shift 2 ;;
       --role|--type) ROLE="${2:?}"; ROLE_SET=1; shift 2 ;;
       --key) KEY="${2:?}"; shift 2 ;;
@@ -1490,7 +1927,7 @@ main() {
       --allow-role-switch) ALLOW_ROLE_SWITCH=1; shift ;;
       -h|--help) ACTION=help; shift ;;
       *)
-        if [[ "$ACTION" == backup && "$1" != -* && -z "${BACKUP_PATH:-}" ]]; then BACKUP_PATH="$1"; shift
+        if [[ ( "$ACTION" == backup || "$ACTION" == restore ) && "$1" != -* && -z "${BACKUP_PATH:-}" ]]; then BACKUP_PATH="$1"; shift
         elif [[ "$ACTION" == probe && "$1" != -* ]]; then PROBE_TARGET="$1"; shift
         elif [[ "$ACTION" == fingerprint && "$1" != -* && -z "$FINGERPRINT_URL" ]]; then FINGERPRINT_URL="$1"; shift
         else die "$(tr_msg 'Unknown option' '未知参数')"; fi ;;
@@ -1501,6 +1938,9 @@ main() {
   validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
   [[ "$ROLE" == portal || "$ROLE" == vector || "$ROLE" == egress ]] || die "$(tr_msg 'Invalid role' '无效角色')"
   [[ "$PUBLIC_HOST$NODE_NAME" != *$'\n'* && "$PUBLIC_HOST$NODE_NAME" != *$'\r'* ]] || die "$(tr_msg 'Host/name contains a newline' '地址或名称包含换行')"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    case "$ACTION" in configure) preview_action; return ;; restore) ;; *) die "--dry-run: configure or restore only" ;; esac
+  fi
   case "$ACTION" in
     menu) menu ;;
     help) usage ;;
@@ -1529,6 +1969,12 @@ main() {
     rollback) rollback_action ;;
     backup) backup_action ;;
     cert) cert_action ;;
+    cert-renew) cert_renew_action ;;
+    cert-status) cert_status_action ;;
+    cert-timer) cert_timer_action ;;
+    preview) preview_action ;;
+    restore) restore_action ;;
+    diagnostics) diagnostics_action ;;
     clean-releases) cleanup_old_releases ;;
     versions) versions_action ;;
     check-updates) VERSION=latest-v3; resolve_version; printf '%s\n' "$VERSION" ;;

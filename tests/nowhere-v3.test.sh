@@ -575,6 +575,7 @@ run_cert() { # run_cert <token-file-or-empty> [extra env assignments]
     source "$1"
     require_root() { :; }; require_systemd() { :; }; mutating_setup() { :; }
     wait_service() { return 0; }; chown() { :; }
+    ensure_acme() { :; }; deploy_acme_certificate() { "$ACME_HOME/acme.sh" --install-cert --fullchain-file "$TLS_DIR/le.$1/fullchain.pem" --key-file "$TLS_DIR/le.$1/key.pem"; }
     CERT_DOMAIN=relay.example.com
     [ -z "$2" ] || CF_TOKEN_FILE="$2"
     eval "$3"
@@ -587,7 +588,7 @@ t_ok "cert action succeeds (CF DNS-01)" 0 "$rc"
 t_ok "cert files installed" yes "$([[ -f "$SANDBOX/etc/tls/le.relay.example.com/fullchain.pem" && -f "$SANDBOX/etc/tls/le.relay.example.com/key.pem" ]] && echo yes || echo no)"
 t_ok "url.conf switched to tls=2 with the staged cert" yes "$(grep -q 'tls=2' "$URL_FILE" && grep -q 'le.relay.example.com' "$URL_FILE" && echo yes || echo no)"
 t_ok "renewal timer written" yes "$([[ -f "$SANDBOX/unit-v3-cert-renew.timer" ]] && grep -qs 'OnCalendar=daily' "$SANDBOX/unit-v3-cert-renew.timer" && echo yes || echo no)"
-t_ok "renewal service runs acme.sh --cron" yes "$(grep -qs 'acme.sh --cron' "$SANDBOX/unit-v3-cert-renew.service" && echo yes || echo no)"
+t_ok "renewal service runs managed cert-renew" yes "$(grep -qs 'cert-renew' "$SANDBOX/unit-v3-cert-renew.service" && echo yes || echo no)"
 t_ok "acme.sh argv uses DNS-01" yes "$(grep -qs -- '--dns dns_cf' "$SANDBOX/acme/calls.log" && echo yes || echo no)"
 t_ok "token never appears in acme.sh argv" yes "$([[ "$(cat "$SANDBOX/acme/calls.log")" != *cf-token-should-not-leak* ]] && echo yes || echo no)"
 rm -f "$SANDBOX/acme/calls.log"

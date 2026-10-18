@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.4.2
+# Nowhere V2 Unified Manager v1.5.0
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,7 +9,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.4.2"
+readonly SCRIPT_VERSION="1.5.0"
 readonly SCRIPT_CHANNEL="v2"
 # v1.4.2: fail closed on unreadable certificates; preserve Vector key compatibility;
 #   transactional doctor repair with explicit restart failures and fresh checks.
@@ -148,6 +148,8 @@ else
   C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_CYAN=''; C_NC=''
 fi
 
+DRY_RUN=0
+DIAG_OUTPUT=''
 info() { printf '%b[Nowhere V2]%b %s\n' "$C_BLUE" "$C_NC" "$*"; }
 ok()   { printf '%b[OK]%b %s\n' "$C_GREEN" "$C_NC" "$*"; }
 warn() { printf '%b[Warn]%b %s\n' "$C_YELLOW" "$C_NC" "$*" >&2; }
@@ -1712,15 +1714,19 @@ build_native_vector_link_from_portal() {
         return 1
       fi
     elif [[ "$tls" == 2 ]]; then
-      local cert needs
+      local cert needs verify_host
+      verify_host="$sni"; [[ "$verify_host" != none ]] || verify_host="$PUBLIC_HOST"
       cert="$(query_get "$u" crt)"
-      if certificate_needs_pin "$cert"; then needs=0; else needs=$?; fi
+      if certificate_needs_pin "$cert" "$verify_host"; then needs=0; else needs=$?; fi
       if [[ "$needs" == 0 ]]; then
         if ! pin="$(local_portal_fingerprint "$u")"; then
           warn "$(tr_msg "Self-signed or private-CA certificate could not be read for pinning; pass --client-pin <sha256> or check ${cert}." "自签名或私有 CA 证书无法读取以填入 pin；请显式指定 --client-pin <sha256>，或检查 ${cert}。")"
           return 1
         fi
         warn "$(tr_msg "tls=2 link: the certificate does not verify against the system trust store, so the pin was auto-filled. Regenerate the links after you rotate this certificate." "tls=2 链接：证书无法通过系统信任库验证，已自动填入 pin。若轮换该证书，请重新生成链接。")"
+      elif [[ "$needs" == 3 ]]; then
+        warn "$(tr_msg 'Trusted certificate does not match the link hostname; check public-host/client-sni' '受信任证书与链接主机名不匹配，请检查 public-host/client-sni')"
+        return 1
       elif [[ "$needs" == 2 ]]; then
         warn "$(tr_msg "Cannot inspect ${cert}; refusing to emit an unverified link. Check the certificate or pass --client-pin." "无法读取 ${cert}；拒绝生成未验证链接。请检查证书或显式传入 --client-pin。")"
         return 1
@@ -1753,19 +1759,21 @@ PY
   printf '\n%s\n%s#%s\n' "$(tr_msg "Generic V2 share URI (client must explicitly support V2/nw2):" "通用 V2 分享 URI（客户端必须明确支持 V2/nw2）：")" "$generic" "$(urlencode "$name")"
 }
 
-# 0 = certificate needs pin, 1 = system-trusted chain, 2 = unreadable/unparsable.
+# 0 = untrusted chain needs pin, 1 = trusted, 2 = invalid/expired, 3 = hostname mismatch.
 # Used to decide whether a tls=2 link needs a pin (see build_native_vector_link_from_portal).
 certificate_needs_pin() {
-  local cert="$1" subj iss
+  local cert="$1" host="${2:-}"
+  local -a verify=(-purpose sslserver -untrusted "$cert")
   [[ -r "$cert" ]] || return 2
-  subj="$(openssl x509 -in "$cert" -noout -subject 2>/dev/null || true)"; subj="${subj#*=}"
-  iss="$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null || true)"; iss="${iss#*=}"
-  [[ -n "$subj" && -n "$iss" ]] || return 2
-  [[ "$subj" == "$iss" ]] && return 0
-  # issuer != subject is NOT the same as system-trusted: a certificate signed by
-  # a private CA fails verification too, and a pin-less link would then be
-  # rejected by every client. Only skip the pin when the chain actually verifies.
-  openssl verify -untrusted "$cert" "$cert" >/dev/null 2>&1 && return 1
+  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 || return 2
+  if [[ -n "$host" && "$host" != none ]]; then
+    host="${host#[}"; host="${host%]}"
+    if python3 -c 'import ipaddress,sys;ipaddress.ip_address(sys.argv[1])' "$host" 2>/dev/null; then verify+=(-verify_ip "$host"); else verify+=(-verify_hostname "$host"); fi
+  fi
+  if openssl verify -purpose sslserver -untrusted "$cert" "$cert" >/dev/null 2>&1; then
+    openssl verify "${verify[@]}" "$cert" >/dev/null 2>&1 && return 1
+    return 3
+  fi
   return 0
 }
 
@@ -1884,8 +1892,21 @@ doctor_action() {
     warn "$(tr_msg "V1 service definition detected. V2 files are isolated, but network ports must not collide." "检测到 V1 服务。V1/V2 文件已隔离，但监听端口不能冲突。")"
     warnc=$((warnc+1))
   fi
+  printf 'NRestarts: '; systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || true
+  if [[ -n "$u" && "$(query_get "$u" tls)" == 2 ]]; then
+    if ! validate_pem_pair "$(query_get "$u" crt)" "$(query_get "$u" key)"; then
+      warn "$(tr_msg 'Certificate/key expired, mismatched or invalid' '证书/私钥过期、不匹配或无效')"; fail=$((fail+1))
+    elif ! openssl x509 -in "$(query_get "$u" crt)" -noout -checkend 2592000 >/dev/null 2>&1; then
+      warn "$(tr_msg 'Certificate expires within 30 days' '证书将在 30 天内到期')"; warnc=$((warnc+1))
+    fi
+    if [[ -n "$PUBLIC_HOST" ]] && certificate_needs_pin "$(query_get "$u" crt)" "$PUBLIC_HOST"; then :
+    else
+      local cert_status=$?
+      if [[ "$cert_status" == 3 ]]; then warn "$(tr_msg 'Trusted certificate hostname mismatch' '受信任证书主机名不匹配')"; fail=$((fail+1)); fi
+    fi
+  fi
   if ((fail>0)); then
-    printf '\n'; journalctl -u "$SERVICE_NAME" -n 30 --no-pager 2>/dev/null || true
+    info "$(tr_msg 'Use diagnostics for a shareable redacted report; inspect journal locally for details' '可用 diagnostics 导出脱敏报告；详细日志请在本机查看')"
     warn "$(tr_msg "Doctor: ${fail} critical issue(s), ${warnc} warning(s)" "Doctor：${fail} 个严重问题，${warnc} 个警告")"
     return 1
   fi
@@ -1902,25 +1923,204 @@ rollback_action() {
   if rollback_binary "$target"; then ok "$(tr_msg "Rollback succeeded" "回滚成功")"; else [[ -n "$current" ]] && rollback_binary "$current" || true; die "$(tr_msg "Rollback target failed; original restored when possible" "目标版本回滚失败，已尽可能恢复原版本")"; fi
 }
 
+# Backup format 1: bounded regular files only, channel and SHA-256 manifest.
+archive_config() {
+  python3 - "$1" "$2" "$3" "$SCRIPT_CHANNEL" <<'PY'
+import os,sys,tarfile,pathlib,tempfile,hashlib,json,io,shutil
+op,src,dst,channel=sys.argv[1:]; limit=1024**3; manifest='BACKUP-MANIFEST.json'
+def fail():raise ValueError('Invalid, unsafe, damaged or wrong-channel backup')
+def digest(path):
+ h=hashlib.sha256()
+ with open(path,'rb') as f:
+  for b in iter(lambda:f.read(1048576),b''):h.update(b)
+ return h.hexdigest()
+try:
+ if op=='backup':
+  root=pathlib.Path(src); out=pathlib.Path(dst); parent=out.parent.resolve()
+  if not root.is_dir() or root.is_symlink() or os.path.lexists(out):fail()
+  if parent==root.resolve() or root.resolve() in parent.parents:fail()
+  entries=sorted(root.rglob('*')); total=0; hashes={}
+  if len(entries)>10000:fail()
+  for p in entries:
+   if p.is_symlink() or not (p.is_file() or p.is_dir()) or p.name==manifest:fail()
+   if p.is_file():
+    total+=p.stat().st_size
+    if total>limit or p.stat().st_size>256*1024**2:fail()
+    hashes[p.relative_to(root).as_posix()]=digest(p)
+  fd,tmp=tempfile.mkstemp(prefix='.nowhere-backup-',dir=parent);os.close(fd)
+  try:
+   with tarfile.open(tmp,'w:gz') as t:
+    t.add(root,arcname=root.name,recursive=False)
+    for p in entries:t.add(p,arcname=root.name+'/'+p.relative_to(root).as_posix(),recursive=False)
+    data=json.dumps({'format':1,'channel':channel,'sha256':hashes},sort_keys=True).encode()
+    m=tarfile.TarInfo(root.name+'/'+manifest);m.size=len(data);m.mode=0o600;t.addfile(m,io.BytesIO(data))
+   # Verify the stored payload, not just the gzip header.
+   with tarfile.open(tmp,'r:gz') as t:
+    for m in t:
+     rel='/'.join(pathlib.PurePosixPath(m.name).parts[1:])
+     if m.isfile() and rel!=manifest:
+      h=hashlib.sha256()
+      with t.extractfile(m) as f:
+       for b in iter(lambda:f.read(1048576),b''):h.update(b)
+      if h.hexdigest()!=hashes[rel]:fail()
+   os.chmod(tmp,0o600)
+   with open(tmp,'rb') as f:os.fsync(f.fileno())
+   os.link(tmp,out) # atomic publication, never overwrite a file or a dangling link
+  finally:
+   if os.path.exists(tmp):os.unlink(tmp)
+ elif op=='extract':
+  target=pathlib.Path(dst); seen=set(); members=[]; total=0; roots=set()
+  with tarfile.open(src,'r:gz') as t:
+   for m in t:
+    p=pathlib.PurePosixPath(m.name)
+    if p.is_absolute() or '..' in p.parts or not p.parts or not(m.isdir() or m.isfile()):fail()
+    if any(ord(c)<32 or ord(c)==127 for c in m.name) or str(p) in seen:fail()
+    seen.add(str(p));roots.add(p.parts[0]);total+=m.size
+    if len(seen)>10000 or total>limit or m.size>256*1024**2:fail()
+    members.append((m,p))
+   if len(roots)!=1:fail()
+   types={str(p):m.isdir() for m,p in members}
+   for m,p in members:
+    if any(str(a) in types and not types[str(a)] for a in p.parents if str(a)!='.'):fail()
+   for m,p in members:
+    dest=target.joinpath(*p.parts[1:])
+    if len(p.parts)==1:
+     if not m.isdir():fail()
+     continue
+    dest.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if m.isdir():dest.mkdir(exist_ok=True,mode=0o700)
+    else:
+     with t.extractfile(m) as a,open(dest,'xb') as b:shutil.copyfileobj(a,b)
+     os.chmod(dest,0o600)
+  meta=target/'manager.conf'
+  if not meta.is_file() or meta.stat().st_size>65536:fail()
+  pairs={}
+  for line in meta.read_text().splitlines():
+   if '=' in line:
+    k,v=line.split('=',1)
+    if k in pairs:fail()
+    pairs[k]=v
+  if pairs.get('SCRIPT_CHANNEL')!=channel or not (target/'url.conf').is_file():fail()
+  mf=target/manifest
+  if mf.exists():
+   doc=json.loads(mf.read_text())
+   if doc.get('format')!=1 or doc.get('channel')!=channel:fail()
+   actual={p.relative_to(target).as_posix():digest(p) for p in target.rglob('*') if p.is_file() and p!=mf}
+   if actual!=doc.get('sha256'):fail()
+   mf.unlink()
+  else:print('Legacy backup: no integrity manifest; structural/channel validation only',file=sys.stderr)
+ else:fail()
+except (OSError,ValueError,KeyError,tarfile.TarError,UnicodeError,StopIteration,EOFError):
+ print('Backup validation/transfer failed (no live configuration was replaced by this helper)',file=sys.stderr);sys.exit(1)
+PY
+}
+
 backup_action() {
-  require_root; install_runtime_deps; acquire_build_lock
-  local out="${1:-/root/nowhere-v2-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
-  [[ ! -e "$out" ]] || die "$(tr_msg "Backup target already exists; refusing to overwrite: $out" "备份文件已存在，拒绝覆盖：$out")"
-  [[ -d "$CONFIG_DIR" ]] || { warn "$(tr_msg "No V2 configuration directory found: ${CONFIG_DIR}" "未找到 V2 配置目录: ${CONFIG_DIR}")"; return 1; }
-  # Refuse an output path inside the directory being archived: tar would try to
-  # include its own output and warn about the file changing as it is read.
-  local out_dir cfg_abs
-  out_dir="$(readlink -f "$(dirname -- "$out")" 2>/dev/null || true)"
-  cfg_abs="$(readlink -f "$CONFIG_DIR" 2>/dev/null || true)"
-  if [[ -n "$out_dir" && -n "$cfg_abs" && ( "$out_dir" == "$cfg_abs" || "$out_dir" == "$cfg_abs"/* ) ]]; then
-    die "$(tr_msg "Backup output must be outside ${CONFIG_DIR}." "备份输出不能放在 ${CONFIG_DIR} 目录内。")"
+  require_root; acquire_build_lock
+  local out="${1:-${BACKUP_PATH:-/root/nowhere-${SCRIPT_CHANNEL}-backup-$(date +%Y%m%d-%H%M%S).tar.gz}}"
+  archive_config backup "$CONFIG_DIR" "$out" || die "$(tr_msg 'Backup failed; destination was not overwritten' '备份失败；没有覆盖目标文件')"
+  ok "$(tr_msg "Backup saved: $out (contains secrets; mode 600)" "备份已保存：$out（含密钥，权限 600）")"
+}
+
+validate_pem_pair() {
+  local crt="$1" key="$2" host="${3:-}" a b
+  [[ -f "$crt" && -f "$key" ]] || return 1
+  openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1 || return 1
+  a="$(openssl x509 -in "$crt" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)" || return 1
+  b="$(openssl pkey -in "$key" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum)" || return 1
+  [[ "$a" == "$b" ]] || return 1
+  if [[ -n "$host" ]]; then
+    host="${host#[}"; host="${host%]}"
+    if python3 -c 'import ipaddress,sys;ipaddress.ip_address(sys.argv[1])' "$host" 2>/dev/null; then
+      openssl x509 -in "$crt" -noout -checkip "$host" >/dev/null 2>&1
+    else openssl x509 -in "$crt" -noout -checkhost "$host" >/dev/null 2>&1; fi
   fi
-  if ! tar -czf "$out" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"; then
-    rm -f -- "$out" 2>/dev/null || true
-    die "$(tr_msg "Backup failed" "备份失败")"
+}
+
+restore_action() {
+  require_root; require_systemd; acquire_build_lock
+  local archive="${BACKUP_PATH:-}" staging u crt key installed prior
+  [[ -f "$archive" && -x "$CURRENT_LINK/nowhere" ]] || die "$(tr_msg 'Restore requires a backup file and an installed core' '恢复需要备份文件和已安装的内核')"
+  staging="$(mktemp -d)"; CLEANUP_PATHS+=("$staging")
+  archive_config extract "$archive" "$staging" || die "$(tr_msg 'Backup rejected before any service change' '备份校验失败，未修改服务')"
+  u="$(head -n 1 "$staging/url.conf")"
+  if [[ "$SCRIPT_CHANNEL" == v2 ]]; then
+    installed="$(installed_core_version)"; validate_imported_url "$u" "$installed"
+    crt="$(query_get "$u" crt)"; key="$(query_get "$u" key)"
+  else
+    installed="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"; validate_version_arg "$installed"
+    v3_url validate "$u" >/dev/null; crt="$(v3_url get "$u" crt)"; key="$(v3_url get "$u" key)"
   fi
-  chmod 600 "$out" || die "$(tr_msg "Backup created but chmod 600 failed: $out" "备份已创建，但设置 600 权限失败: $out")"
-  ok "$(tr_msg "Config/TLS backup: $out" "配置/TLS 备份已创建: $out")"
+  if [[ -n "$crt$key" ]]; then
+    [[ "$crt" != "$CONFIG_DIR/"* ]] || crt="$staging/${crt#"$CONFIG_DIR/"}"
+    [[ "$key" != "$CONFIG_DIR/"* ]] || key="$staging/${key#"$CONFIG_DIR/"}"
+    validate_pem_pair "$crt" "$key" || die "$(tr_msg 'Backup certificate/key invalid, expired or unavailable' '备份证书/私钥无效、过期或缺失')"
+  fi
+  # Never source manager.conf: validate only the settings interpolated into units.
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in MEMORY_PROFILE) validate_memory_profile "$v" ;; MORPH_PRELUDE) validate_morph_prelude "$v" ;; esac
+  done <"$staging/manager.conf"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    info "$(tr_msg 'Backup valid; restore would replace configuration and restart the installed core. No changes made.' '备份校验通过；恢复将替换配置并重启当前内核。本次未修改。')"; return 0
+  fi
+  [[ "$ASSUME_YES" == 1 ]] || prompt_confirm "$(tr_msg 'Restore this trusted backup and restart the service?' '确认恢复此可信备份并重启服务？')" || return 0
+  prior="${archive}.before-restore-$(date +%Y%m%d-%H%M%S)-$$.tar.gz"
+  [[ ! -d "$CONFIG_DIR" ]] || backup_action "$prior"
+  begin_transaction; ensure_user
+  # Preserve the currently installed core; restore config, never archive executables outside it.
+  python3 - "$staging/manager.conf" "$installed" "$SCRIPT_VERSION" <<'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]);rows=[s for s in p.read_text().splitlines() if not s.startswith(('CORE_VERSION=','SCRIPT_VERSION='))]
+p.write_text('\n'.join(rows+['CORE_VERSION='+sys.argv[2],'SCRIPT_VERSION='+sys.argv[3]])+'\n')
+PY
+  systemctl stop "$SERVICE_NAME"
+  rm -rf -- "$CONFIG_DIR"; install -d -m 750 "$CONFIG_DIR"; cp -a "$staging/." "$CONFIG_DIR/"
+  chown -R root:"$RUN_GROUP" "$CONFIG_DIR"
+  find "$CONFIG_DIR" -type d -exec chmod 750 {} +
+  find "$CONFIG_DIR" -type f -exec chmod 640 {} +
+  if [[ "$SCRIPT_CHANNEL" == v3 && -d "$ACME_HOME" ]]; then
+    chown -R root:root "$ACME_HOME"; find "$ACME_HOME" -type d -exec chmod 700 {} +; find "$ACME_HOME" -type f -exec chmod 600 {} +
+    [[ ! -f "$ACME_HOME/acme.sh" ]] || chmod 700 "$ACME_HOME/acme.sh"
+  fi
+  load_meta; write_launcher; write_unit
+  systemctl restart "$SERVICE_NAME" || die "$(tr_msg 'Restore restart failed; rolling back' '恢复后重启失败，正在回滚')"
+  wait_service 12 || die "$(tr_msg 'Restored service unhealthy; rolling back' '恢复后服务未持续运行，正在回滚')"
+  TX_COMMITTED=1
+  ok "$(tr_msg 'Configuration restored; core unchanged' '配置恢复成功；内核未更换')"
+  if [[ "$SCRIPT_CHANNEL" == v3 ]]; then warn "$(tr_msg 'Run cert-timer to refresh renewal integration when using managed ACME certificates' '若使用托管 ACME 证书，请运行 cert-timer 更新续期集成')"; fi
+}
+
+# Structured allowlist: do not export raw URLs, logs, environment, keys or tokens.
+diagnostics_action() {
+  require_root
+  python3 - "$SCRIPT_CHANNEL" "$SCRIPT_VERSION" "$URL_FILE" "$SERVICE_NAME" "${DIAG_OUTPUT:-}" <<'PY'
+import sys,json,subprocess,pathlib,urllib.parse as U,datetime,os
+channel,version,urlfile,service,out=sys.argv[1:]
+def command(args):
+ try:return subprocess.run(args,capture_output=True,text=True,timeout=8).stdout.strip()
+ except (OSError,subprocess.TimeoutExpired):return 'unavailable'
+r={'channel':channel,'manager_version':version,'time_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'configuration':'missing','service':{}}
+for key in ('ActiveState','SubState','NRestarts','Result','UnitFileState'):
+ value=command(['systemctl','show',service,'--property='+key,'--value'])
+ r['service'][key]=value if len(value)<100 and all(c.isalnum() or c in '-_.' for c in value) else 'unavailable'
+try:
+ u=U.urlsplit(pathlib.Path(urlfile).read_text().splitlines()[0]);q=dict(U.parse_qsl(u.query));r['configuration']='present';r['role']=u.scheme if u.scheme in ('portal','vector','egress') else 'invalid'
+ r['morph']=q.get('morph','default') if q.get('morph','default') in ('0','1','default') else 'invalid'
+ r['tls']=q.get('tls','default') if q.get('tls','default') in ('1','2','default') else 'invalid'
+ if q.get('crt'):
+  value=command(['openssl','x509','-in',q['crt'],'-noout','-enddate'])
+  try:
+   expiry=datetime.datetime.strptime(value.partition('=')[2],'%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
+   r['certificate']={'expires_utc':expiry.isoformat(),'days_remaining':int((expiry-datetime.datetime.now(datetime.timezone.utc)).total_seconds()//86400)}
+  except ValueError:r['certificate']={'status':'unreadable'}
+except (OSError,ValueError,IndexError):r['configuration']='unreadable_or_invalid'
+data=json.dumps(r,ensure_ascii=False,indent=2)+'\n'
+if out:
+ fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+ with os.fdopen(fd,'w') as f:f.write(data)
+else:print(data,end='')
+PY
 }
 
 clean_build() {
@@ -2021,6 +2221,8 @@ interactive_menu() {
  [16] 查看 V1 -> V2 兼容性说明
  [17] 仅卸载 V2
  [18] 更新 V2 管理脚本
+ [19] 恢复配置备份
+ [20] 脱敏诊断报告
  [0] 退出
 EOF2
     else
@@ -2043,12 +2245,14 @@ EOF2
  [16] V1 -> V2 compatibility note
  [17] Uninstall V2 only
  [18] Self-update V2 manager
+ [19] Restore configuration backup
+ [20] Redacted diagnostics
  [0] Exit
 EOF2
     fi
 
     local c
-    read -r -p "$(tr_msg 'Choice [0-18]: ' '请输入选项 [0-18]: ')" c </dev/tty || exit 0
+    read -r -p "$(tr_msg 'Choice [0-20]: ' '请输入选项 [0-20]: ')" c </dev/tty || exit 0
     set +e
     # Subshells do not run the parent EXIT trap, so re-arm cleanup/rollback here:
     # a failing menu action must restore the transaction snapshot before the menu
@@ -2073,6 +2277,8 @@ EOF2
       16) show_v1_migration_note ;;
       17) prompt_confirm "$(tr_msg 'Purge V2 config too?' '是否同时删除 V2 配置和密钥？')" && PURGE=1 || PURGE=0; uninstall_action ;;
       18) self_update ;;
+      19) read -r -p "Backup path: " BACKUP_PATH </dev/tty; restore_action ;;
+      20) diagnostics_action ;;
       0) exit 42 ;;
       *) warn "$(tr_msg 'Invalid choice.' '无效选项。')" ;;
     esac
@@ -2086,6 +2292,11 @@ EOF2
 }
 
 usage() {
+  if [[ "$LANG_CODE" == zh ]]; then
+    printf '%s\n' '新增：restore 备份.tar.gz [--dry-run] [-y]；diagnostics [--output 报告.json]'
+  else
+    printf '%s\n' 'New: restore BACKUP.tar.gz [--dry-run] [-y]; diagnostics [--output report.json]'
+  fi
   if [[ "$LANG_CODE" == zh ]]; then
     cat <<EOF2
 Nowhere V2 管理器 v${SCRIPT_VERSION}（通道：${SCRIPT_CHANNEL}）
@@ -2202,7 +2413,7 @@ set_cli() { CLI_SET["$1"]=1; CLI_VAL["$1"]="$2"; printf -v "$1" '%s' "$2"; }
 parse_args() {
   if (($#>0)); then
     case "$1" in
-      install|upgrade|update|configure|config|status|link|links|logs|log|restart|start|stop|tui|fingerprint|rollback|doctor|check|diagnose|clean-releases|clean-build|check-updates|backup|uninstall|remove|self-update|help) ACTION="$1"; shift ;;
+      install|upgrade|update|configure|config|status|link|links|logs|log|restart|start|stop|tui|fingerprint|rollback|doctor|check|diagnose|clean-releases|clean-build|check-updates|backup|restore|diagnostics|uninstall|remove|self-update|help) ACTION="$1"; shift ;;
     esac
   fi
   if [[ "$ACTION" == upgrade || "$ACTION" == update ]]; then UPGRADE_MODE=1; VERSION=latest-v2; fi
@@ -2251,11 +2462,13 @@ parse_args() {
       --swap) SWAP_MODE="${2:?missing --swap}"; shift 2 ;;
       --keep-source) KEEP_SOURCE=1; shift ;;
       --github-token) GITHUB_TOKEN="${2:?missing --github-token}"; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --output) DIAG_OUTPUT="${2:?missing --output}"; shift 2 ;;
       --fix) DOCTOR_FIX=1; shift ;;
       --force-reconfigure) FORCE_RECONFIGURE=1; shift ;;
       --purge) PURGE=1; shift ;;
       -h|--help) ACTION=help; shift ;;
-      *) if [[ "$ACTION" == backup && -z "$BACKUP_PATH" && "$1" != -* ]]; then BACKUP_PATH="$1"; shift; else die "$(tr_msg "Unknown option: ${1}" "未知选项: ${1}")"; fi ;;
+      *) if [[ ( "$ACTION" == backup || "$ACTION" == restore ) && -z "$BACKUP_PATH" && "$1" != -* ]]; then BACKUP_PATH="$1"; shift; else die "$(tr_msg "Unknown option: ${1}" "未知选项: ${1}")"; fi ;;
     esac
   done
 }
@@ -2273,8 +2486,10 @@ apply_noninteractive_defaults() {
   fi
 }
 
+# New commands preserve the original single-instance namespace.
 main() {
   parse_args "$@"
+  [[ "$DRY_RUN" != 1 || "$ACTION" == restore ]] || die "--dry-run: restore only"
   validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"; validate_config_mode "$CONFIG_MODE"; validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"; validate_dial_settings
   [[ "$LANG_CODE" == ask && "$ACTION" != menu ]] && resolve_language auto
   # Defaults are only synthesized for a fresh generated configuration. Existing
@@ -2298,6 +2513,8 @@ main() {
     clean-build) clean_build ;;
     check-updates) check_updates ;;
     backup) backup_action "$BACKUP_PATH" ;;
+    restore) restore_action ;;
+    diagnostics) diagnostics_action ;;
     uninstall|remove) uninstall_action ;;
     self-update) self_update ;;
     help) usage ;;

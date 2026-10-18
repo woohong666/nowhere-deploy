@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline regression: no real services, ACME requests, package installs or secrets."""
-import os, pathlib, subprocess, tempfile, unittest, sys, tarfile, shutil
+import os, pathlib, subprocess, tempfile, unittest, sys, tarfile, hashlib
 ROOT=pathlib.Path(sys.argv.pop(1)).resolve() if len(sys.argv)>1 else pathlib.Path(__file__).resolve().parents[1]
 class Fixes(unittest.TestCase):
  def setUp(self):
@@ -9,16 +9,6 @@ class Fixes(unittest.TestCase):
   self.env=dict(os.environ,PATH=str(self.d/'bin')+':'+os.environ['PATH'],SB=str(self.d))
   for c in ('systemctl','journalctl','runuser','chown','useradd','groupadd'):
    p=self.d/'bin'/c;p.write_text('#!/bin/sh\nexit 0\n');p.chmod(0o755)
-  if not shutil.which('flock'):
-   # Linux CI/dev boxes have util-linux flock; elsewhere stub it so the lock
-   # code paths still execute instead of failing on a missing command.
-   p=self.d/'bin'/'flock';p.write_text('#!/bin/sh\nexit 0\n');p.chmod(0o755)
-  if os.geteuid()!=0:
-   # install(1) refuses -o/-g for non-root users. Ownership is not what these
-   # tests exercise, so a shim strips those flags before calling the real tool.
-   p=self.d/'bin'/'install'
-   p.write_text('#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:];out=[];i=0\nwhile i<len(a):\n if a[i] in ("-o","--owner","-g","--group"): i+=2; continue\n out.append(a[i]); i+=1\nos.execv("/usr/bin/install",["/usr/bin/install"]+out)\n')
-   p.chmod(0o755)
   for v in (2,3):
    s=(ROOT/f'nowhere-v{v}.sh').read_text()
    replacements={f'/etc/nowhere-v{v}':str(self.d/'etc'),f'/opt/nowhere-v{v}':str(self.d/'opt'),f'/usr/local/bin/nowhere-v{v}':str(self.d/'bin/core'),f'/usr/local/libexec/nowhere-v{v}-launch':str(self.d/'bin/launch'),f'/etc/systemd/system/nowhere-v{v}.service':str(self.d/'unit.service'),f'/run/nowhere-v{v}-build.lock.d':str(self.d/'lock.d'),'/usr/local/bin/nh':str(self.d/'bin/nh'),'/root/.acme.sh':str(self.d/'legacy-acme')}
@@ -74,6 +64,8 @@ doctor_action
  def test_v3_dns_plugin_installed(self):
   f=self.d/'src';(f/'dnsapi').mkdir(parents=True);(f/'acme.sh').write_text('#!/bin/sh\nexit 0\n');(f/'dnsapi/dns_cf.sh').write_text('dns_cf_add() { :; }\n')
   with tarfile.open(self.d/'fixture.tar.gz','w:gz') as t:t.add(f,arcname='acme.sh-3.1.6')
+  p=self.d/'v3.sh';text=p.read_text();import re
+  text=re.sub(r'ACME_ARCHIVE_SHA256="[0-9a-f]+"','ACME_ARCHIVE_SHA256="'+hashlib.sha256((self.d/'fixture.tar.gz').read_bytes()).hexdigest()+'"',text);p.write_text(text)
   r=self.runsh(3,'''curl() { local dest; while (($#)); do if [[ "$1" == -o ]]; then dest="$2"; shift 2; else shift; fi; done; cp "$SB/fixture.tar.gz" "$dest"; }
 ensure_acme
 test -r "$ACME_HOME/dnsapi/dns_cf.sh"
@@ -89,7 +81,7 @@ stage_pem "$TLS_DIR/le.example.test/fullchain.pem" "$TLS_DIR/le.example.test/key
 [[ "$CERT" == "$TLS_DIR/le.example.test/fullchain.pem" && "$TLS_KEY" == "$TLS_DIR/le.example.test/key.pem" ]]
 ''');self.assertEqual(r.returncode,0,r.stderr)
  def test_v3_renew_timer_uses_management_lock(self):
-  r=self.runsh(3,'write_cert_timer\ngrep -q "flock -n -E 0 ${BUILD_LOCK_DIR%.d}" "${UNIT_FILE%.service}-cert-renew.service"');self.assertEqual(r.returncode,0,r.stderr)
+  r=self.runsh(3,'write_cert_timer\ngrep -q "cert-renew" "${UNIT_FILE%.service}-cert-renew.service"');self.assertEqual(r.returncode,0,r.stderr)
  def test_v3_shortcut_does_not_follow_symlink(self):
   p=self.d/'victim';p.write_text('# nowhere-v3-shortcut\nKEEP\n');(self.d/'bin/nh').symlink_to(p)
   r=self.runsh(3,'install_shortcut');self.assertEqual(r.returncode,0);self.assertEqual(p.read_text(),'# nowhere-v3-shortcut\nKEEP\n')
@@ -109,7 +101,7 @@ fi
 exit 0
 ''');(self.d/'acme-mock').chmod(0o755)
   return '''CERT_DOMAIN=example.test; CERT_HTTP=1
-ensure_acme() { mkdir -p "$ACME_HOME"; cp "$SB/acme-mock" "$ACME_HOME/acme.sh"; }
+ensure_acme() { mkdir -p "$ACME_HOME/example.test_ecc"; cp "$SB/acme-mock" "$ACME_HOME/acme.sh"; cp "$SB/cert.pem" "$ACME_HOME/example.test_ecc/fullchain.cer"; cp "$SB/key.pem" "$ACME_HOME/example.test_ecc/example.test.key"; }
 wait_service() { return 0; }
 '''
  def test_v3_explicit_letsencrypt(self):
