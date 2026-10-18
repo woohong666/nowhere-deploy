@@ -8,6 +8,18 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.5.0
+
+#### ✨ Added
+
+- **Structured `diagnostics`**: emits an allowlisted JSON document (`--output FILE`, `O_EXCL`, mode 600) with service state, configuration summary and certificate expiry — never raw URLs, logs, environment, keys or tokens.
+- **`backup` / `restore`**: backups are bounded (10,000 entries, 256 MiB per file, 1 GiB total), reject symlinks/special files and existing targets, carry a per-file SHA-256 manifest and are published atomically. `restore` validates the archive (channel, manifest, PEM validity) before touching anything, supports `--dry-run`, keeps an automatic before-restore backup and rolls back through the transaction if the service fails to restart.
+
+#### 🐛 Fixed
+
+- **`doctor` certificate checks**: expiry, certificate/key match, trusted-certificate hostname verification for the public host and restart counts are now part of the health check; error diagnostics no longer dump raw logs that may contain credentials.
+- **`links` fail closed on certificates**: links now verify expiry, server purpose and hostname/IP; a trusted certificate for the wrong hostname is refused instead of silently falling back to a pin, and self-signed detection no longer relies on `subject == issuer` alone.
+
 ### Nowhere V2 manager (`nowhere-v2.sh`) — v1.4.2
 
 #### 🐛 Fixed
@@ -78,6 +90,19 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed the unused `allowed` query-key set from the imported-URL validator (`v1.3.0`). Unknown keys follow upstream first-wins/ignore semantics, so the set only documented a rule that was never enforced.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
+
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.0
+
+#### ✨ Added
+
+- **Managed renewal lifecycle (`cert-timer`, `cert-renew`, `cert-status`)**: `cert-renew` renews only the current Portal's managed certificate, clears legacy acme.sh deploy/reload hooks (without sourcing `domain.conf`), validates the new certificate before installing it and rolls back on failure; "not due" performs no restart, a held lock is logged as a skip, and the last managed result is recorded. `cert-timer` installs the renewal timer with a fixed manager copy under `/opt/nowhere-v3/manager/` and verifies it is enabled and active. `cert-status` reports validity dates, days remaining, key match, timer state and the last result, and flags legacy direct-cron timers.
+- **`preview` / `configure --dry-run`**: prints a masked diff of the proposed configuration (shared key, pin and SOCKS credentials hidden; role switches gated by `--allow-role-switch`) without writing configuration, issuing certificates, installing packages or restarting the service.
+- **`backup` / `restore` / `diagnostics`**: bounded manifest-backed backups, validated transactional restore and allowlisted JSON diagnostics, matching the V2 manager v1.5.0 behaviour.
+- **Hardened ACME bootstrap**: acme.sh remains pinned to 3.1.6; the release tarball, the installed program and the DNS plugin are digest-verified and only the two expected regular files are extracted.
+
+#### 🐛 Fixed
+
+- `uninstall` also removes the `nowhere-v3-cert-renew.service` / `.timer` units; `doctor` checks certificate expiry, key match, service-account readability and warns 30 days before expiry.
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.3.1
 

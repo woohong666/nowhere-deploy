@@ -404,17 +404,27 @@ sudo bash nowhere-v2.sh clean-releases          # 手动清理
 sudo bash nowhere-v2.sh clean-build             # 清理源码编译缓存与临时 Swap
 ```
 
-### 8.3 备份配置与证书
+### 8.3 备份、恢复与诊断
 
 ```bash
-# 默认备份到 /root/nowhere-v2-backup-<时间戳>.tar.gz
+# 默认备份到 /root/nowhere-v2-backup-<时间戳>.tar.gz（含密钥，权限 600）
 sudo bash nowhere-v2.sh backup
 
-# 或指定输出路径
+# 或指定输出路径（目标已存在时拒绝覆盖）
 sudo bash nowhere-v2.sh backup /root/my-backup.tar.gz
+
+# 先校验备份包，不改动任何东西
+sudo bash nowhere-v2.sh restore /root/my-backup.tar.gz --dry-run
+
+# 交互确认后恢复（恢复前会自动在备份包旁另存一份 before-restore 备份）
+sudo bash nowhere-v2.sh restore /root/my-backup.tar.gz
+
+# 可分享的 JSON 健康快照（仅白名单字段；不含密钥、链接、日志或令牌）
+sudo bash nowhere-v2.sh diagnostics
+sudo bash nowhere-v2.sh diagnostics --output /root/nowhere-v2-diagnostics.json
 ```
 
-备份内容为 `/etc/nowhere-v2`（运行配置、管理元数据、TLS 证书），不含二进制。
+备份内容为 `/etc/nowhere-v2`（运行配置、管理元数据、TLS 证书），不含二进制。备份包有大小上限（10000 个条目、单文件 256 MiB、总量 1 GiB），拒绝软链接与特殊文件，并带逐文件 SHA-256 清单；`restore` 会先校验通道、清单与 PEM 材料，恢复时保留当前内核，重启失败自动回滚。只恢复自己信任的备份——清单用于检测损坏，不是签名。
 
 ### 8.4 检查新版本
 
@@ -454,7 +464,9 @@ sudo bash nowhere-v2.sh uninstall --purge
 | `doctor` / `check` / `diagnose` | 健康检查（`--fix` 自动修复） |
 | `clean-releases` / `clean-build` | 清理旧 Release / 编译缓存 |
 | `check-updates` | 查询官网最新稳定版本 |
-| `backup [路径]` | 备份配置与证书 |
+| `backup [路径]` | 备份配置与证书（有大小上限、带 SHA-256 清单） |
+| `restore 备份包 [--dry-run]` | 校验并恢复备份（校验通道/清单/PEM；恢复前自动另存备份） |
+| `diagnostics [--output 文件]` | 白名单字段的 JSON 健康快照（不含密钥） |
 | `uninstall` / `remove` | 卸载（`--purge` 彻底删除） |
 | `self-update` | 更新管理脚本本身（默认从本仓库 `main` 分支拉取） |
 | `help` | 帮助 |
@@ -814,7 +826,20 @@ Portal probe需要PUBLIC_HOST，可临时传`--public-host`；持久证书读取
 临时tls=1用官方内核探测本机TCP指纹；纯UDP临时证书无法核实时拒绝链接/探测。
 Egress角色不能发起probe。Egress自身可使用dial*；只有Portal的out=egress禁止dial*。
 重配同角色复用PEM；明确提供--cert/--tls-key才轮换；角色切换仍需确认或--allow-role-switch。
-本版未实现可选的`backup --restore`，不要将普通备份命令当作恢复功能。
+备份、恢复、诊断与预览（v1.4.0）。恢复会先校验通道、清单与 PEM 材料，恢复前自动另存备份，保留当前内核，重启失败自动回滚：
+
+```bash
+sudo bash nowhere-v3.sh backup /root/nowhere-v3-backup.tar.gz
+sudo bash nowhere-v3.sh restore /root/nowhere-v3-backup.tar.gz --dry-run
+sudo bash nowhere-v3.sh restore /root/nowhere-v3-backup.tar.gz
+sudo bash nowhere-v3.sh diagnostics --output /root/nowhere-v3-diagnostics.json
+sudo bash nowhere-v3.sh cert-status                    # 证书 + 定时器 + 上次续期结果
+sudo bash nowhere-v3.sh cert-timer                     # 同步受管理的续期定时器
+sudo bash nowhere-v3.sh preview --url-file /root/proposed-url.conf
+sudo bash nowhere-v3.sh configure --dry-run --endpoint '*:2084'
+```
+
+`preview` / `configure --dry-run` 输出脱敏差异（共享密钥、pin 与 SOCKS 口令隐藏；切换角色需 `--allow-role-switch`），不写任何文件。**更换管理脚本后请运行一次 `cert-timer`**，让固定续期入口同步新代码。
 
 ### 13.4 安装后的文件位置
 
@@ -899,6 +924,9 @@ sudo bash nowhere-v3.sh cert --domain relay.example.com --http
 **查看与排查**
 
 ```bash
+sudo bash nowhere-v3.sh cert-status                 # 有效期、剩余天数、私钥匹配、定时器、上次受管理结果
+sudo bash nowhere-v3.sh cert-timer                  # 安装/同步受管理定时器——更换管理脚本后运行一次
+sudo bash nowhere-v3.sh cert-renew                  # 立即执行受管理续期；未到期不重启，锁被占用会记录跳过
 systemctl list-timers 'nowhere-v3-cert-renew*'      # 下次续期时间
 journalctl -u nowhere-v3-cert-renew                 # 续期日志
 sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重签
@@ -909,6 +937,7 @@ sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重�
 - 从自签切换为 LE 后**指纹会变**：此前在 App 里 pin 过旧指纹的要更新信任项；`links` 会输出新的指纹/pin
 - **原生链接的 pin 策略**：证书能被系统 CA 验证（证书链 + 主机名）时，`links` 输出**不带 pin** 的 Vector/Egress 链接——续期后无需重新导入；自签 / 私有 CA 证书仍输出叶证书 pin；证书不可读取时拒绝输出，请修复文件或显式传 pin
 - 想换域名重签：再跑一次 `cert --domain 新域名`；旧目录 `le.<旧域名>` 可手动删除
+- **受管理续期**：每日定时器执行 `cert-renew`，仅续期当前 Portal 的托管证书；部署前清除旧 acme.sh 的自动部署/重载钩子并校验新证书，失败自动回滚；未到期不会重启服务，锁被占用会记录跳过。`cert-status` 显示有效期、剩余天数、私钥匹配、定时器状态与上次受管理结果（`/etc/nowhere-v3/renewal-status.json`）；检测到旧版直接 `--cron` 的定时器会提示，可用 `cert-timer` 迁移。
 
 ## 测试
 
@@ -918,11 +947,14 @@ sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重�
 bash tests/nowhere-v2.test.sh
 bash tests/nowhere-v3.test.sh
 python3 tests/test_fixes.py .
+python3 tests/test_features.py .
 ```
 
 它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的
 `/etc/nowhere-v2` 或 systemd**；而且一旦某条声明被改名，测试会**直接中止**，而不是悄悄
 落到真实路径上。CI 每次 push 都会连同 `bash -n` 与 `shellcheck` 一起跑它。
+`tests/test_features.py` 在沙箱里覆盖备份/恢复、诊断、预览与受管理续期，离线使用固定的
+`tests/fixtures/acme-3.1.6.tar.gz`；CI 会一并运行。
 `tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。

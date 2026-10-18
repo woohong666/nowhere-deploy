@@ -404,17 +404,27 @@ sudo bash nowhere-v2.sh clean-releases          # prune manually
 sudo bash nowhere-v2.sh clean-build             # drop source-build cache and swap
 ```
 
-### 8.3 Backing up config and certificates
+### 8.3 Backing up, restoring, and diagnostics
 
 ```bash
-# Defaults to /root/nowhere-v2-backup-<timestamp>.tar.gz
+# Defaults to /root/nowhere-v2-backup-<timestamp>.tar.gz (contains secrets; mode 600)
 sudo bash nowhere-v2.sh backup
 
-# Or choose the output path
+# Or choose the output path (an existing file is never overwritten)
 sudo bash nowhere-v2.sh backup /root/my-backup.tar.gz
+
+# Validate an archive without changing anything
+sudo bash nowhere-v2.sh restore /root/my-backup.tar.gz --dry-run
+
+# Restore after confirmation (an automatic before-restore backup is saved next to the archive)
+sudo bash nowhere-v2.sh restore /root/my-backup.tar.gz
+
+# Shareable JSON health snapshot (allowlisted fields only; no keys, URLs, logs or tokens)
+sudo bash nowhere-v2.sh diagnostics
+sudo bash nowhere-v2.sh diagnostics --output /root/nowhere-v2-diagnostics.json
 ```
 
-The archive contains `/etc/nowhere-v2` (runtime config, manager metadata, TLS material), not the binary.
+The archive contains `/etc/nowhere-v2` (runtime config, manager metadata, TLS material), not the binary. Backups are bounded (10,000 entries, 256 MiB per file, 1 GiB total), reject symlinks and special files, and carry a per-file SHA-256 manifest; `restore` checks the channel, the manifest and the PEM material before replacing anything, keeps the installed core and rolls back if the restarted service fails. Only restore archives you trust — the manifest detects corruption, it is not a signature.
 
 ### 8.4 Checking for new versions
 
@@ -454,7 +464,9 @@ sudo bash nowhere-v2.sh uninstall --purge
 | `doctor` / `check` / `diagnose` | Health check (`--fix` repairs) |
 | `clean-releases` / `clean-build` | Prune releases / build cache |
 | `check-updates` | Query the newest official stable version |
-| `backup [PATH]` | Back up config and certificates |
+| `backup [PATH]` | Back up config and certificates (bounded, SHA-256 manifest) |
+| `restore ARCHIVE [--dry-run]` | Validate and restore a backup (channel/manifest/PEM checked; automatic before-restore backup) |
+| `diagnostics [--output FILE]` | Allowlisted JSON health snapshot (no secrets) |
 | `uninstall` / `remove` | Uninstall (`--purge` deletes everything) |
 | `self-update` | Update the manager itself (defaults to this repository's `main`) |
 | `help` | Usage |
@@ -827,7 +839,26 @@ A UDP-only temporary certificate cannot be verified and links/probe are refused.
 Egress cannot initiate probe. Egress itself allows dial*; only Portal out=egress forbids it.
 Same-role reconfiguration reuses PEM; explicit --cert/--tls-key rotates it.
 Role switches still require confirmation or --allow-role-switch.
-Optional `backup --restore` is not implemented in this release.
+Backup, restore, diagnostics and preview (v1.4.0). `restore` validates the
+channel, the manifest and the PEM material first, keeps an automatic
+before-restore backup, keeps the installed core and rolls back if the restarted
+service fails:
+
+```bash
+sudo bash nowhere-v3.sh backup /root/nowhere-v3-backup.tar.gz
+sudo bash nowhere-v3.sh restore /root/nowhere-v3-backup.tar.gz --dry-run
+sudo bash nowhere-v3.sh restore /root/nowhere-v3-backup.tar.gz
+sudo bash nowhere-v3.sh diagnostics --output /root/nowhere-v3-diagnostics.json
+sudo bash nowhere-v3.sh cert-status                    # certificate + timer + last renewal
+sudo bash nowhere-v3.sh cert-timer                     # sync the managed renewal timer
+sudo bash nowhere-v3.sh preview --url-file /root/proposed-url.conf
+sudo bash nowhere-v3.sh configure --dry-run --endpoint '*:2084'
+```
+
+`preview` / `configure --dry-run` print a masked diff (shared key, pin and SOCKS
+credentials hidden; role switches require `--allow-role-switch`) and write
+nothing. After replacing the manager script, run `cert-timer` once so the fixed
+renewal entry picks up the new code.
 
 ### 13.4 Files after installation
 
@@ -911,6 +942,9 @@ sudo bash nowhere-v3.sh cert --domain relay.example.com --http
 **Inspect and troubleshoot**
 
 ```bash
+sudo bash nowhere-v3.sh cert-status                 # validity, days left, key match, timer, last managed result
+sudo bash nowhere-v3.sh cert-timer                  # (re)install the managed timer — run once after replacing the manager script
+sudo bash nowhere-v3.sh cert-renew                  # managed renewal now; not due => no restart, held lock => logged skip
 systemctl list-timers 'nowhere-v3-cert-renew*'      # next renewal
 journalctl -u nowhere-v3-cert-renew                 # renewal logs
 sudo bash nowhere-v3.sh cert --domain your.example.com --force   # force reissue
@@ -921,6 +955,7 @@ sudo bash nowhere-v3.sh cert --domain your.example.com --force   # force reissue
 - Switching from self-signed to LE **changes the fingerprint**: clients that pinned the old one must update their trust entry; `links` prints the new fingerprint/pin
 - **Pin policy for native links**: when the certificate verifies against the system CA for the public host (chain + hostname), `links` emits Vector/Egress URLs **without** `pin=` — nothing to re-import after a renewal; self-signed / private-CA certificates still get a leaf pin; an unreadable certificate refuses to emit a link (fix the file or pass an explicit pin)
 - To reissue for another domain just run `cert --domain new.example.com`; the old `le.<old-domain>` directory can be removed by hand
+- **Managed renewal**: the daily timer runs `cert-renew`, which renews only the current Portal's managed certificate and clears legacy acme.sh deploy/reload hooks before validating the new one (rollback on failure; "not due" never restarts the service; a held lock is recorded as a skip). `cert-status` shows validity, days remaining, key match, timer state and the last managed result (`/etc/nowhere-v3/renewal-status.json`); a legacy direct-`--cron` timer is flagged and can be migrated with `cert-timer`.
 
 ## Testing
 
@@ -930,6 +965,7 @@ Logic is covered by sandboxed suites that need no root and no network:
 bash tests/nowhere-v2.test.sh
 bash tests/nowhere-v3.test.sh
 python3 tests/test_fixes.py .
+python3 tests/test_features.py .
 ```
 
 Before sourcing the manager it rewrites its path declarations into a temporary
@@ -937,7 +973,9 @@ directory, so the suite can never touch a real `/etc/nowhere-v2` or systemd — 
 it aborts if a declaration has been renamed rather than silently falling through
 to the real paths. CI runs it on every push together with `bash -n` and
 `shellcheck`. `tests/test_fixes.py` holds the targeted offline regressions for
-reviewed fix batches (stubbed systemd/ACME); CI runs it as well.
+reviewed fix batches (stubbed systemd/ACME); `tests/test_features.py` covers
+backup/restore, diagnostics, preview and managed renewal in a sandbox and uses
+the pinned `tests/fixtures/acme-3.1.6.tar.gz` offline; CI runs both as well.
 
 **Integration is not covered automatically.** The install, upgrade, and systemd
 flows have never been executed by the test suite. Run
