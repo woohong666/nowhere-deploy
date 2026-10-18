@@ -746,7 +746,7 @@ nh                                 # or just reopen the menu with the shortcut
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
 - **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
-- **Tracking v3.x**: the default is pinned to the verified `v3.0.0`; `upgrade --version latest-v3` opts in to newer stable v3 releases.
+- **Tracking v3.x**: the default is pinned to the verified `v3.0.1`; `upgrade --version latest-v3` opts in to newer stable v3 releases.
 
 ### 13.2 V2 / V3 at a glance
 
@@ -803,7 +803,7 @@ New options: `--name` (share name), `--wizard`, `--dial/--dial4/--dial6`;
 all previous CLI options remain supported.
 
 `versions` lists every available stable tag; fewer than ten upstream releases
-means fewer than ten results, never invented tags. The default stays v3.0.0;
+means fewer than ten results, never invented tags. The default stays v3.0.1;
 `upgrade --version latest-v3` explicitly opts in. Self-update checks Bash syntax,
 V3 channel and numeric version, rejects downgrades and replaces atomically in the
 same directory with a backup. It changes no service, configuration or core binary.

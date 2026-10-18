@@ -746,7 +746,7 @@ nh                                 # 或直接用快捷命令回到菜单
 
 - **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
 - **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
-- **跟进 v3.x**：默认固定已核验的 `v3.0.0`；用 `upgrade --version latest-v3` 显式跟进更新的稳定 v3 版本。
+- **跟进 v3.x**：默认固定已核验的 `v3.0.1`；用 `upgrade --version latest-v3` 显式跟进更新的稳定 v3 版本。
 
 ### 13.2 V2 / V3 对照
 
@@ -799,7 +799,7 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 新增 `--name`（分享链接名称）、`--wizard`、`--dial/--dial4/--dial6`；原CLI选项全部保留。
 
 `versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
-默认仍固定v3.0.0，跟进新版本必须显式`upgrade --version latest-v3`。
+默认仍固定v3.0.1，跟进新版本必须显式`upgrade --version latest-v3`。
 自更新验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
 不更新服务、配置或内核。来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
 

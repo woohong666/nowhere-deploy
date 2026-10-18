@@ -20,7 +20,7 @@ set -Eeuo pipefail
 umask 077
 readonly SCRIPT_VERSION="1.4.0"
 readonly SCRIPT_CHANNEL="v3"
-readonly DEFAULT_CORE_VERSION="v3.0.0"
+readonly DEFAULT_CORE_VERSION="v3.0.1"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly SERVICE_NAME="nowhere-v3" RUN_USER="nowhere-v3" RUN_GROUP="nowhere-v3"
 readonly INSTALL_ROOT="/opt/nowhere-v3"
@@ -1722,7 +1722,7 @@ usage() {
   if [[ "$LANG_CODE" == zh ]]; then
     cat <<EOF
 Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + systemd，Bash >=4.3）
-默认固定 v3.0.0；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
+默认固定 v3.0.1；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
 独立账户/服务 nowhere-v3；配置 /etc/nowhere-v3；程序 /opt/nowhere-v3。
 不修改V1/V2，不自动开放防火墙。新Portal使用持久PEM；同角色配置复用证书。
 用法：sudo bash nowhere-v3.sh [ACTION] [选项]（已是 root 可省略 sudo）；无参数进入循环菜单。
@@ -1763,7 +1763,7 @@ EOF
   else
     cat <<EOF
 Nowhere V3 Manager ${SCRIPT_VERSION} (channel ${SCRIPT_CHANNEL}; Linux + systemd, Bash >=4.3)
-Pinned core v3.0.0; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
+Pinned core v3.0.1; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
 Dedicated account/service nowhere-v3; config /etc/nowhere-v3; binaries /opt/nowhere-v3.
 No V1/V2 changes or firewall edits. New Portals use persistent PEM; same-role configure reuses it.
 Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root); no arguments opens the looping menu.
