@@ -955,7 +955,7 @@ sudo bash nowhere-v3.sh cert --domain your.example.com --force   # force reissue
 - Switching from self-signed to LE **changes the fingerprint**: clients that pinned the old one must update their trust entry; `links` prints the new fingerprint/pin
 - **Pin policy for native links**: when the certificate verifies against the system CA for the public host (chain + hostname), `links` emits Vector/Egress URLs **without** `pin=` — nothing to re-import after a renewal; self-signed / private-CA certificates still get a leaf pin; an unreadable certificate refuses to emit a link (fix the file or pass an explicit pin)
 - To reissue for another domain just run `cert --domain new.example.com`; the old `le.<old-domain>` directory can be removed by hand
-- **Managed renewal**: the daily timer runs `cert-renew`, which renews only the current Portal's managed certificate and clears legacy acme.sh deploy/reload hooks before validating the new one (rollback on failure; "not due" never restarts the service; a held lock is recorded as a skip). `cert-status` shows validity, days remaining, key match, timer state and the last managed result (`/etc/nowhere-v3/renewal-status.json`); a legacy direct-`--cron` timer is flagged and can be migrated with `cert-timer`.
+- **Managed renewal**: the daily timer runs `cert-renew`, which renews only the current Portal's managed certificate and clears legacy acme.sh deploy/reload hooks before validating the new one (rollback on failure; "not due" never restarts the service; a held lock is recorded as a skip). `cert-status` shows validity, days remaining, key match, timer state and the last managed result (`/etc/nowhere-v3/renewal-status.json`); a legacy direct-`--cron` timer is flagged and can be migrated with `cert-timer`. Damaged/expired/mismatched certificates and unparseable dates still print the timer state and last managed result but make the command exit non-zero; custom certificates are labeled as not timer-managed and skip timer queries.
 
 ## Testing
 
@@ -966,6 +966,7 @@ bash tests/nowhere-v2.test.sh
 bash tests/nowhere-v3.test.sh
 python3 tests/test_fixes.py .
 python3 tests/test_features.py .
+python3 tests/test_review.py .
 ```
 
 Before sourcing the manager it rewrites its path declarations into a temporary
@@ -975,7 +976,10 @@ to the real paths. CI runs it on every push together with `bash -n` and
 `shellcheck`. `tests/test_fixes.py` holds the targeted offline regressions for
 reviewed fix batches (stubbed systemd/ACME); `tests/test_features.py` covers
 backup/restore, diagnostics, preview and managed renewal in a sandbox and uses
-the pinned `tests/fixtures/acme-3.1.6.tar.gz` offline; CI runs both as well.
+the pinned `tests/fixtures/acme-3.1.6.tar.gz` offline; `tests/test_review.py`
+adds the 16 focused checks from the 1.5.1/1.4.1 batch (atomic backup fallback,
+metadata normalization, piped execution, version-parameterized ACME and
+certificate-status failures). CI runs all of them.
 
 **Integration is not covered automatically.** The install, upgrade, and systemd
 flows have never been executed by the test suite. Run

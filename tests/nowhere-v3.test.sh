@@ -491,7 +491,15 @@ t_ok "shortcut carries the ownership marker" yes "$(grep -qs 'nowhere-v3-shortcu
 t_ok "shortcut points at this manager" yes "$(grep -qF "$PATCHED" "$SHORTCUT_PATH" && echo yes || echo no)"
 out="$("$SHORTCUT_PATH" help 2>&1)"
 t_ok "shortcut passes arguments through" yes "$([[ "$out" == *'[ACTION]'* ]] && echo yes || echo no)"
-t_ok "shortcut without arguments opens the menu" 0 "$(t_rc "$SHORTCUT_PATH" </dev/null)"
+out="$(python3 - "$SHORTCUT_PATH" <<'PYSHORTCUT'
+import subprocess,sys
+try:
+ p=subprocess.run([sys.argv[1]],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,timeout=4)
+ print(p.returncode)
+except subprocess.TimeoutExpired:print('timeout')
+PYSHORTCUT
+)"
+t_ok "shortcut without arguments exits without a controlling terminal" 0 "$out"
 out="$(install_shortcut 2>&1)"; rc=$?
 t_ok "reinstall is quiet" 0 "$rc"
 t_ok "reinstall writes no extra output" "" "$out"

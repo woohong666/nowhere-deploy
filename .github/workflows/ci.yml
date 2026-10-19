@@ -55,3 +55,9 @@ jobs:
       # systemd/ACME; a local flock/install shim keeps it non-root friendly).
       - name: Targeted regression tests (Python)
         run: python3 tests/test_fixes.py .
+
+      - name: Feature regression tests (Python)
+        run: python3 tests/test_features.py .
+
+      - name: Review regression tests (Python)
+        run: python3 tests/test_review.py .

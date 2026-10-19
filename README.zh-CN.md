@@ -937,7 +937,7 @@ sudo bash nowhere-v3.sh cert --domain 你的域名 --force   # 手动强制重�
 - 从自签切换为 LE 后**指纹会变**：此前在 App 里 pin 过旧指纹的要更新信任项；`links` 会输出新的指纹/pin
 - **原生链接的 pin 策略**：证书能被系统 CA 验证（证书链 + 主机名）时，`links` 输出**不带 pin** 的 Vector/Egress 链接——续期后无需重新导入；自签 / 私有 CA 证书仍输出叶证书 pin；证书不可读取时拒绝输出，请修复文件或显式传 pin
 - 想换域名重签：再跑一次 `cert --domain 新域名`；旧目录 `le.<旧域名>` 可手动删除
-- **受管理续期**：每日定时器执行 `cert-renew`，仅续期当前 Portal 的托管证书；部署前清除旧 acme.sh 的自动部署/重载钩子并校验新证书，失败自动回滚；未到期不会重启服务，锁被占用会记录跳过。`cert-status` 显示有效期、剩余天数、私钥匹配、定时器状态与上次受管理结果（`/etc/nowhere-v3/renewal-status.json`）；检测到旧版直接 `--cron` 的定时器会提示，可用 `cert-timer` 迁移。
+- **受管理续期**：每日定时器执行 `cert-renew`，仅续期当前 Portal 的托管证书；部署前清除旧 acme.sh 的自动部署/重载钩子并校验新证书，失败自动回滚；未到期不会重启服务，锁被占用会记录跳过。`cert-status` 显示有效期、剩余天数、私钥匹配、定时器状态与上次受管理结果（`/etc/nowhere-v3/renewal-status.json`）；检测到旧版直接 `--cron` 的定时器会提示，可用 `cert-timer` 迁移。证书损坏/过期/私钥不匹配/日期异常时仍会展示定时器与上次结果，但命令返回非零；自备证书明确标示不走内置续期且不查询 timer。
 
 ## 测试
 
@@ -948,6 +948,7 @@ bash tests/nowhere-v2.test.sh
 bash tests/nowhere-v3.test.sh
 python3 tests/test_fixes.py .
 python3 tests/test_features.py .
+python3 tests/test_review.py .
 ```
 
 它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的
@@ -956,6 +957,7 @@ python3 tests/test_features.py .
 `tests/test_features.py` 在沙箱里覆盖备份/恢复、诊断、预览与受管理续期，离线使用固定的
 `tests/fixtures/acme-3.1.6.tar.gz`；CI 会一并运行。
 `tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
+`tests/test_review.py` 是 1.5.1/1.4.1 评审批次的 16 项专项回归（原子备份回退、元数据规范化、管道执行、ACME 版本参数、证书状态异常）；CI 会运行以上全部。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。

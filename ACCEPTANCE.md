@@ -323,6 +323,8 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - 检查status、日志与probe不泄露共享密钥或pin；generate-key、fingerprint与links为明确输出例外。
 - 私有CA/自签场景手动导入客户端信任；通用分享链接本身不携带信任锚。
 - 证书（可选，需真实域名）：`cert --domain <域> --cf-token-file <文件>`（或 `--http`）成功后 `/etc/nowhere-v3/tls/le.<域>/` 出现 fullchain/key，`url.conf` 指向它且为 `tls=2`；`systemctl list-timers | grep nowhere-v3-cert-renew` 可见每日续期；vector/egress 角色实例应被拒绝；Token 不出现在 acme.sh 命令行（`ps` 不可见）；acme.sh 与 `dns_cf` 插件位于 `/etc/nowhere-v3/acme`（纳入 `backup`），签发显式使用 `--server letsencrypt`。
+- 备份/恢复回归（v1.5.1/1.4.1）：`backup` 目标已存在（含悬空链接）时必须拒绝覆盖；`restore` 应容忍 `manager.conf` 的整行注释、空行与键值两侧空格，并拒绝重复有效键。
+- `cert-status` 回归（v1.4.1）：托管证书损坏/过期/私钥不匹配/日期异常时，仍应输出定时器状态与上次受管理结果且返回非零；自备证书应标明"不走内置定时续期"且不查询 timer。
 
 ### 13.3 自动化验收
 

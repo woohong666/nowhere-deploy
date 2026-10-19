@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nowhere V2 Unified Manager v1.5.0
+# Nowhere V2 Unified Manager v1.5.1
 # Dedicated management line for NodePassProject/Nowhere v2.x.
 # Deliberately isolated from the V1 manager and V1 filesystem/service names.
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,7 +9,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly SCRIPT_VERSION="1.5.0"
+readonly SCRIPT_VERSION="1.5.1"
 readonly SCRIPT_CHANNEL="v2"
 # v1.4.2: fail closed on unreadable certificates; preserve Vector key compatibility;
 #   transactional doctor repair with explicit restart failures and fresh checks.
@@ -1926,7 +1926,7 @@ rollback_action() {
 # Backup format 1: bounded regular files only, channel and SHA-256 manifest.
 archive_config() {
   python3 - "$1" "$2" "$3" "$SCRIPT_CHANNEL" <<'PY'
-import os,sys,tarfile,pathlib,tempfile,hashlib,json,io,shutil
+import os,sys,tarfile,pathlib,tempfile,hashlib,json,io,shutil,errno,ctypes,stat
 op,src,dst,channel=sys.argv[1:]; limit=1024**3; manifest='BACKUP-MANIFEST.json'
 def fail():raise ValueError('Invalid, unsafe, damaged or wrong-channel backup')
 def digest(path):
@@ -1965,7 +1965,23 @@ try:
       if h.hexdigest()!=hashes[rel]:fail()
    os.chmod(tmp,0o600)
    with open(tmp,'rb') as f:os.fsync(f.fileno())
-   os.link(tmp,out) # atomic publication, never overwrite a file or a dangling link
+   # Refuse filesystems that cannot enforce private backup permissions.
+   if stat.S_IMODE(os.stat(tmp).st_mode)!=0o600:
+    raise ValueError('Backup destination cannot enforce mode 600')
+   try:
+    os.link(tmp,out) # atomic publication without overwriting even dangling links
+   except OSError as e:
+    if e.errno not in (errno.EPERM,errno.EOPNOTSUPP,errno.ENOSYS):raise
+    # Linux renameat2(RENAME_NOREPLACE) preserves both atomicity and exclusivity.
+    # Never fall back to check-then-move or a partially visible copy.
+    rename=getattr(ctypes.CDLL(None,use_errno=True),'renameat2',None)
+    if rename is None:
+     raise OSError(errno.ENOSYS,'Atomic no-replace publication unavailable')
+    rename.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+    rename.restype=ctypes.c_int
+    if rename(-100,os.fsencode(tmp),-100,os.fsencode(out),1)!=0:
+     code=ctypes.get_errno()
+     raise OSError(code,'Atomic no-replace publication failed')
   finally:
    if os.path.exists(tmp):os.unlink(tmp)
  elif op=='extract':
@@ -1994,12 +2010,16 @@ try:
      os.chmod(dest,0o600)
   meta=target/'manager.conf'
   if not meta.is_file() or meta.stat().st_size>65536:fail()
-  pairs={}
-  for line in meta.read_text().splitlines():
+  pairs={}; normalized=[]
+  for raw in meta.read_text().splitlines():
+   line=raw.strip()
+   if not line or line.startswith('#'):
+    normalized.append(raw);continue
    if '=' in line:
-    k,v=line.split('=',1)
-    if k in pairs:fail()
-    pairs[k]=v
+    k,v=(part.strip() for part in line.split('=',1))
+    if not k or k in pairs:fail()
+    pairs[k]=v;normalized.append(k+'='+v)
+   else:normalized.append(raw)
   if pairs.get('SCRIPT_CHANNEL')!=channel or not (target/'url.conf').is_file():fail()
   mf=target/manifest
   if mf.exists():
@@ -2009,9 +2029,12 @@ try:
    if actual!=doc.get('sha256'):fail()
    mf.unlink()
   else:print('Legacy backup: no integrity manifest; structural/channel validation only',file=sys.stderr)
+  # Normalize only after validating the original bytes against the manifest.
+  # All downstream validation/loaders now consume the same key/value syntax.
+  meta.write_text('\n'.join(normalized)+'\n')
  else:fail()
 except (OSError,ValueError,KeyError,tarfile.TarError,UnicodeError,StopIteration,EOFError):
- print('Backup validation/transfer failed (no live configuration was replaced by this helper)',file=sys.stderr);sys.exit(1)
+ print('Backup validation/transfer failed; destination must support private permissions and atomic no-replace publication (no live configuration was replaced)',file=sys.stderr);sys.exit(1)
 PY
 }
 
@@ -2019,7 +2042,7 @@ backup_action() {
   require_root; acquire_build_lock
   local out="${1:-${BACKUP_PATH:-/root/nowhere-${SCRIPT_CHANNEL}-backup-$(date +%Y%m%d-%H%M%S).tar.gz}}"
   archive_config backup "$CONFIG_DIR" "$out" || die "$(tr_msg 'Backup failed; destination was not overwritten' '备份失败；没有覆盖目标文件')"
-  ok "$(tr_msg "Backup saved: $out (contains secrets; mode 600)" "备份已保存：$out（含密钥，权限 600）")"
+  ok "$(tr_msg "Backup saved: $out (contains secrets; mode 600)" "备份已保存：${out}（含密钥，权限 600）")"
 }
 
 validate_pem_pair() {

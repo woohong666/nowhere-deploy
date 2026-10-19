@@ -8,6 +8,14 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
+### Nowhere V2 manager (`nowhere-v2.sh`) — v1.5.1
+
+#### 🐛 Fixed
+- **Backup publication is atomic on more filesystems** (`backup`): the archive is first guaranteed to carry mode 600 on the destination filesystem; when hardlinks are unavailable (`EPERM` / `EOPNOTSUPP` / `ENOSYS`) it is published with Linux `renameat2(RENAME_NOREPLACE)` — atomic and no-replace in both paths, never a check-then-move or a partially visible copy. If neither mechanism is available the backup fails closed, and an existing file (including a dangling link) is still never overwritten.
+- **Restore normalizes `manager.conf`**: whole-line comments and blank lines are ignored, whitespace around keys and values is normalized, and duplicate effective keys are rejected. The SHA-256 manifest is still verified against the original bytes first, then the normalized form is used by the restore precheck, metadata update and configuration loader; no shell-quote or trailing-comment syntax is invented.
+- **Braced variables before full-width punctuation**: the new backup confirmation used `"$out（"`; older Bash (3.2 on macOS) under a C locale absorbs the first byte of the multi-byte character into the variable name and aborts under `set -u`. It is now `${out}（` — no behaviour change on Bash 4.3+/Linux.
+- This batch comes from a GPT-assisted review against the same baselines (patches verified to reproduce the builds exactly; SHA-256 sums pass). The shared helper changes are identical to the V3 manager's v1.4.1 entry below.
+
 ### Nowhere V2 manager (`nowhere-v2.sh`) — v1.5.0
 
 #### ✨ Added
@@ -90,6 +98,18 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed the unused `allowed` query-key set from the imported-URL validator (`v1.3.0`). Unknown keys follow upstream first-wins/ignore semantics, so the set only documented a rule that was never enforced.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
+
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.1
+
+#### 🐛 Fixed
+- **Backup publication is atomic on more filesystems** (`backup`): mode-600 enforcement is checked on the destination, and when hardlinks are unavailable (`EPERM` / `EOPNOTSUPP` / `ENOSYS`) the archive is published with Linux `renameat2(RENAME_NOREPLACE)` — atomic and no-replace, never a check-then-move or partially visible copy; both mechanisms unavailable ⇒ fail closed. Existing files (including dangling links) are still never overwritten.
+- **Restore normalizes `manager.conf`**: whole-line comments and blank lines are ignored, key/value whitespace is normalized and duplicate effective keys are rejected; the original bytes are validated against the SHA-256 manifest before normalization, and the same normalized form feeds the restore precheck, metadata update and config loader.
+- **Piped execution is safe**: `BASH_SOURCE[0]` is read defensively and the entrypoint now runs when the script is piped to `bash` (help over a pipe no longer aborts on an unbound variable). `cert`, `cert-timer` and `write_cert_timer` require a readable regular manager file (plus `bash -n`) before any mutation and otherwise explain that the script must be saved to disk — a renewal timer can never be installed from a pipe.
+- **ACME extraction follows `ACME_VERSION`**: the archive member prefix is derived from the pinned version instead of a hardcoded `acme.sh-3.1.6`, so a future dependency bump no longer breaks extraction silently; the fixed version and archive SHA-256 pin are retained.
+- **`cert-status` reports instead of aborting**: damaged, expired or key-mismatched certificates and unparseable dates no longer stop the renewal summary — problems are accumulated, the timer state and last managed result are still printed, and the command exits non-zero. Custom certificates are labeled as not using the built-in timer and skip timer queries; a failing `systemctl show` is reported without losing the last managed result.
+- **The test suite no longer hangs on a TTY**: the shortcut smoke test runs in its own session without a controlling terminal and with a 4-second timeout.
+- **Braced variables before full-width punctuation** (7 sites: backup confirmation, certificate/renewal errors, prompt and self-update messages): `"$rc）"`, `"$out（"` and similar are now `${rc}）`, `${out}（`. Older Bash (3.2 on macOS) with a C locale absorbed the first byte of the full-width character into the variable name and aborted under `set -u`; Bash 4.3+/Linux behaviour is unchanged.
+- Review provenance: GPT-assisted batch from the same baselines; this integration re-applied the repository's `v3.0.1` default-core bump (the package was cut from the pre-bump v1.4.0), added `tests/test_review.py` (16 focused regressions), wired `test_features` / `test_review` into CI, and restored the Python harness portability shims (flock / install / `id -u`, non-Linux `renameat2` skip, and V2 unit-path sandboxing) so the suites run green on non-root CI and macOS.
 
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.0
 

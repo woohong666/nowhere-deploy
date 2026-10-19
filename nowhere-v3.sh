@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.4.0
+# Nowhere V3 isolated manager v1.4.1
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
 # v1.3.1: isolated ACME state/plugin, explicit LE CA, early certificate rollback,
 #   serialized renewal, stable renewal paths and CA-verified native links.
@@ -18,7 +18,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.4.0"
+readonly SCRIPT_VERSION="1.4.1"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.0.1"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -66,7 +66,7 @@ PURGE=0
 ALLOW_ROLE_SWITCH=0
 readonly DEFAULT_SELF_UPDATE_URL="https://raw.githubusercontent.com/woohong666/nowhere-deploy/main/nowhere-v3.sh"
 readonly SELF_UPDATE_URL="${NOWHERE_V3_SELF_URL-$DEFAULT_SELF_UPDATE_URL}"
-MANAGER_FILE="${BASH_SOURCE[0]}"
+MANAGER_FILE="${BASH_SOURCE[0]-}"
 NODE_NAME=Nowhere-V3
 DIAL='' DIAL4='' DIAL6='' RATE='' ETAR=''
 PROBE_TARGET=example.com:443
@@ -861,12 +861,12 @@ ensure_acme() {
   local archive_hash
   archive_hash="$(sha256sum "$tmp/acme.tar.gz")"
   [[ "${archive_hash%% *}" == "$ACME_ARCHIVE_SHA256" ]] || die "$(tr_msg 'ACME archive checksum mismatch' 'ACME 压缩包校验值不匹配')"
-  python3 - "$tmp/acme.tar.gz" "$tmp" <<'PYACME'
+  python3 - "$tmp/acme.tar.gz" "$tmp" "$ACME_VERSION" <<'PYACME'
 import sys,tarfile,pathlib
 root=pathlib.Path(sys.argv[2])/'verified';root.mkdir()
 with tarfile.open(sys.argv[1],'r:gz') as t:
  for rel in ('acme.sh','dnsapi/dns_cf.sh'):
-  m=t.getmember('acme.sh-3.1.6/'+rel)
+  m=t.getmember('acme.sh-'+sys.argv[3]+'/'+rel)
   if not m.isfile() or m.size>2*1024**2:raise SystemExit('Invalid ACME member')
   p=root/rel;p.parent.mkdir(exist_ok=True)
   with t.extractfile(m) as f:p.write_bytes(f.read())
@@ -879,7 +879,12 @@ PYACME
   install -m 600 "$(dirname "$src")/dnsapi/dns_cf.sh" "$ACME_HOME/dnsapi/dns_cf.sh"
   ok "$(tr_msg "acme.sh ${ACME_VERSION} installed under $ACME_HOME" "acme.sh ${ACME_VERSION} 已安装到 $ACME_HOME")"
 }
+require_manager_file() {
+  [[ -n "$MANAGER_FILE" && -f "$MANAGER_FILE" && -r "$MANAGER_FILE" ]] || die "$(tr_msg 'Cannot install renewal timer from a pipe; save the script to a regular file and run it again' '无法从管道安装续期定时器；请将脚本保存为普通文件后执行')"
+  bash -n "$MANAGER_FILE" || die "$(tr_msg 'Manager file is not a valid Bash script' '管理脚本未通过 Bash 语法检查')"
+}
 write_cert_timer() {
+  require_manager_file
   local svc="${UNIT_FILE%.service}-cert-renew.service" tmr="${UNIT_FILE%.service}-cert-renew.timer" runner
   runner="$INSTALL_ROOT/manager/nowhere-v3.sh"
   install -d -m 700 "$INSTALL_ROOT/manager"
@@ -915,6 +920,7 @@ EOF
   systemctl is-enabled --quiet "$timer" && systemctl is-active --quiet "$timer" || die "$(tr_msg 'Renewal timer is not enabled and active' '续期定时器未处于启用且运行状态')"
 }
 cert_action() {
+  require_manager_file
   mutating_setup
   local u role domain token mode crt key dir rc=0
   u="$(read_url)"
@@ -969,7 +975,7 @@ cert_action() {
   set -e
   case "$rc" in
     0|2) ;;
-    *) die "$(tr_msg "Certificate issuance failed (acme.sh exit $rc): check the token scope / the domain being on Cloudflare, or port 80 for --http" "证书申请失败（acme.sh 退出码 $rc）：请检查 Token 权限/域名是否在 Cloudflare，或 --http 模式的 80 端口")" ;;
+    *) die "$(tr_msg "Certificate issuance failed (acme.sh exit $rc): check the token scope / the domain being on Cloudflare, or port 80 for --http" "证书申请失败（acme.sh 退出码 ${rc}）：请检查 Token 权限/域名是否在 Cloudflare，或 --http 模式的 80 端口")" ;;
   esac
   deploy_acme_certificate "$domain"
   u="$(v3_url rewrite-pem "$u" "$crt" "$key")"
@@ -1059,7 +1065,7 @@ cert_renew_action() {
   local -a args=(--home "$ACME_HOME" --renew --server letsencrypt -d "$domain")
   [[ "$source_dir" != *_ecc ]] || args+=(--ecc)
   if "$ACME_HOME/acme.sh" "${args[@]}" >/dev/null 2>&1; then rc=0; else rc=$?; fi
-  [[ "$rc" == 0 || "$rc" == 2 ]] || die "$(tr_msg "Renewal failed (exit $rc); restoring previous state" "续期失败（退出码 $rc），恢复旧状态")"
+  [[ "$rc" == 0 || "$rc" == 2 ]] || die "$(tr_msg "Renewal failed (exit $rc); restoring previous state" "续期失败（退出码 ${rc}），恢复旧状态")"
   if [[ "$rc" == 2 ]]; then
     # Clear legacy hooks, but do not restart a service just because a timer ran.
     TX_COMMITTED=1; record_renewal_result not_due
@@ -1074,6 +1080,7 @@ cert_renew_action() {
   ok "$(tr_msg 'Certificate renewed; previously stopped services stay stopped' '证书续期完成；原本停止的服务保持停止')"
 }
 cert_timer_action() {
+  require_manager_file
   mutating_setup
   managed_cert_domain >/dev/null
   begin_transaction; ensure_acme; write_cert_timer; TX_COMMITTED=1
@@ -1085,21 +1092,45 @@ cert_status_action() {
   u="$(read_url)"; crt="$(v3_url get "$u" crt)"; key="$(v3_url get "$u" key)"
   [[ "$(v3_url get "$u" tls)" == 2 && -n "$crt" ]] || { info "$(tr_msg 'No persistent PEM certificate; tls=1 certificates are ephemeral' '没有持久 PEM 证书；tls=1 使用临时证书')"; return 0; }
   printf '%s: %q\n' "$(tr_msg 'Certificate' '证书')" "$crt"
-  openssl x509 -in "$crt" -noout -dates || die "$(tr_msg 'Cannot parse certificate' '无法解析证书')"
-  validate_pem_pair "$crt" "$key" || die "$(tr_msg 'Certificate expired or key mismatched' '证书过期或私钥不匹配')"
-  openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null || warn "$(tr_msg 'Certificate expires within 30 days' '证书将在 30 天内到期')"
-  local expiry
-  expiry="$(openssl x509 -in "$crt" -noout -enddate)"
-  python3 - "$expiry" <<'PYDAYS'
+  local rc=0 expiry cert_pub key_pub
+  if openssl x509 -in "$crt" -noout -dates 2>/dev/null; then
+    if ! openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1; then
+      warn "$(tr_msg 'Certificate expired' '证书已过期')"; rc=1
+    elif ! openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null 2>&1; then
+      warn "$(tr_msg 'Certificate expires within 30 days' '证书将在 30 天内到期')"
+    fi
+    if cert_pub="$(openssl x509 -in "$crt" -pubkey -noout 2>/dev/null)" &&
+       key_pub="$(openssl pkey -in "$key" -pubout -passin pass: 2>/dev/null)" &&
+       [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]]; then
+      info "$(tr_msg 'Certificate/private key match' '证书与私钥匹配')"
+    else
+      warn "$(tr_msg 'Private key missing, unreadable or mismatched' '私钥缺失、不可读或不匹配')"; rc=1
+    fi
+    expiry="$(openssl x509 -in "$crt" -noout -enddate 2>/dev/null)" || expiry=''
+    if ! python3 - "$expiry" <<'PYDAYS'
 import datetime,sys
-end=datetime.datetime.strptime(sys.argv[1].partition('=')[2],'%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
-print('DaysRemaining:',int((end-datetime.datetime.now(datetime.timezone.utc)).total_seconds()//86400))
+try:
+ end=datetime.datetime.strptime(sys.argv[1].partition('=')[2],'%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
+ print('DaysRemaining:',int((end-datetime.datetime.now(datetime.timezone.utc)).total_seconds()//86400))
+except (ValueError,OverflowError):
+ print('DaysRemaining: unavailable (invalid certificate date)',file=sys.stderr)
+ sys.exit(1)
 PYDAYS
+    then rc=1; fi
+  else
+    warn "$(tr_msg 'Cannot parse certificate' '无法解析证书')"; rc=1
+  fi
+  if ! (managed_cert_domain >/dev/null 2>&1); then
+    info "$(tr_msg 'Custom certificate: not managed by the built-in renewal timer' '自备证书：不走内置定时续期')"
+    return "$rc"
+  fi
   if [[ -f "${UNIT_FILE%.service}-cert-renew.service" ]] && ! grep -q ' cert-renew' "${UNIT_FILE%.service}-cert-renew.service"; then
     warn "$(tr_msg 'Legacy renewal timer detected; run cert-timer to migrate without issuing a new certificate' '检测到旧续期定时器；运行 cert-timer 即可迁移，无需重新申请证书')"
   fi
   local timer; timer="$(basename "${UNIT_FILE%.service}-cert-renew.timer")"
-  systemctl show "$timer" --property=ActiveState,UnitFileState,NextElapseUSecRealtime --no-pager
+  if ! systemctl show "$timer" --property=ActiveState,UnitFileState,NextElapseUSecRealtime --no-pager; then
+    warn "$(tr_msg 'Renewal timer status unavailable' '无法读取续期定时器状态')"; rc=1
+  fi
   python3 - "$CONFIG_DIR/renewal-status.json" <<'PY'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1])
@@ -1107,8 +1138,9 @@ try:
  d=json.loads(p.read_text());status=d.get('status')
  if status not in ('renewed','not_due','failed'):raise ValueError()
  print('Last renewal:',status,'|',str(d.get('time_utc',''))[:40].encode('unicode_escape').decode())
-except (OSError,ValueError):print('Last renewal: no managed result recorded')
+except (OSError,ValueError,AttributeError):print('Last renewal: no managed result recorded')
 PY
+  return "$rc"
 }
 preview_action() {
   require_root
@@ -1222,7 +1254,7 @@ rollback_action() {
 # Backup format 1: bounded regular files only, channel and SHA-256 manifest.
 archive_config() {
   python3 - "$1" "$2" "$3" "$SCRIPT_CHANNEL" <<'PY'
-import os,sys,tarfile,pathlib,tempfile,hashlib,json,io,shutil
+import os,sys,tarfile,pathlib,tempfile,hashlib,json,io,shutil,errno,ctypes,stat
 op,src,dst,channel=sys.argv[1:]; limit=1024**3; manifest='BACKUP-MANIFEST.json'
 def fail():raise ValueError('Invalid, unsafe, damaged or wrong-channel backup')
 def digest(path):
@@ -1261,7 +1293,23 @@ try:
       if h.hexdigest()!=hashes[rel]:fail()
    os.chmod(tmp,0o600)
    with open(tmp,'rb') as f:os.fsync(f.fileno())
-   os.link(tmp,out) # atomic publication, never overwrite a file or a dangling link
+   # Refuse filesystems that cannot enforce private backup permissions.
+   if stat.S_IMODE(os.stat(tmp).st_mode)!=0o600:
+    raise ValueError('Backup destination cannot enforce mode 600')
+   try:
+    os.link(tmp,out) # atomic publication without overwriting even dangling links
+   except OSError as e:
+    if e.errno not in (errno.EPERM,errno.EOPNOTSUPP,errno.ENOSYS):raise
+    # Linux renameat2(RENAME_NOREPLACE) preserves both atomicity and exclusivity.
+    # Never fall back to check-then-move or a partially visible copy.
+    rename=getattr(ctypes.CDLL(None,use_errno=True),'renameat2',None)
+    if rename is None:
+     raise OSError(errno.ENOSYS,'Atomic no-replace publication unavailable')
+    rename.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+    rename.restype=ctypes.c_int
+    if rename(-100,os.fsencode(tmp),-100,os.fsencode(out),1)!=0:
+     code=ctypes.get_errno()
+     raise OSError(code,'Atomic no-replace publication failed')
   finally:
    if os.path.exists(tmp):os.unlink(tmp)
  elif op=='extract':
@@ -1290,12 +1338,16 @@ try:
      os.chmod(dest,0o600)
   meta=target/'manager.conf'
   if not meta.is_file() or meta.stat().st_size>65536:fail()
-  pairs={}
-  for line in meta.read_text().splitlines():
+  pairs={}; normalized=[]
+  for raw in meta.read_text().splitlines():
+   line=raw.strip()
+   if not line or line.startswith('#'):
+    normalized.append(raw);continue
    if '=' in line:
-    k,v=line.split('=',1)
-    if k in pairs:fail()
-    pairs[k]=v
+    k,v=(part.strip() for part in line.split('=',1))
+    if not k or k in pairs:fail()
+    pairs[k]=v;normalized.append(k+'='+v)
+   else:normalized.append(raw)
   if pairs.get('SCRIPT_CHANNEL')!=channel or not (target/'url.conf').is_file():fail()
   mf=target/manifest
   if mf.exists():
@@ -1305,9 +1357,12 @@ try:
    if actual!=doc.get('sha256'):fail()
    mf.unlink()
   else:print('Legacy backup: no integrity manifest; structural/channel validation only',file=sys.stderr)
+  # Normalize only after validating the original bytes against the manifest.
+  # All downstream validation/loaders now consume the same key/value syntax.
+  meta.write_text('\n'.join(normalized)+'\n')
  else:fail()
 except (OSError,ValueError,KeyError,tarfile.TarError,UnicodeError,StopIteration,EOFError):
- print('Backup validation/transfer failed (no live configuration was replaced by this helper)',file=sys.stderr);sys.exit(1)
+ print('Backup validation/transfer failed; destination must support private permissions and atomic no-replace publication (no live configuration was replaced)',file=sys.stderr);sys.exit(1)
 PY
 }
 
@@ -1315,7 +1370,7 @@ backup_action() {
   require_root; acquire_build_lock
   local out="${1:-${BACKUP_PATH:-/root/nowhere-${SCRIPT_CHANNEL}-backup-$(date +%Y%m%d-%H%M%S).tar.gz}}"
   archive_config backup "$CONFIG_DIR" "$out" || die "$(tr_msg 'Backup failed; destination was not overwritten' '备份失败；没有覆盖目标文件')"
-  ok "$(tr_msg "Backup saved: $out (contains secrets; mode 600)" "备份已保存：$out（含密钥，权限 600）")"
+  ok "$(tr_msg "Backup saved: $out (contains secrets; mode 600)" "备份已保存：${out}（含密钥，权限 600）")"
 }
 
 validate_pem_pair() {
@@ -1486,7 +1541,7 @@ prompt_choice() {
       entry=$((10#$value))
       if (( entry >= 1 && entry <= n )); then printf '%s' "${opts[entry - 1]}"; return 0; fi
     fi
-    warn "$(tr_msg "Invalid choice; enter 1-$n or one of: $*" "无效选项；请输入1-$n的编号，或原值：$*")"
+    warn "$(tr_msg "Invalid choice; enter 1-$n or one of: $*" "无效选项；请输入1-${n}的编号，或原值：$*")"
   done
 }
 generate_key() { python3 -c 'import secrets;print(secrets.token_hex(16))'; }
@@ -1635,7 +1690,7 @@ self_update() {
   [[ "$remote_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$remote_channel" == v3 ]] || die "$(tr_msg 'Invalid manager version or channel' '管理脚本版本或通道无效')"
   version_ge "$remote_ver" "$SCRIPT_VERSION" || die "$(tr_msg 'Refusing manager downgrade' '拒绝降级管理脚本')"
   [[ "$remote_ver" != "$SCRIPT_VERSION" ]] || { info "$(tr_msg 'Manager already up to date' '管理脚本已是最新')"; install_shortcut; return 0; }
-  [[ "$ASSUME_YES" == 1 ]] || prompt_confirm "$(tr_msg "Update manager $SCRIPT_VERSION -> $remote_ver?" "更新管理脚本 $SCRIPT_VERSION -> $remote_ver？")" || return 0
+  [[ "$ASSUME_YES" == 1 ]] || prompt_confirm "$(tr_msg "Update manager $SCRIPT_VERSION -> $remote_ver?" "更新管理脚本 $SCRIPT_VERSION -> ${remote_ver}？")" || return 0
   self="$(readlink -f "$MANAGER_FILE")"
   [[ -f "$self" && -w "$self" && -w "$(dirname "$self")" ]] || die "$(tr_msg 'Manager file/directory is not writable' '管理脚本或目录不可写')"
   staging="$(mktemp "${self}.update.XXXXXX")"; CLEANUP_PATHS+=("$staging")
@@ -1643,7 +1698,7 @@ self_update() {
   cp -p -- "$self" "$backup"
   cp -- "$tmp" "$staging"; chmod --reference="$self" "$staging"; chown --reference="$self" "$staging"
   mv -f -- "$staging" "$self"
-  ok "$(tr_msg "Manager updated; backup: $backup. Restart the manager to load it." "管理脚本已更新；备份：$backup。重新启动管理器后生效。")"
+  ok "$(tr_msg "Manager updated; backup: $backup. Restart the manager to load it." "管理脚本已更新；备份：${backup}。重新启动管理器后生效。")"
   install_shortcut
 }
 
@@ -1873,7 +1928,7 @@ menu() {
     rc=$?
     set -e
     if [[ "$rc" == 0 && "$choice" =~ ^([1-6]|21)$ ]]; then load_meta; fi
-    [[ "$rc" == 0 ]] || warn "$(tr_msg "Operation failed (exit $rc); see message above" "操作失败（退出码$rc），请查看上方提示")"
+    [[ "$rc" == 0 ]] || warn "$(tr_msg "Operation failed (exit $rc); see message above" "操作失败（退出码${rc}），请查看上方提示")"
     if ! read -r -p "$(tr_msg 'Press Enter to return...' '按回车返回…')" choice </dev/tty; then return 0; fi
   done
 }
@@ -1985,4 +2040,4 @@ main() {
   esac
   if [[ "$LANG_SET" == 1 && "$ACTION" =~ ^(install|upgrade|configure|start|stop|restart|rollback)$ ]]; then save_language; fi
 }
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
+if [[ -z "${BASH_SOURCE[0]-}" || "${BASH_SOURCE[0]-}" == "$0" ]]; then main "$@"; fi

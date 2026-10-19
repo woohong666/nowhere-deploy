@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline regression: no real services, ACME requests, package installs or secrets."""
-import os, pathlib, subprocess, tempfile, unittest, sys, tarfile, hashlib
+import os, pathlib, subprocess, tempfile, unittest, sys, tarfile, hashlib, shutil
 ROOT=pathlib.Path(sys.argv.pop(1)).resolve() if len(sys.argv)>1 else pathlib.Path(__file__).resolve().parents[1]
 class Fixes(unittest.TestCase):
  def setUp(self):
@@ -9,9 +9,19 @@ class Fixes(unittest.TestCase):
   self.env=dict(os.environ,PATH=str(self.d/'bin')+':'+os.environ['PATH'],SB=str(self.d))
   for c in ('systemctl','journalctl','runuser','chown','useradd','groupadd'):
    p=self.d/'bin'/c;p.write_text('#!/bin/sh\nexit 0\n');p.chmod(0o755)
+  if not shutil.which('flock'):
+   # Linux CI/dev boxes have util-linux flock; elsewhere stub it so the lock
+   # code paths still execute instead of failing on a missing command.
+   p=self.d/'bin'/'flock';p.write_text('#!/bin/sh\nexit 0\n');p.chmod(0o755)
+  if os.geteuid()!=0:
+   # install(1) refuses -o/-g for non-root users. Ownership is not what these
+   # tests exercise, so a shim strips those flags before calling the real tool.
+   p=self.d/'bin'/'install'
+   p.write_text('#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:];out=[];i=0\nwhile i<len(a):\n if a[i] in ("-o","--owner","-g","--group"): i+=2; continue\n out.append(a[i]); i+=1\nos.execv("/usr/bin/install",["/usr/bin/install"]+out)\n')
+   p.chmod(0o755)
   for v in (2,3):
    s=(ROOT/f'nowhere-v{v}.sh').read_text()
-   replacements={f'/etc/nowhere-v{v}':str(self.d/'etc'),f'/opt/nowhere-v{v}':str(self.d/'opt'),f'/usr/local/bin/nowhere-v{v}':str(self.d/'bin/core'),f'/usr/local/libexec/nowhere-v{v}-launch':str(self.d/'bin/launch'),f'/etc/systemd/system/nowhere-v{v}.service':str(self.d/'unit.service'),f'/run/nowhere-v{v}-build.lock.d':str(self.d/'lock.d'),'/usr/local/bin/nh':str(self.d/'bin/nh'),'/root/.acme.sh':str(self.d/'legacy-acme')}
+   replacements={f'/etc/nowhere-v{v}':str(self.d/'etc'),f'/opt/nowhere-v{v}':str(self.d/'opt'),f'/usr/local/bin/nowhere-v{v}':str(self.d/'bin/core'),f'/usr/local/libexec/nowhere-v{v}-launch':str(self.d/'bin/launch'),f'/etc/systemd/system/nowhere-v{v}.service':str(self.d/'unit.service'),f'readonly UNIT_FILE="/etc/systemd/system/${{SERVICE_NAME}}.service"':f'readonly UNIT_FILE="{self.d}/unit.service"',f'/run/nowhere-v{v}-build.lock.d':str(self.d/'lock.d'),'/usr/local/bin/nh':str(self.d/'bin/nh'),'/root/.acme.sh':str(self.d/'legacy-acme')}
    for a,b in replacements.items():s=s.replace(a,b)
    import grp
    s=s.replace(f'RUN_GROUP="nowhere-v{v}"', 'RUN_GROUP="'+grp.getgrgid(os.getgid()).gr_name+'"')
@@ -22,7 +32,9 @@ class Fixes(unittest.TestCase):
   (self.d/'etc/url.conf').write_text('vector://'+'a'*64+'@example.test:2082?socks=127.0.0.1:1082\n')
  def tearDown(self):self.tmp.cleanup()
  def runsh(self,v,body):
-  pre=f'source "{self.d}/v{v}.sh"\nrequire_root() {{ :; }}\nrequire_systemd() {{ :; }}\ninstall_runtime_deps() {{ :; }}\n'
+  # The suites simulate a root deployment; make `id -u` agree so the managers'
+  # root-only CLI pre-load paths behave as they do in production.
+  pre=f'source "{self.d}/v{v}.sh"\nrequire_root() {{ :; }}\nrequire_systemd() {{ :; }}\ninstall_runtime_deps() {{ :; }}\nid() {{ case "${{1:-}}" in -u) echo 0 ;; *) command id "$@" ;; esac; }}\n'
   return subprocess.run(['bash','-c',pre+body],env=self.env,text=True,capture_output=True)
  def cert(self):
   subprocess.run(['openssl','req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:prime256v1','-nodes','-days','2','-subj','/CN=example.test','-addext','subjectAltName=DNS:example.test','-keyout',str(self.d/'key.pem'),'-out',str(self.d/'cert.pem')],check=True,capture_output=True)
