@@ -729,7 +729,7 @@ sudo bash nowhere-v3.sh install --public-host relay.example.com \
   --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
 
 # 指定版本 / 端口 / 密钥
-sudo bash nowhere-v3.sh install --version v3.0.0 --endpoint '*:8443' \
+sudo bash nowhere-v3.sh install --version v3.1.0 --endpoint '*:8443' \
   --key "$(openssl rand -hex 16)"
 ```
 
@@ -758,7 +758,7 @@ nh                                 # 或直接用快捷命令回到菜单
 
 - **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
 - **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
-- **跟进 v3.x**：默认固定已核验的 `v3.0.1`；用 `upgrade --version latest-v3` 显式跟进更新的稳定 v3 版本。
+- **跟进 v3.x**：默认固定已核验的 `v3.1.0`（v3.2.0 为 GitHub 预发布，`latest-v3` 只跟进稳定版）；用 `upgrade --version latest-v3` 显式升级到更新的稳定 v3 版本。
 
 ### 13.2 V2 / V3 对照
 
@@ -811,7 +811,8 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 新增 `--name`（分享链接名称）、`--wizard`、`--dial/--dial4/--dial6`；原CLI选项全部保留。
 
 `versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
-默认仍固定v3.0.1，跟进新版本必须显式`upgrade --version latest-v3`。
+默认仍固定v3.1.0（v3.2.0 为预发布，`latest-v3` 不会选中；显式指定预发布会被拒绝），跟进新版本必须显式`upgrade --version latest-v3`。
+`--morph-prelude` 支持 `fade|full8|low7`（默认 `full8`；`fade` 需内核 ≥ v3.0.1，指定 v3.0.0 会被拒绝；prelude 是发送端策略，无需与对端一致）。
 自更新验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
 不更新服务、配置或内核。来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
 
@@ -949,6 +950,7 @@ bash tests/nowhere-v3.test.sh
 python3 tests/test_fixes.py .
 python3 tests/test_features.py .
 python3 tests/test_review.py .
+python3 tests/test_core_sync.py .
 ```
 
 它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的
@@ -958,6 +960,7 @@ python3 tests/test_review.py .
 `tests/fixtures/acme-3.1.6.tar.gz`；CI 会一并运行。
 `tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
 `tests/test_review.py` 是 1.5.1/1.4.1 评审批次的 16 项专项回归（原子备份回退、元数据规范化、管道执行、ACME 版本参数、证书状态异常）；CI 会运行以上全部。
+`tests/test_core_sync.py` 校验内核默认版本、预发布策略与 `fade` 校验顺序（8 项，离线）；`tests/smoke_native.py` 需自备官方 v3.0.1/v3.1.0 二进制做回环连通验证（可选，CI 不运行）。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。

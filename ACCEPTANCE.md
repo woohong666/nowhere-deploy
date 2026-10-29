@@ -279,9 +279,9 @@ id nowhere-v2 2>&1                      # 应不存在
 > 没有 NW3 客户端时，用官方二进制自测：`nowhere-v3 probe '<vector-url>' example.com:443`。
 
 ```bash
-# 1) 新建 V3 Portal（默认固定 v3.0.0）；有域名证书时直接给 --cert/--tls-key，
+# 1) 新建 V3 Portal（默认固定 v3.1.0）；有域名证书时直接给 --cert/--tls-key，
 #    不传则自动生成持久自签 PEM（pin 永久稳定，不会随重启变化）
-sudo bash nowhere-v3.sh install --version v3.0.0 --public-host <公网IP或域名>
+sudo bash nowhere-v3.sh install --version v3.1.0 --public-host <公网IP或域名>
 sudo bash nowhere-v3.sh doctor
 sudo bash nowhere-v3.sh links        # 输出 Vector / Egress URL（均自带 pin）
 sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
@@ -325,6 +325,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - 证书（可选，需真实域名）：`cert --domain <域> --cf-token-file <文件>`（或 `--http`）成功后 `/etc/nowhere-v3/tls/le.<域>/` 出现 fullchain/key，`url.conf` 指向它且为 `tls=2`；`systemctl list-timers | grep nowhere-v3-cert-renew` 可见每日续期；vector/egress 角色实例应被拒绝；Token 不出现在 acme.sh 命令行（`ps` 不可见）；acme.sh 与 `dns_cf` 插件位于 `/etc/nowhere-v3/acme`（纳入 `backup`），签发显式使用 `--server letsencrypt`。
 - 备份/恢复回归（v1.5.1/1.4.1）：`backup` 目标已存在（含悬空链接）时必须拒绝覆盖；`restore` 应容忍 `manager.conf` 的整行注释、空行与键值两侧空格，并拒绝重复有效键。
 - `cert-status` 回归（v1.4.1）：托管证书损坏/过期/私钥不匹配/日期异常时，仍应输出定时器状态与上次受管理结果且返回非零；自备证书应标明"不走内置定时续期"且不查询 timer。
+- 内核与 Prelude 回归（v1.4.2）：`install`/`upgrade` 默认应为 **v3.1.0**；`latest-v3` 不得选中预发布（当前 v3.2.0），显式指定预发布应被拒绝；`--morph-prelude fade` 在 v3.1.0 下应写入 `NOW_MORPH_TCP_PRELUDE=fade`，指定 v3.0.0 时应拒绝且不写 unit。
 
 ### 13.3 自动化验收
 

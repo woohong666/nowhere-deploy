@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.4.1
+# Nowhere V3 isolated manager v1.4.2
+# v1.4.2: pin stable core v3.1.0; support explicit fade prelude (core >=3.0.1);
+#   retain existing full8 default and reject prerelease assets.
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
 # v1.3.1: isolated ACME state/plugin, explicit LE CA, early certificate rollback,
 #   serialized renewal, stable renewal paths and CA-verified native links.
@@ -18,9 +20,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.4.1"
+readonly SCRIPT_VERSION="1.4.2"
 readonly SCRIPT_CHANNEL="v3"
-readonly DEFAULT_CORE_VERSION="v3.0.1"
+readonly DEFAULT_CORE_VERSION="v3.1.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly SERVICE_NAME="nowhere-v3" RUN_USER="nowhere-v3" RUN_GROUP="nowhere-v3"
 readonly INSTALL_ROOT="/opt/nowhere-v3"
@@ -160,11 +162,11 @@ validate_keep_releases() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1>=0 && 10#$1<=20)) |
 
 is_valid_memory_profile() { [[ "$1" == memory || "$1" == balanced || "$1" == throughput ]]; }
 
-is_valid_morph_prelude() { [[ "$1" == low7 || "$1" == full8 ]]; }
+is_valid_morph_prelude() { [[ "$1" == fade || "$1" == low7 || "$1" == full8 ]]; }
 
 validate_memory_profile() { is_valid_memory_profile "$1" || die "$(tr_msg "memory-profile must be memory|balanced|throughput" "memory-profile 必须为 memory|balanced|throughput")"; }
 
-validate_morph_prelude() { is_valid_morph_prelude "$1" || die "$(tr_msg "morph-prelude must be low7|full8" "morph-prelude 必须为 low7|full8")"; }
+validate_morph_prelude() { is_valid_morph_prelude "$1" || die "$(tr_msg "morph-prelude must be fade|full8|low7" "morph-prelude 必须为 fade|full8|low7")"; }
 
 curl_github() {
   local url="$1" out="$2"; shift 2
@@ -316,6 +318,9 @@ EOF2
 }
 
 write_unit() {
+  if [[ "$MORPH_PRELUDE" == fade ]] && ! version_ge "$VERSION" v3.0.1; then
+    die "$(tr_msg 'fade prelude requires core v3.0.1 or newer; use full8 or low7 for v3.0.0' 'fade 前导需要 v3.0.1 或更新内核；v3.0.0 请使用 full8 或 low7')"
+  fi
   cat >"$UNIT_FILE" <<EOF2
 [Unit]
 Description=Nowhere V3 (${SERVICE_NAME})
@@ -1777,7 +1782,7 @@ usage() {
   if [[ "$LANG_CODE" == zh ]]; then
     cat <<EOF
 Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + systemd，Bash >=4.3）
-默认固定 v3.0.1；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
+默认固定 ${DEFAULT_CORE_VERSION}；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
 独立账户/服务 nowhere-v3；配置 /etc/nowhere-v3；程序 /opt/nowhere-v3。
 不修改V1/V2，不自动开放防火墙。新Portal使用持久PEM；同角色配置复用证书。
 用法：sudo bash nowhere-v3.sh [ACTION] [选项]（已是 root 可省略 sudo）；无参数进入循环菜单。
@@ -1803,7 +1808,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  --out direct|egress|SOCKS地址 --in SOCKS入口（默认127.0.0.1:1083）
  --pin 64位小写hex --sni DNS --cert PEM --tls-key PEM
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto（前者与后两者互斥）
- --memory-profile memory|balanced|throughput --morph-prelude low7|full8
+ --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
  --version v3.x.y|latest-v3 --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en（CLI > NOWHERE_V3_LANG > manager.conf > 中文）
  --yes / -y；--wizard；--allow-role-switch（明确允许角色切换）
@@ -1818,7 +1823,7 @@ EOF
   else
     cat <<EOF
 Nowhere V3 Manager ${SCRIPT_VERSION} (channel ${SCRIPT_CHANNEL}; Linux + systemd, Bash >=4.3)
-Pinned core v3.0.1; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
+Pinned core ${DEFAULT_CORE_VERSION}; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
 Dedicated account/service nowhere-v3; config /etc/nowhere-v3; binaries /opt/nowhere-v3.
 No V1/V2 changes or firewall edits. New Portals use persistent PEM; same-role configure reuses it.
 Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root); no arguments opens the looping menu.
@@ -1844,7 +1849,7 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root);
  --out direct|egress|SOCKS-address --in SOCKS-ingress (default 127.0.0.1:1083)
  --pin 64-lowercase-hex --sni DNS --cert PEM --tls-key PEM
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto (dial excludes dial4/dial6)
- --memory-profile memory|balanced|throughput --morph-prelude low7|full8
+ --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
  --version v3.x.y|latest-v3 --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en (CLI > NOWHERE_V3_LANG > manager.conf > Chinese)
  --yes / -y; --wizard; --allow-role-switch (explicit role-switch consent)

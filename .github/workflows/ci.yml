@@ -61,3 +61,6 @@ jobs:
 
       - name: Review regression tests (Python)
         run: python3 tests/test_review.py .
+
+      - name: Core sync regression tests (Python)
+        run: python3 tests/test_core_sync.py .

@@ -99,6 +99,20 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.2
+
+#### 🔄 Changed
+- **Pinned core moved to stable v3.1.0**: fresh installs and the default upgrade target now use v3.1.0 (2026-10-23). v3.1.0 adds the authenticated Morph TCP Prelude and bounded replay protection while remaining compatible with 3.0.x peers; service URLs, shared keys and certificates need no migration. v3.2.0 is a GitHub prerelease and is deliberately not adopted — `latest-v3` keeps ignoring prerelease/draft tags, and an explicit prerelease tag is still refused before any asset selection.
+- **`--morph-prelude fade` support**: the prelude policy now accepts `fade`, `full8` and `low7`; `fade` requires core v3.0.1 or newer and is rejected before the unit is written when targeting v3.0.0. The manager keeps **full8** as its own default (existing installations and `manager.conf` values are preserved; upstream's switch of the core default to `fade` is not silently applied).
+- Help output now interpolates `DEFAULT_CORE_VERSION` instead of hardcoding the pinned version, so the usage text cannot drift from the constant.
+- The prelude policy is a sender-side setting and need not match the peer, matching the upstream v3.1.0 documentation.
+
+#### ✅ Tests / Docs
+- Added `tests/test_core_sync.py` (8 offline checks: pinned stable default, prelude validation, fade/old-core rejection order, preserved manager policy, prerelease exclusion and refusal) and `tests/smoke_native.py` (4 loopback checks against official v3.0.1/v3.1.0 binaries; manual only, binaries are not shipped).
+- `tests/test_fixes.py` gained a V3-only-checkout fallback for the V2 manager fixture; the existing non-root/flock/renameat2 portability shims are retained. `tests/test_review.py` keeps the non-Linux `renameat2` skip.
+- README (EN/zh-CN) and the acceptance checklist updated for the v3.1.0 default, fade support and the prerelease policy.
+- Review provenance: GPT package built from the identical v1.4.1 baseline; the patch reproduces the delivered file exactly (SHA-256 verified), SHA256SUMS all pass, and ShellCheck was run during review.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.1
 
 #### 🐛 Fixed

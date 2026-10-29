@@ -729,7 +729,7 @@ sudo bash nowhere-v3.sh install --public-host relay.example.com \
   --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
 
 # Pin a version / port / key
-sudo bash nowhere-v3.sh install --version v3.0.0 --endpoint '*:8443' \
+sudo bash nowhere-v3.sh install --version v3.1.0 --endpoint '*:8443' \
   --key "$(openssl rand -hex 16)"
 ```
 
@@ -758,7 +758,7 @@ nh                                 # or just reopen the menu with the shortcut
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
 - **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
-- **Tracking v3.x**: the default is pinned to the verified `v3.0.1`; `upgrade --version latest-v3` opts in to newer stable v3 releases.
+- **Tracking v3.x**: the default is pinned to the verified `v3.1.0` (v3.2.0 is a GitHub prerelease; `latest-v3` only follows stable releases); `upgrade --version latest-v3` opts in to newer stable v3 releases.
 
 ### 13.2 V2 / V3 at a glance
 
@@ -815,11 +815,14 @@ New options: `--name` (share name), `--wizard`, `--dial/--dial4/--dial6`;
 all previous CLI options remain supported.
 
 `versions` lists every available stable tag; fewer than ten upstream releases
-means fewer than ten results, never invented tags. The default stays v3.0.1;
+means fewer than ten results, never invented tags. The default stays v3.1.0
+(v3.2.0 is a prerelease and is never selected; an explicit prerelease tag is refused);
 `upgrade --version latest-v3` explicitly opts in. Self-update checks Bash syntax,
 V3 channel and numeric version, rejects downgrades and replaces atomically in the
 same directory with a backup. It changes no service, configuration or core binary.
 The source defaults to this repository main and can be overridden with NOWHERE_V3_SELF_URL.
+
+`--morph-prelude` accepts `fade|full8|low7` (default `full8`; `fade` requires core ≥ v3.0.1 and is refused for v3.0.0; the prelude is a sender-side policy and need not match the peer).
 
 `links` emits native Vector/Egress URLs (no pin when the certificate is system-CA verified, otherwise a leaf pin) and one share per carrier:
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`.
@@ -967,6 +970,7 @@ bash tests/nowhere-v3.test.sh
 python3 tests/test_fixes.py .
 python3 tests/test_features.py .
 python3 tests/test_review.py .
+python3 tests/test_core_sync.py .
 ```
 
 Before sourcing the manager it rewrites its path declarations into a temporary
@@ -979,7 +983,10 @@ backup/restore, diagnostics, preview and managed renewal in a sandbox and uses
 the pinned `tests/fixtures/acme-3.1.6.tar.gz` offline; `tests/test_review.py`
 adds the 16 focused checks from the 1.5.1/1.4.1 batch (atomic backup fallback,
 metadata normalization, piped execution, version-parameterized ACME and
-certificate-status failures). CI runs all of them.
+certificate-status failures); `tests/test_core_sync.py` covers the pinned core
+default, prerelease policy and `fade` validation order (8 offline checks).
+`tests/smoke_native.py` needs official v3.0.1/v3.1.0 binaries for optional
+loopback flow checks and is not run in CI. CI runs all of the others.
 
 **Integration is not covered automatically.** The install, upgrade, and systemd
 flows have never been executed by the test suite. Run

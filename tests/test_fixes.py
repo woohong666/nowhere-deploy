@@ -20,7 +20,9 @@ class Fixes(unittest.TestCase):
    p.write_text('#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:];out=[];i=0\nwhile i<len(a):\n if a[i] in ("-o","--owner","-g","--group"): i+=2; continue\n out.append(a[i]); i+=1\nos.execv("/usr/bin/install",["/usr/bin/install"]+out)\n')
    p.chmod(0o755)
   for v in (2,3):
-   s=(ROOT/f'nowhere-v{v}.sh').read_text()
+   source=ROOT/f'nowhere-v{v}.sh'
+   if v==2 and not source.exists():source=ROOT/'tests/fixtures/nowhere-v2.sh'
+   s=source.read_text()
    replacements={f'/etc/nowhere-v{v}':str(self.d/'etc'),f'/opt/nowhere-v{v}':str(self.d/'opt'),f'/usr/local/bin/nowhere-v{v}':str(self.d/'bin/core'),f'/usr/local/libexec/nowhere-v{v}-launch':str(self.d/'bin/launch'),f'/etc/systemd/system/nowhere-v{v}.service':str(self.d/'unit.service'),f'readonly UNIT_FILE="/etc/systemd/system/${{SERVICE_NAME}}.service"':f'readonly UNIT_FILE="{self.d}/unit.service"',f'/run/nowhere-v{v}-build.lock.d':str(self.d/'lock.d'),'/usr/local/bin/nh':str(self.d/'bin/nh'),'/root/.acme.sh':str(self.d/'legacy-acme')}
    for a,b in replacements.items():s=s.replace(a,b)
    import grp
