@@ -758,7 +758,7 @@ nh                                 # 或直接用快捷命令回到菜单
 
 - **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
 - **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
-- **跟进 v3.x**：默认固定已核验的 `v3.1.0`；`upgrade --version latest-v3` 跟进最新稳定版；想尝鲜预发布用 `upgrade --version latest-v3-prerelease`（或显式标签 + `--allow-prerelease`），安装前会提示可能不稳定，随时可 `rollback` 回退。
+- **跟进 v3.x**：默认固定已核验的 `v3.1.0`；`upgrade --version latest-v3` 跟进最新稳定版；想尝鲜预发布用 `upgrade --version latest-v3-prerelease`（或显式标签 + `--allow-prerelease`），安装前会提示可能不稳定，随时可 `rollback` 回退。预发布可能含破坏性变更（例如 v3.2.0 强制认证 Prelude，未升级的旧 TCP 客户端会被拒；UDP/QUIC 不受影响），建议先在测试实例验证。
 
 ### 13.2 V2 / V3 对照
 

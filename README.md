@@ -758,7 +758,7 @@ nh                                 # or just reopen the menu with the shortcut
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
 - **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
-- **Tracking v3.x**: the default is pinned to the verified `v3.1.0`; `upgrade --version latest-v3` follows the newest stable release; `upgrade --version latest-v3-prerelease` (or an explicit tag plus `--allow-prerelease`) opts in to prereleases, warns before installing, and can be reverted with `rollback`.
+- **Tracking v3.x**: the default is pinned to the verified `v3.1.0`; `upgrade --version latest-v3` follows the newest stable release; `upgrade --version latest-v3-prerelease` (or an explicit tag plus `--allow-prerelease`) opts in to prereleases, warns before installing, and can be reverted with `rollback`. Prereleases may contain breaking changes (e.g. v3.2.0 enforces authenticated Preludes and rejects legacy TCP clients; UDP/QUIC is unaffected), so test them on a non-critical instance first.
 
 ### 13.2 V2 / V3 at a glance
 
