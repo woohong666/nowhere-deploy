@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.4.2
+# Nowhere V3 isolated manager v1.4.3
+# v1.4.3: opt-in prerelease installs (latest-v3-prerelease / --allow-prerelease);
+#   stable default and latest-v3 still exclude prereleases.
 # v1.4.2: pin stable core v3.1.0; support explicit fade prelude (core >=3.0.1);
 #   retain existing full8 default and reject prerelease assets.
 # Deployment helpers derived from woohong666's Nowhere V2 manager.
@@ -20,7 +22,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.4.2"
+readonly SCRIPT_VERSION="1.4.3"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.1.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -45,6 +47,7 @@ C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_NC=''
 BUILD_LOCK_HELD=0
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 VERSION="${NOWHERE_V3_VERSION:-$DEFAULT_CORE_VERSION}"
+ALLOW_PRERELEASE=0
 LIBC=auto
 KEEP_RELEASES=3
 OLD_TARGET=''
@@ -177,16 +180,28 @@ curl_github() {
 
 resolve_version() {
   validate_version_arg "$VERSION"
-  [[ "$VERSION" == latest-v3 ]] || return 0
+  local include_pre=0
+  case "$VERSION" in
+    latest-v3) ;;
+    latest-v3-prerelease) include_pre=1; ALLOW_PRERELEASE=1 ;;
+    *) return 0 ;;
+  esac
   install_runtime_deps
   local tmp page found best="" count
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
   for ((page=1;page<=20;page++)); do
     curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=100&page=${page}" "$tmp" || die "$(tr_msg "Cannot fetch the official release list" "无法获取官方发布列表")"
-    found="$(python3 - "$tmp" <<'PY'
+    found="$(python3 - "$tmp" "$include_pre" <<'PY'
 import json,re,sys
 r=json.load(open(sys.argv[1])); assert isinstance(r,list)
-c=[(tuple(map(int,x['tag_name'][1:].split('.'))),x['tag_name']) for x in r if re.fullmatch(r'v3\.\d+\.\d+',x.get('tag_name','')) and not x.get('draft') and not x.get('prerelease')]
+inc=sys.argv[2]=='1'
+def key(t):
+    m=re.fullmatch(r'v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?',t)
+    pre=m.group(4)
+    if pre is None:return (tuple(map(int,m.group(1,2,3))),1,())
+    ids=tuple((0,int(p)) if p.isdigit() else (1,p) for p in pre.split('.'))
+    return (tuple(map(int,m.group(1,2,3))),0,ids)
+c=[(key(x['tag_name']),x['tag_name']) for x in r if re.fullmatch(r'v3\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?',x.get('tag_name','')) and not x.get('draft') and (inc or not x.get('prerelease'))]
 print(max(c)[1] if c else '')
 print(len(r))
 PY
@@ -194,11 +209,14 @@ PY
     count="${found##*$'\n'}"; found="${found%%$'\n'*}"
     if [[ -n "$found" ]] && { [[ -z "$best" ]] || version_ge "$found" "$best"; }; then best="$found"; fi
     if ((count<100)); then
-      [[ -n "$best" ]] || die "$(tr_msg "No stable V3 release found" "未找到稳定 V3 版本")"
+      [[ -n "$best" ]] || die "$(tr_msg "No matching V3 release found" "未找到匹配的 V3 版本")"
+      if [[ "$include_pre" == 1 && "$best" == *-* ]]; then
+        warn "$(tr_msg "Selected prerelease ${best}; it may be unstable and is not covered by stable acceptance" "已选择预发布 ${best}；可能不稳定，不受稳定版验收覆盖")"
+      fi
       VERSION="$best"; return 0
     fi
   done
-  die "$(tr_msg "Release scan limit reached; specify a stable tag" "发布列表超过扫描上限，请显式指定稳定版标签")"
+  die "$(tr_msg "Release scan limit reached; specify a tag explicitly" "发布列表超过扫描上限，请显式指定标签")"
 }
 
 release_asset_fields() {
@@ -256,14 +274,18 @@ PY
 
 install_release() {
   install_runtime_deps; resolve_version
-  local json fields name url digest expected actual tmp archive bin bsha target release_dir
+  local json fields name url digest expected actual tmp archive bin bsha target release_dir kind
   json="$(mktemp)"; CLEANUP_PATHS+=("$json")
   curl_github "https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${VERSION}" "$json" || die "$(tr_msg "Failed to read release metadata" "读取发布元数据失败")"
-  python3 - "$json" "$VERSION" <<'PYMETA' || die "$(tr_msg "Release tag is not a matching stable release" "发布标签不是匹配的稳定正式版")"
+  kind="$(python3 - "$json" "$VERSION" "$ALLOW_PRERELEASE" <<'PYMETA'
 import json,sys
 r=json.load(open(sys.argv[1]))
-assert r.get('tag_name')==sys.argv[2] and not r.get('draft') and not r.get('prerelease')
+assert r.get('tag_name')==sys.argv[2] and not r.get('draft')
+assert sys.argv[3]=='1' or not r.get('prerelease')
+print('prerelease' if r.get('prerelease') else 'stable')
 PYMETA
+)" || die "$(tr_msg "Release tag is not a matching stable release (use --allow-prerelease for a prerelease)" "发布标签不是匹配的稳定正式版（预发布请加 --allow-prerelease）")"
+  [[ "$kind" != prerelease ]] || warn "$(tr_msg "Installing PRERELEASE ${VERSION}; it may be unstable; rollback stays available" "正在安装预发布 ${VERSION}；可能不稳定，仍可回滚")"
   target="$(target_triple)"
   fields="$(release_asset_fields "$json" "$target")" || die "$(tr_msg "No unambiguous Linux asset for ${target}" "找不到与 ${target} 唯一对应的 Linux 资产")"
   name="$(sed -n '1p' <<<"$fields")"; url="$(sed -n '2p' <<<"$fields")"; digest="$(sed -n '3p' <<<"$fields")"
@@ -391,14 +413,24 @@ cleanup_old_releases() {
 version_ge() {
   python3 - "$1" "$2" <<'PY'
 import re,sys
-v=[x.removeprefix('v') if hasattr(x,'removeprefix') else x.lstrip('v') for x in sys.argv[1:]]
-if not all(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',x) for x in v):sys.exit(1)
-sys.exit(0 if tuple(map(int,v[0].split('.'))) >= tuple(map(int,v[1].split('.'))) else 1)
+def parse(v):
+    m=re.fullmatch(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?',v)
+    if not m:return None
+    core=tuple(map(int,m.group(1,2,3)));pre=m.group(4)
+    if pre is None:return (core,1,())
+    ids=tuple((0,int(p)) if p.isdigit() else (1,p) for p in pre.split('.'))
+    return (core,0,ids)
+a=parse(sys.argv[1]);b=parse(sys.argv[2])
+if a is None or b is None:sys.exit(1)
+sys.exit(0 if a>=b else 1)
 PY
 }
 
 validate_version_arg() {
-  [[ "$1" == latest-v3 || "$1" =~ ^v3\.[0-9]+\.[0-9]+$ ]] || die "$(tr_msg "Only stable V3 tags or latest-v3 are supported; V2 is refused" "仅支持稳定 V3 标签或 latest-v3；拒绝 V2")"
+  local v="$1"
+  if [[ "$v" == latest-v3 || "$v" == latest-v3-prerelease || "$v" =~ ^v3\.[0-9]+\.[0-9]+$ ]]; then return 0; fi
+  if [[ "$ALLOW_PRERELEASE" == 1 && "$v" =~ ^v3\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then return 0; fi
+  die "$(tr_msg "Only stable V3 tags, latest-v3 or latest-v3-prerelease are supported; an explicit prerelease tag requires --allow-prerelease; V2 is refused" "仅支持稳定 V3 标签、latest-v3 或 latest-v3-prerelease；显式指定预发布标签需加 --allow-prerelease；拒绝 V2")"
 }
 # A fail-closed manager validator. Upstream ignores unknown keys; this manager
 # rejects them so accidentally importing an NW2 URL cannot silently change routing.
@@ -1253,6 +1285,7 @@ rollback_action() {
   [[ -n "$target" ]] || die "$(tr_msg "No previous V3 release is available" "没有可回滚的 V3 版本")"
   ln -sfn "$target" "$CURRENT_LINK"
   VERSION="$(sed -n 's/^tag: //p' "$target/RELEASE-INFO")"
+  [[ "$VERSION" != *-* ]] || ALLOW_PRERELEASE=1
   validate_version_arg "$VERSION"; write_meta; activate
   ok "$(tr_msg "V3 binary rolled back; config is not converted across versions" "V3 二进制已回滚；配置不跨版本转换")"
 }
@@ -1404,7 +1437,9 @@ restore_action() {
     installed="$(installed_core_version)"; validate_imported_url "$u" "$installed"
     crt="$(query_get "$u" crt)"; key="$(query_get "$u" key)"
   else
-    installed="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"; validate_version_arg "$installed"
+    installed="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"
+    [[ "$installed" != *-* ]] || ALLOW_PRERELEASE=1
+    validate_version_arg "$installed"
     v3_url validate "$u" >/dev/null; crt="$(v3_url get "$u" crt)"; key="$(v3_url get "$u" key)"
   fi
   if [[ -n "$crt$key" ]]; then
@@ -1655,22 +1690,34 @@ import json,sys
 r=json.load(open(sys.argv[1]));assert isinstance(r,list);print(len(r))
 PY
 )" || die "$(tr_msg 'Invalid release metadata' '发布元数据无效')"
-    while IFS= read -r tag; do [[ -z "$tag" ]] || tags+=("$tag"); done < <(python3 - "$tmp" <<'PY'
+    while IFS= read -r tag; do [[ -z "$tag" ]] || tags+=("$tag"); done < <(python3 - "$tmp" "$ALLOW_PRERELEASE" <<'PY'
 import json,re,sys
+inc=sys.argv[2]=='1'
 for r in json.load(open(sys.argv[1])):
     t=r.get('tag_name','')
-    if re.fullmatch(r'v3\.\d+\.\d+',t) and not r.get('draft') and not r.get('prerelease'): print(t)
+    if re.fullmatch(r'v3\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?',t) and not r.get('draft') and (inc or not r.get('prerelease')): print(t)
 PY
 )
     if ((count<100)); then
-      ((${#tags[@]}>0)) || die "$(tr_msg 'No stable V3 release found' '未找到稳定V3版本')"
-      printf '%s\n' "${tags[@]}" | python3 -c 'import sys;print("\n".join(sorted(set(sys.stdin.read().split()),key=lambda v:tuple(map(int,v[1:].split("."))),reverse=True)))'
+      ((${#tags[@]}>0)) || die "$(tr_msg 'No matching V3 release found' '未找到匹配的V3版本')"
+      printf '%s\n' "${tags[@]}" | python3 -c '
+import re,sys
+def key(v):
+    m=re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?",v)
+    pre=m.group(4)
+    if pre is None:return (tuple(map(int,m.group(1,2,3))),1,())
+    ids=tuple((0,int(p)) if p.isdigit() else (1,p) for p in pre.split("."))
+    return (tuple(map(int,m.group(1,2,3))),0,ids)
+print("\n".join(sorted(set(sys.stdin.read().split()),key=key,reverse=True)))'
       return 0
     fi
   done
-  die "$(tr_msg 'Release scan limit reached; specify a stable tag' '发布扫描达到上限，请指定稳定标签')"
+  die "$(tr_msg 'Release scan limit reached; specify a tag explicitly' '发布扫描达到上限，请指定标签')"
 }
-versions_action() { fetch_versions; }
+versions_action() {
+  fetch_versions
+  [[ "$ALLOW_PRERELEASE" != 1 ]] || info "$(tr_msg 'List includes prerelease tags' '列表已包含预发布标签')"
+}
 select_version_install() {
   local listed choice i=0
   local -a available=()
@@ -1782,7 +1829,7 @@ usage() {
   if [[ "$LANG_CODE" == zh ]]; then
     cat <<EOF
 Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + systemd，Bash >=4.3）
-默认固定 ${DEFAULT_CORE_VERSION}；--version latest-v3 为显式跟进。默认Portal 2083 / SOCKS 1083。
+默认固定 ${DEFAULT_CORE_VERSION}；--version latest-v3 跟进最新稳定版，latest-v3-prerelease 尝鲜预发布。默认Portal 2083 / SOCKS 1083。
 独立账户/服务 nowhere-v3；配置 /etc/nowhere-v3；程序 /opt/nowhere-v3。
 不修改V1/V2，不自动开放防火墙。新Portal使用持久PEM；同角色配置复用证书。
 用法：sudo bash nowhere-v3.sh [ACTION] [选项]（已是 root 可省略 sudo）；无参数进入循环菜单。
@@ -1791,7 +1838,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  upgrade                 仅升级二进制（默认固定版本）
  configure               修改配置；无配置参数时进入向导
  validate                只校验 --url/--url-file，无需root
- versions / check-updates 列出所有稳定V3（不足10个列出现有全部）/最新版本
+ versions / check-updates 列出稳定V3（加--allow-prerelease则含预发布；不足10个列出现有全部）/最新版本
  self-update             只更新管理脚本；NOWHERE_V3_SELF_URL为空时禁用
  generate-key            输出一行32位小写hex，不附加文字
  probe [HOST:PORT]        TCP Flow探测，默认example.com:443，URL打码
@@ -1809,7 +1856,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  --pin 64位小写hex --sni DNS --cert PEM --tls-key PEM
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto（前者与后两者互斥）
  --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
- --version v3.x.y|latest-v3 --libc auto|gnu|musl --keep-releases 0..20
+ --version v3.x.y|latest-v3|latest-v3-prerelease --allow-prerelease --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en（CLI > NOWHERE_V3_LANG > manager.conf > 中文）
  --yes / -y；--wizard；--allow-role-switch（明确允许角色切换）
 
@@ -1823,7 +1870,7 @@ EOF
   else
     cat <<EOF
 Nowhere V3 Manager ${SCRIPT_VERSION} (channel ${SCRIPT_CHANNEL}; Linux + systemd, Bash >=4.3)
-Pinned core ${DEFAULT_CORE_VERSION}; --version latest-v3 explicitly follows releases. Portal 2083 / SOCKS 1083.
+Pinned core ${DEFAULT_CORE_VERSION}; latest-v3 follows stable releases; latest-v3-prerelease opts in to prereleases. Portal 2083 / SOCKS 1083.
 Dedicated account/service nowhere-v3; config /etc/nowhere-v3; binaries /opt/nowhere-v3.
 No V1/V2 changes or firewall edits. New Portals use persistent PEM; same-role configure reuses it.
 Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root); no arguments opens the looping menu.
@@ -1832,7 +1879,7 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root);
  upgrade                 Binary-only upgrade (pinned default)
  configure               Configure; opens wizard without configuration arguments
  validate                Validate --url/--url-file; no root needed
- versions / check-updates All stable V3 tags (all available if fewer than 10) / latest
+ versions / check-updates Stable V3 tags (add --allow-prerelease to include prereleases; all available if fewer than 10) / latest
  self-update             Manager only; empty NOWHERE_V3_SELF_URL disables it
  generate-key            Exactly one line of 32 lowercase hex characters
  probe [HOST:PORT]        TCP Flow probe; default example.com:443; URL redacted
@@ -1850,7 +1897,7 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root);
  --pin 64-lowercase-hex --sni DNS --cert PEM --tls-key PEM
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto (dial excludes dial4/dial6)
  --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
- --version v3.x.y|latest-v3 --libc auto|gnu|musl --keep-releases 0..20
+ --version v3.x.y|latest-v3|latest-v3-prerelease --allow-prerelease --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en (CLI > NOWHERE_V3_LANG > manager.conf > Chinese)
  --yes / -y; --wizard; --allow-role-switch (explicit role-switch consent)
 
@@ -1883,7 +1930,7 @@ menu() {
       "3. $(tr_msg 'Install/reinstall Egress (wizard)' '安装/重装Egress（向导）')" \
       "4. $(tr_msg 'Configure instance' '修改配置')" \
       "5. $(tr_msg 'Select a stable version to install' '指定稳定版本安装')" \
-      "6. $(tr_msg 'Upgrade binary: pinned/latest-v3' '升级二进制：固定/latest-v3')" \
+      "6. $(tr_msg 'Upgrade binary: pinned/stable/prerelease' '升级二进制：固定/稳定/预发布')" \
       "$(tr_msg '--- Service / diagnostics ---' '--- 服务与诊断 ---')" \
       "7. $(tr_msg 'Start service' '启动服务')" "8. $(tr_msg 'Stop service' '停止服务')" "9. $(tr_msg 'Restart service' '重启服务')" \
       "10. $(tr_msg 'Status and telemetry' '状态与统计')" "11. $(tr_msg 'Client links' '客户端链接')" \
@@ -1910,7 +1957,7 @@ menu() {
         1) menu_install portal ;; 2) menu_install vector ;; 3) menu_install egress ;;
         4) load_config_fields; installation_wizard; configure_action ;;
         5) select_version_install ;;
-        6) VERSION="$(prompt_choice "$(tr_msg "Core version: 1=$DEFAULT_CORE_VERSION 2=latest-v3" "内核版本：1=$DEFAULT_CORE_VERSION 2=latest-v3")" "$DEFAULT_CORE_VERSION" "$DEFAULT_CORE_VERSION" latest-v3)"; ACTION=upgrade; install_action ;;
+        6) VERSION="$(prompt_choice "$(tr_msg "Core version: 1=$DEFAULT_CORE_VERSION 2=latest-v3 3=latest-v3-prerelease" "内核版本：1=$DEFAULT_CORE_VERSION 2=latest-v3 3=latest-v3-prerelease")" "$DEFAULT_CORE_VERSION" "$DEFAULT_CORE_VERSION" latest-v3 latest-v3-prerelease)"; ACTION=upgrade; install_action ;;
         7|8|9) mutating_setup; case "$choice" in 7) systemctl start "$SERVICE_NAME" ;; 8) systemctl stop "$SERVICE_NAME" ;; 9) systemctl restart "$SERVICE_NAME" ;; esac ;;
         10) show_status; telemetry_action ;;
         11) show_links ;; 12) require_root; local_pin; info "$(tr_msg 'Remote: fingerprint nowhere://KEY@HOST:PORT?morph=0|1' '远端：fingerprint nowhere://KEY@HOST:PORT?morph=0|1')" ;; 13) generate_key ;;
@@ -1985,6 +2032,7 @@ main() {
       -y|--yes) ASSUME_YES=1; shift ;;
       --purge) PURGE=1; shift ;;
       --allow-role-switch) ALLOW_ROLE_SWITCH=1; shift ;;
+      --allow-prerelease) ALLOW_PRERELEASE=1; shift ;;
       -h|--help) ACTION=help; shift ;;
       *)
         if [[ ( "$ACTION" == backup || "$ACTION" == restore ) && "$1" != -* && -z "${BACKUP_PATH:-}" ]]; then BACKUP_PATH="$1"; shift
@@ -1994,6 +2042,7 @@ main() {
     esac
   done
   [[ "$LANG_CODE" == zh || "$LANG_CODE" == en ]] || die 'LANG: zh|en'
+  [[ "$VERSION" != latest-v3-prerelease ]] || ALLOW_PRERELEASE=1
   validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"
   validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
   [[ "$ROLE" == portal || "$ROLE" == vector || "$ROLE" == egress ]] || die "$(tr_msg 'Invalid role' '无效角色')"
@@ -2037,7 +2086,7 @@ main() {
     diagnostics) diagnostics_action ;;
     clean-releases) cleanup_old_releases ;;
     versions) versions_action ;;
-    check-updates) VERSION=latest-v3; resolve_version; printf '%s\n' "$VERSION" ;;
+    check-updates) if [[ "$ALLOW_PRERELEASE" == 1 ]]; then VERSION=latest-v3-prerelease; else VERSION=latest-v3; fi; resolve_version; printf '%s\n' "$VERSION" ;;
     self-update) self_update ;;
     language) save_language ;;
     uninstall) uninstall_action ;;

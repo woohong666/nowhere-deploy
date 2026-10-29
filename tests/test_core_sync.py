@@ -10,6 +10,24 @@ class CoreSync(unittest.TestCase):
  def test_prelude_modes(self):
   r=self.runsh(3,'validate_morph_prelude fade; validate_morph_prelude full8; validate_morph_prelude low7');self.assertEqual(r.returncode,0)
   r=self.runsh(3,'validate_morph_prelude INVALID');self.assertNotEqual(r.returncode,0)
+ def test_version_ge_prerelease_order(self):
+  for code in ('version_ge v3.2.0 v3.2.0-rc.1','version_ge v3.3.0-rc.1 v3.2.0'):
+   r=self.runsh(3,code);self.assertEqual(r.returncode,0,code)
+  r=self.runsh(3,'version_ge v3.2.0-rc.1 v3.2.0');self.assertNotEqual(r.returncode,0)
+ def test_explicit_prerelease_needs_flag(self):
+  r=self.runsh(3,'validate_version_arg v3.2.0-rc.1');self.assertNotEqual(r.returncode,0)
+  r=self.runsh(3,'ALLOW_PRERELEASE=1; validate_version_arg v3.2.0-rc.1');self.assertEqual(r.returncode,0,r.stderr)
+  r=self.runsh(3,'validate_version_arg latest-v3-prerelease');self.assertEqual(r.returncode,0)
+ def test_latest_prerelease_resolution_and_listing(self):
+  (self.d/'releases.json').write_text(json.dumps([
+   {'tag_name':'v3.2.0','prerelease':True,'draft':False},
+   {'tag_name':'v3.1.0','prerelease':False,'draft':False},
+   {'tag_name':'v3.0.1','prerelease':False,'draft':False},
+   {'tag_name':'v3.3.0-rc.1','prerelease':True,'draft':False},
+   {'tag_name':'v3.4.0','prerelease':False,'draft':True}]))
+  r=self.runsh(3,'curl_github() { cp "$SB/releases.json" "$2"; }; VERSION=latest-v3-prerelease; resolve_version; [[ "$VERSION" == v3.3.0-rc.1 && "$ALLOW_PRERELEASE" == 1 ]]');self.assertEqual(r.returncode,0,r.stderr)
+  r=self.runsh(3,'curl_github() { cp "$SB/releases.json" "$2"; }; ALLOW_PRERELEASE=1; fetch_versions');self.assertEqual(r.returncode,0,r.stderr);self.assertIn('v3.3.0-rc.1',r.stdout);self.assertIn('v3.2.0',r.stdout);self.assertNotIn('v3.4.0',r.stdout)
+  r=self.runsh(3,'curl_github() { cp "$SB/releases.json" "$2"; }; ALLOW_PRERELEASE=0; fetch_versions');self.assertEqual(r.returncode,0,r.stderr);self.assertNotIn('-rc.',r.stdout);self.assertIn('v3.1.0',r.stdout)
  def test_fade_unit_current_core(self):
   r=self.runsh(3,'MORPH_PRELUDE=fade; VERSION=v3.1.0; write_unit');self.assertEqual(r.returncode,0,r.stderr);self.assertIn('NOW_MORPH_TCP_PRELUDE=fade',(self.d/'unit.service').read_text())
  def test_fade_old_core_rejected_without_unit_write(self):
@@ -24,4 +42,7 @@ class CoreSync(unittest.TestCase):
  def test_explicit_prerelease_rejected_before_download(self):
   (self.d/'release.json').write_text(json.dumps({'tag_name':'v3.2.0','prerelease':True,'draft':False}))
   r=self.runsh(3,'curl_github() { cp "$SB/release.json" "$2"; }; target_triple() { touch "$SB/ASSET_SELECTION"; }; VERSION=v3.2.0; install_release');self.assertNotEqual(r.returncode,0);self.assertFalse((self.d/'ASSET_SELECTION').exists())
+ def test_prerelease_install_gate_opens_with_flag(self):
+  (self.d/'release.json').write_text(json.dumps({'tag_name':'v3.2.0','prerelease':True,'draft':False}))
+  r=self.runsh(3,'curl_github() { cp "$SB/release.json" "$2"; }; target_triple() { touch "$SB/ASSET_SELECTION"; }; ALLOW_PRERELEASE=1; VERSION=v3.2.0; install_release');self.assertNotEqual(r.returncode,0);self.assertTrue((self.d/'ASSET_SELECTION').exists())
 if __name__=='__main__':unittest.main(verbosity=2)

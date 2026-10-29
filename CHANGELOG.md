@@ -99,6 +99,21 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.3
+
+#### ✨ Added
+- **Opt-in prerelease channel**: `--version latest-v3-prerelease` resolves the newest non-draft v3 release including prereleases; `--allow-prerelease` permits an explicit prerelease tag (e.g. `--version v3.2.0 --allow-prerelease`). Both paths print a warning before installing. Menu option 6 now offers `1=pinned`, `2=latest stable`, `3=latest prerelease`.
+- **Prerelease listing**: `versions --allow-prerelease` includes prerelease tags (the default list stays stable-only), and `check-updates --allow-prerelease` reports the newest prerelease.
+
+#### 🔒 Safety
+- Defaults are unchanged: pinned `v3.1.0`, `latest-v3` and plain `versions` still exclude prerelease/draft tags; an explicit prerelease tag without the flag is still refused **before** asset selection.
+- Version comparison is now semver-aware for prerelease suffixes (`v3.2.0 > v3.2.0-rc.1`, `v3.3.0-rc.1 > v3.2.0`), so resolution, downgrade checks and the `fade` core gate stay correct.
+- SHA-256 digest verification, transactional install/rollback and unit checks are unchanged.
+
+#### ✅ Tests / Docs
+- `tests/test_core_sync.py` grew from 8 to 12 offline checks: prerelease ordering, explicit-tag gate, latest-prerelease resolution/listing and the install gate.
+- README (EN/zh-CN) and the acceptance checklist document the opt-in channel; CI still runs the same suites.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.2
 
 #### 🔄 Changed

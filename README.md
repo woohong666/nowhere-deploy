@@ -758,7 +758,7 @@ nh                                 # or just reopen the menu with the shortcut
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
 - **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
-- **Tracking v3.x**: the default is pinned to the verified `v3.1.0` (v3.2.0 is a GitHub prerelease; `latest-v3` only follows stable releases); `upgrade --version latest-v3` opts in to newer stable v3 releases.
+- **Tracking v3.x**: the default is pinned to the verified `v3.1.0`; `upgrade --version latest-v3` follows the newest stable release; `upgrade --version latest-v3-prerelease` (or an explicit tag plus `--allow-prerelease`) opts in to prereleases, warns before installing, and can be reverted with `rollback`.
 
 ### 13.2 V2 / V3 at a glance
 
@@ -816,7 +816,9 @@ all previous CLI options remain supported.
 
 `versions` lists every available stable tag; fewer than ten upstream releases
 means fewer than ten results, never invented tags. The default stays v3.1.0
-(v3.2.0 is a prerelease and is never selected; an explicit prerelease tag is refused);
+(v3.2.0 is a prerelease and is never selected by `latest-v3` or `versions`; an
+explicit prerelease tag requires `--allow-prerelease`, or use
+`latest-v3-prerelease` to opt in);
 `upgrade --version latest-v3` explicitly opts in. Self-update checks Bash syntax,
 V3 channel and numeric version, rejects downgrades and replaces atomically in the
 same directory with a backup. It changes no service, configuration or core binary.
@@ -984,7 +986,8 @@ the pinned `tests/fixtures/acme-3.1.6.tar.gz` offline; `tests/test_review.py`
 adds the 16 focused checks from the 1.5.1/1.4.1 batch (atomic backup fallback,
 metadata normalization, piped execution, version-parameterized ACME and
 certificate-status failures); `tests/test_core_sync.py` covers the pinned core
-default, prerelease policy and `fade` validation order (8 offline checks).
+default, prerelease policy, the opt-in prerelease install path and `fade`
+validation order (12 offline checks).
 `tests/smoke_native.py` needs official v3.0.1/v3.1.0 binaries for optional
 loopback flow checks and is not run in CI. CI runs all of the others.
 

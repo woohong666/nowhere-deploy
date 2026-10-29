@@ -326,6 +326,7 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - 备份/恢复回归（v1.5.1/1.4.1）：`backup` 目标已存在（含悬空链接）时必须拒绝覆盖；`restore` 应容忍 `manager.conf` 的整行注释、空行与键值两侧空格，并拒绝重复有效键。
 - `cert-status` 回归（v1.4.1）：托管证书损坏/过期/私钥不匹配/日期异常时，仍应输出定时器状态与上次受管理结果且返回非零；自备证书应标明"不走内置定时续期"且不查询 timer。
 - 内核与 Prelude 回归（v1.4.2）：`install`/`upgrade` 默认应为 **v3.1.0**；`latest-v3` 不得选中预发布（当前 v3.2.0），显式指定预发布应被拒绝；`--morph-prelude fade` 在 v3.1.0 下应写入 `NOW_MORPH_TCP_PRELUDE=fade`，指定 v3.0.0 时应拒绝且不写 unit。
+- 预发布尝鲜（v1.4.3）：默认 `latest-v3` 与 `versions` 不得包含预发布；`--version latest-v3-prerelease` 或 `--allow-prerelease` + 显式预发布标签应能解析并安装（安装前有警告），可用 `rollback` 回退；**不带标志**的显式预发布标签仍应被拒绝。
 
 ### 13.3 自动化验收
 
