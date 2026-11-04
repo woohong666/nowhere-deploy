@@ -279,9 +279,9 @@ id nowhere-v2 2>&1                      # 应不存在
 > 没有 NW3 客户端时，用官方二进制自测：`nowhere-v3 probe '<vector-url>' example.com:443`。
 
 ```bash
-# 1) 新建 V3 Portal（默认固定 v3.1.0）；有域名证书时直接给 --cert/--tls-key，
+# 1) 新建 V3 Portal（默认固定稳定版 v3.3.0）；有域名证书时直接给 --cert/--tls-key，
 #    不传则自动生成持久自签 PEM（pin 永久稳定，不会随重启变化）
-sudo bash nowhere-v3.sh install --version v3.1.0 --public-host <公网IP或域名>
+sudo bash nowhere-v3.sh install --version v3.3.0 --public-host <公网IP或域名>
 sudo bash nowhere-v3.sh doctor
 sudo bash nowhere-v3.sh links        # 输出 Vector / Egress URL（均自带 pin）
 sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
@@ -325,8 +325,16 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
 - 证书（可选，需真实域名）：`cert --domain <域> --cf-token-file <文件>`（或 `--http`）成功后 `/etc/nowhere-v3/tls/le.<域>/` 出现 fullchain/key，`url.conf` 指向它且为 `tls=2`；`systemctl list-timers | grep nowhere-v3-cert-renew` 可见每日续期；vector/egress 角色实例应被拒绝；Token 不出现在 acme.sh 命令行（`ps` 不可见）；acme.sh 与 `dns_cf` 插件位于 `/etc/nowhere-v3/acme`（纳入 `backup`），签发显式使用 `--server letsencrypt`。
 - 备份/恢复回归（v1.5.1/1.4.1）：`backup` 目标已存在（含悬空链接）时必须拒绝覆盖；`restore` 应容忍 `manager.conf` 的整行注释、空行与键值两侧空格，并拒绝重复有效键。
 - `cert-status` 回归（v1.4.1）：托管证书损坏/过期/私钥不匹配/日期异常时，仍应输出定时器状态与上次受管理结果且返回非零；自备证书应标明"不走内置定时续期"且不查询 timer。
-- 内核与 Prelude 回归（v1.4.2）：`install`/`upgrade` 默认应为 **v3.1.0**；`latest-v3` 不得选中预发布（当前 v3.2.0），显式指定预发布应被拒绝；`--morph-prelude fade` 在 v3.1.0 下应写入 `NOW_MORPH_TCP_PRELUDE=fade`，指定 v3.0.0 时应拒绝且不写 unit。
+- 内核与 Prelude 回归（v1.4.2，沿用）：`--morph-prelude fade` 在 ≥v3.0.1 下应写入 `NOW_MORPH_TCP_PRELUDE=fade`，指定 v3.0.0 时应拒绝且不写 unit；`latest-v3` 不得选中预发布；无 `--allow-prerelease` 时显式预发布标签应被拒绝。默认内核见下方 v1.5.1 条目。
 - 预发布尝鲜（v1.4.3）：默认 `latest-v3` 与 `versions` 不得包含预发布；`--version latest-v3-prerelease` 或 `--allow-prerelease` + 显式预发布标签应能解析并安装（安装前有警告），可用 `rollback` 回退；**不带标志**的显式预发布标签仍应被拒绝。
+- 内核 3.3 回归（v1.5.1）：
+  - `install`/`upgrade` 默认应为 **v3.3.0**；`latest-v3` 解析为最新稳定版。
+  - TLS Egress：`egress://…/tcp:PORT`，或 `out=egress` 且仅 TCP 监听的 Portal，在 <v3.3.0 内核上必须在改动前被拒绝（`install`/`upgrade`/`configure`/`rollback`/`preview` 均不写 unit、不切换链接）；≥v3.3.0 时可用。
+  - `links`：仅稳定版 ≥v3.3.0 输出 `Egress: egress://…/tcp:` 行；预发布（如 `v3.3.0-rc.1`）与未知版本只输出 UDP Egress 行。
+  - UDP 前导：默认不写 `NOW_MORPH_UDP_PRELUDE`（内核默认 fade）；`--morph-udp-prelude low7` 持久化并写入 unit；<v3.3.0 时拒绝；`--morph-udp-prelude default` 清除；非法值的报错应指出 `morph-udp-prelude`。
+  - Portal 升级到 ≥v3.2.0 且 `morph=1` 时必须显示 Morph TCP 认证前导兼容提示，且输出中不得出现共享密钥。
+  - 回滚与清理（发布根目录含符号链接）：`rollback` 必须切换到真正的上一版本（不得空操作却报告成功）；清理不得删除当前正在使用的版本。
+  - 升级 Portal 前，先确认所有 TCP 客户端支持认证前导（原生 Vector ≥3.1.0；第三方客户端须明确支持）；UDP/QUIC 客户端不受影响。
 
 ### 13.3 自动化验收
 

@@ -729,7 +729,7 @@ sudo bash nowhere-v3.sh install --public-host relay.example.com \
   --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
 
 # Pin a version / port / key
-sudo bash nowhere-v3.sh install --version v3.1.0 --endpoint '*:8443' \
+sudo bash nowhere-v3.sh install --version v3.3.0 --endpoint '*:8443' \
   --key "$(openssl rand -hex 16)"
 ```
 
@@ -758,7 +758,9 @@ nh                                 # or just reopen the menu with the shortcut
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
 - **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
-- **Tracking v3.x**: the default is pinned to the verified `v3.1.0`; `upgrade --version latest-v3` follows the newest stable release; `upgrade --version latest-v3-prerelease` (or an explicit tag plus `--allow-prerelease`) opts in to prereleases, warns before installing, and can be reverted with `rollback`. Prereleases may contain breaking changes (e.g. v3.2.0 enforces authenticated Preludes and rejects legacy TCP clients; UDP/QUIC is unaffected), so test them on a non-critical instance first.
+- **Tracking v3.x**: the default is pinned to the verified stable `v3.3.0`; `upgrade --version latest-v3` follows the newest stable release; `upgrade --version latest-v3-prerelease` (or an explicit tag plus `--allow-prerelease`) opts in to prereleases, warns before installing, and can be reverted with `rollback`. Core v3.2.0+ requires authenticated Morph TCP Preludes and rejects legacy TCP clients, so verify every TCP client (native Vector >= 3.1.0; third-party clients must explicitly support the Authenticated Prelude) before upgrading a Portal. UDP/QUIC is unaffected.
+- **TLS Egress** (core >= 3.3.0 on both peers): an Egress URL with `/tcp:PORT` (for example `egress://KEY@relay.example/tcp:2000?pin=…`) registers over TLS instead of QUIC. A Portal with `out=egress` may now use TCP-only listeners; the manager refuses TLS Egress on older cores before any change is made, and `links` prints the TCP Egress URL only for a stable core >= 3.3.0.
+- **UDP Prelude**: `--morph-udp-prelude default|fade|full8|low7` (core >= 3.3.0). `default` leaves the core default (`fade`) in place; explicit values are persisted and must be cleared (`--morph-udp-prelude default`) before any downgrade below 3.3.0.
 
 ### 13.2 V2 / V3 at a glance
 
@@ -815,10 +817,10 @@ New options: `--name` (share name), `--wizard`, `--dial/--dial4/--dial6`;
 all previous CLI options remain supported.
 
 `versions` lists every available stable tag; fewer than ten upstream releases
-means fewer than ten results, never invented tags. The default stays v3.1.0
-(v3.2.0 is a prerelease and is never selected by `latest-v3` or `versions`; an
-explicit prerelease tag requires `--allow-prerelease`, or use
-`latest-v3-prerelease` to opt in);
+means fewer than ten results, never invented tags. The default is the stable
+`v3.3.0`; `latest-v3` and `versions` never select prereleases. An explicit
+prerelease tag requires `--allow-prerelease`, or use `latest-v3-prerelease`
+to opt in;
 `upgrade --version latest-v3` explicitly opts in. Self-update checks Bash syntax,
 V3 channel and numeric version, rejects downgrades and replaces atomically in the
 same directory with a backup. It changes no service, configuration or core binary.
@@ -987,9 +989,13 @@ adds the 16 focused checks from the 1.5.1/1.4.1 batch (atomic backup fallback,
 metadata normalization, piped execution, version-parameterized ACME and
 certificate-status failures); `tests/test_core_sync.py` covers the pinned core
 default, prerelease policy, the opt-in prerelease install path and `fade`
-validation order (12 offline checks).
-`tests/smoke_native.py` needs official v3.0.1/v3.1.0 binaries for optional
-loopback flow checks and is not run in CI. CI runs all of the others.
+validation order (12 offline checks). `tests/test_330.py` covers the core 3.3
+rules: TLS Egress gating (including prerelease cores), fail-closed links,
+UDP Prelude persistence and refusal on older cores, transactional rollback,
+cleanup and install refusals, and symlinked release roots (20 offline checks).
+`tests/smoke_native.py` runs six loopback TCP/UDP flows with an official
+v3.3.0 binary placed at `upstream/v3.3.0/nowhere`; it is optional and is not
+run in CI. CI runs all of the others.
 
 **Integration is not covered automatically.** The install, upgrade, and systemd
 flows have never been executed by the test suite. Run

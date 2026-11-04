@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.4.3
+# Nowhere V3 isolated manager v1.5.1
+# v1.5.1: reviewed fixes to 1.5.0 — prerelease cores (e.g. v3.3.0-rc.1) no longer
+#   pass the TLS Egress gate or print TCP Egress links; links fail closed without a
+#   core version; clearer --morph-udp-prelude errors.
+# v1.5.0: stable core v3.3.0, TLS Egress, optional UDP prelude policy;
+#   version-aware activation/rollback checks and Morph TCP upgrade warning.
 # v1.4.3: opt-in prerelease installs (latest-v3-prerelease / --allow-prerelease);
 #   stable default and latest-v3 still exclude prereleases.
 # v1.4.2: pin stable core v3.1.0; support explicit fade prelude (core >=3.0.1);
@@ -22,9 +27,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.4.3"
+readonly SCRIPT_VERSION="1.5.1"
 readonly SCRIPT_CHANNEL="v3"
-readonly DEFAULT_CORE_VERSION="v3.1.0"
+readonly DEFAULT_CORE_VERSION="v3.3.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
 readonly SERVICE_NAME="nowhere-v3" RUN_USER="nowhere-v3" RUN_GROUP="nowhere-v3"
 readonly INSTALL_ROOT="/opt/nowhere-v3"
@@ -53,6 +58,7 @@ KEEP_RELEASES=3
 OLD_TARGET=''
 MEMORY_PROFILE=throughput
 MORPH_PRELUDE=full8
+MORPH_UDP_PRELUDE=''
 PUBLIC_HOST=''
 ROLE=portal
 KEY=''
@@ -286,6 +292,10 @@ print('prerelease' if r.get('prerelease') else 'stable')
 PYMETA
 )" || die "$(tr_msg "Release tag is not a matching stable release (use --allow-prerelease for a prerelease)" "发布标签不是匹配的稳定正式版（预发布请加 --allow-prerelease）")"
   [[ "$kind" != prerelease ]] || warn "$(tr_msg "Installing PRERELEASE ${VERSION}; it may be unstable; rollback stays available" "正在安装预发布 ${VERSION}；可能不稳定，仍可回滚")"
+  if [[ -s "$URL_FILE" ]]; then
+    validate_core_configuration "$(read_url)" "$VERSION"
+    warn_core_upgrade "$(read_url)"
+  fi
   target="$(target_triple)"
   fields="$(release_asset_fields "$json" "$target")" || die "$(tr_msg "No unambiguous Linux asset for ${target}" "找不到与 ${target} 唯一对应的 Linux 资产")"
   name="$(sed -n '1p' <<<"$fields")"; url="$(sed -n '2p' <<<"$fields")"; digest="$(sed -n '3p' <<<"$fields")"
@@ -340,6 +350,7 @@ EOF2
 }
 
 write_unit() {
+  [[ ! -s "$URL_FILE" ]] || validate_core_configuration "$(read_url)" "$VERSION"
   if [[ "$MORPH_PRELUDE" == fade ]] && ! version_ge "$VERSION" v3.0.1; then
     die "$(tr_msg 'fade prelude requires core v3.0.1 or newer; use full8 or low7 for v3.0.0' 'fade 前导需要 v3.0.1 或更新内核；v3.0.0 请使用 full8 或 low7')"
   fi
@@ -361,6 +372,7 @@ TimeoutStopSec=10s
 Environment=TMPDIR=/run/nowhere-v3
 Environment=NOW_TRANSPORT_MEMORY_PROFILE=${MEMORY_PROFILE}
 Environment=NOW_MORPH_TCP_PRELUDE=${MORPH_PRELUDE}
+${MORPH_UDP_PRELUDE:+Environment=NOW_MORPH_UDP_PRELUDE=${MORPH_UDP_PRELUDE}}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -397,14 +409,16 @@ cleanup_old_releases() {
   # Serialise against installs/builds: this walks and deletes inside the releases
   # directory. No-op when the caller already holds the lock.
   acquire_build_lock
-  local quiet="${1:-0}" current previous d kept=0 removed=0
+  local quiet="${1:-0}" current previous d dc kept=0 removed=0
   [[ "$KEEP_RELEASES" -gt 0 ]] || { [[ "$quiet" == 1 ]] || info "$(tr_msg "Release pruning disabled" "旧版本自动清理已关闭")"; return 0; }
   [[ -d "$RELEASES_DIR" ]] || return 0
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"; previous="$OLD_TARGET"
   [[ -n "$current" && -d "$current" ]] && kept=1
   if [[ -n "$previous" && -d "$previous" && "$previous" != "$current" && $kept -lt $KEEP_RELEASES ]]; then kept=$((kept+1)); else previous=""; fi
   while IFS= read -r d; do
-    [[ -d "$d" ]] || continue; [[ "$d" == "$current" || "$d" == "$previous" ]] && continue
+    [[ -d "$d" ]] || continue
+    dc="$(readlink -f "$d" 2>/dev/null || printf '%s' "$d")"
+    [[ "$dc" == "$current" || "$dc" == "$previous" ]] && continue
     if ((kept<KEEP_RELEASES)); then kept=$((kept+1)); else rm -rf -- "$d"; removed=$((removed+1)); fi
   done < <(ls -1dt "$RELEASES_DIR"/* 2>/dev/null || true)
   ((removed>0)) && ok "$(tr_msg "Removed ${removed} old V3 release(s)" "已清理 ${removed} 个旧 V3 Release")" || [[ "$quiet" == 1 ]] || info "$(tr_msg "No old V3 releases need cleanup" "没有需要清理的旧 V3 Release")"
@@ -438,9 +452,15 @@ v3_url() {
   NOWHERE_MANAGER_LANG="$LANG_CODE" python3 - "$@" <<'PY'
 import sys,re,urllib.parse as U,ipaddress,os
 op=sys.argv[1]
-MESSAGES={'Invalid IPv6': 'IPv6地址无效', 'Invalid host': '主机地址无效', 'Invalid port': '端口无效', 'Invalid carrier path': '载波路径无效', 'Invalid endpoint': '端点无效', 'Duplicate or missing carrier': '载波重复或缺失', 'V3 client must select one carrier': 'V3客户端必须选择单一载波', 'Egress requires QUIC/udp': 'Egress必须使用QUIC/udp', 'Address family conflict': '地址族冲突', 'SOCKS credentials must encode reserved characters': 'SOCKS凭据中的保留字符必须编码', 'Invalid SOCKS credentials': 'SOCKS凭据无效', 'SOCKS requires HOST:PORT': 'SOCKS必须使用HOST:PORT', 'Whitespace/control in URL': 'URL含空白或控制字符', 'Invalid percent encoding': '百分号编码无效', 'Invalid URL': 'URL无效', 'Invalid role URL': '角色URL无效', 'NW3 key must be exactly 32 lowercase hex characters': 'NW3密钥必须为32位小写十六进制', 'Unsupported V3 option; old NW2 and unknown parameters are refused': '不支持的V3参数；拒绝NW2及未知参数', 'Invalid morph': 'Morph无效', 'Rate must be an integer in 0..2147483647': '速率必须为0..2147483647整数', 'Conflicting source bindings': '出站源地址参数冲突', 'Invalid source IP': '出站源IP无效', 'Invalid source family': '出站源地址族无效', 'Invalid TLS mode': 'TLS模式无效', 'PEM paths required': '必须提供PEM路径', 'PEM paths must be absolute': 'PEM路径必须为绝对路径', 'PEM paths require tls=2': 'PEM路径要求tls=2', 'Egress output requires QUIC and forbids dial options': 'Portal的egress出口要求QUIC且禁止dial参数', 'Pin must be 64 lowercase hex characters': 'pin必须为64位小写十六进制', 'Invalid SNI': 'SNI无效', 'Vector requires in=': 'Vector必须指定in=', 'Links require Portal': '链接操作要求Portal角色', 'Verified local certificate pin required': '必须取得可信的本机证书pin', 'Fingerprint inspection requires a TCP listener or persistent PEM': '指纹探测需要TCP监听或持久PEM证书', 'V3 configuration OK': 'V3配置校验通过'}
+MESSAGES={'Invalid IPv6': 'IPv6地址无效', 'Invalid host': '主机地址无效', 'Invalid port': '端口无效', 'Invalid carrier path': '载波路径无效', 'Invalid endpoint': '端点无效', 'Duplicate or missing carrier': '载波重复或缺失', 'V3 client must select one carrier': 'V3客户端必须选择单一载波', 'Egress requires QUIC/udp': 'Egress必须使用QUIC/udp', 'Address family conflict': '地址族冲突', 'SOCKS credentials must encode reserved characters': 'SOCKS凭据中的保留字符必须编码', 'Invalid SOCKS credentials': 'SOCKS凭据无效', 'SOCKS requires HOST:PORT': 'SOCKS必须使用HOST:PORT', 'Whitespace/control in URL': 'URL含空白或控制字符', 'Invalid percent encoding': '百分号编码无效', 'Invalid URL': 'URL无效', 'Invalid role URL': '角色URL无效', 'NW3 key must be exactly 32 lowercase hex characters': 'NW3密钥必须为32位小写十六进制', 'Unsupported V3 option; old NW2 and unknown parameters are refused': '不支持的V3参数；拒绝NW2及未知参数', 'Invalid morph': 'Morph无效', 'Rate must be an integer in 0..2147483647': '速率必须为0..2147483647整数', 'Conflicting source bindings': '出站源地址参数冲突', 'Invalid source IP': '出站源IP无效', 'Invalid source family': '出站源地址族无效', 'Invalid TLS mode': 'TLS模式无效', 'PEM paths required': '必须提供PEM路径', 'PEM paths must be absolute': 'PEM路径必须为绝对路径', 'PEM paths require tls=2': 'PEM路径要求tls=2', 'Egress output forbids dial options': 'Portal的egress出口禁止dial参数', 'TLS Egress requires core v3.3.0 or newer on both peers': 'TLS Egress 需要 Portal 与 Egress 两端内核均为 v3.3.0 或更新版本', 'Explicit core version required for compatibility validation': '兼容性校验需要明确的内核版本', 'Pin must be 64 lowercase hex characters': 'pin必须为64位小写十六进制', 'Invalid SNI': 'SNI无效', 'Vector requires in=': 'Vector必须指定in=', 'Links require Portal': '链接操作要求Portal角色', 'Verified local certificate pin required': '必须取得可信的本机证书pin', 'Fingerprint inspection requires a TCP listener or persistent PEM': '指纹探测需要TCP监听或持久PEM证书', 'V3 configuration OK': 'V3配置校验通过'}
 def msg(m):return MESSAGES.get(m,m) if os.environ.get('NOWHERE_MANAGER_LANG')=='zh' else m
 def fail(m): raise SystemExit(msg(m))
+def semver_key(v):
+    m=re.fullmatch(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?',v or '')
+    if not m:return None
+    core=tuple(map(int,m.group(1,2,3)));pre=m.group(4)
+    if pre is None:return (core,1,())
+    return (core,0,tuple((0,int(p)) if p.isdigit() else (1,p) for p in pre.split('.')))
 def host(h,wild=False):
     if h=='*' and wild:return
     if h.startswith('[') and h.endswith(']'):
@@ -466,7 +486,6 @@ def endpoint(ep,role):
     host(h,role=='portal')
     if not entries or len(entries)>2 or len({x[0] for x in entries})!=len(entries):fail('Duplicate or missing carrier')
     if role!='portal' and len(entries)!=1:fail('V3 client must select one carrier')
-    if role=='egress' and entries[0][0]!='udp':fail('Egress requires QUIC/udp')
     try:ip=ipaddress.ip_address(h.strip('[]'))
     except ValueError:ip=None
     for _,fam,_ in entries:
@@ -523,7 +542,7 @@ def validate(raw):
         elif 'crt' in q or 'key' in q:fail('PEM paths require tls=2')
         out=q.get('out','direct')
         if out=='egress':
-            if not any(e[0]=='udp' for e in entries) or set(q)&{'dial','dial4','dial6'}:fail('Egress output requires QUIC and forbids dial options')
+            if set(q)&{'dial','dial4','dial6'}:fail('Egress output forbids dial options')
         elif out!='direct':socks(rawq['out'])
     else:
         if q.get('pin','none') not in ('','none') and not re.fullmatch(r'[0-9a-f]{64}',q['pin']):fail('Pin must be 64 lowercase hex characters')
@@ -547,7 +566,13 @@ if op=='build':
 else:
     raw=sys.argv[2]
     role,key,ep,h,entries,q,rawq=validate(raw)
-    if op=='validate':print(msg('V3 configuration OK'))
+    if op=='validate-core':
+        core=semver_key(sys.argv[3])
+        if core is None:fail('Explicit core version required for compatibility validation')
+        tls_egress=(role=='egress' and entries[0][0]=='tcp') or (role=='portal' and q.get('out')=='egress' and not any(e[0]=='udp' for e in entries))
+        if tls_egress and core<semver_key('v3.3.0'):fail('TLS Egress requires core v3.3.0 or newer on both peers')
+        print(msg('V3 configuration OK'))
+    elif op=='validate':print(msg('V3 configuration OK'))
     elif op=='get':
         k=sys.argv[3];print({'role':role,'endpoint':ep,'shared_key':key}.get(k,q.get(k,'')))
     elif op=='rewrite-pem':
@@ -589,7 +614,9 @@ else:
             print(f'nowhere://{key}@{public}:{p}?net={typ}&morph='+q.get('morph','1')+'#'+U.quote(name,safe=''))
     elif op=='links':
         if role!='portal':fail('Links require Portal')
-        public,pin=sys.argv[3:]
+        public,pin=sys.argv[3:5]
+        core=semver_key(sys.argv[5]) if len(sys.argv)>5 else None
+        tls_egress=bool(core and core>=semver_key('v3.3.0'))
         if ':' in public and not public.startswith('['):public='['+public+']'
         host(public)
         if pin and not re.fullmatch(r'[0-9a-f]{64}',pin):fail('Verified local certificate pin required')
@@ -599,12 +626,28 @@ else:
             if pin:params['pin']=pin
             query=U.urlencode(params)
             print(f'Vector {typ}: vector://{key}@{public}/{typ}:{p}?{query}&in=127.0.0.1:1083')
-            if typ=='udp' and q.get('out')=='egress':print(f'Egress: egress://{key}@{public}/udp:{p}?{query}')
+            if q.get('out')=='egress' and (typ=='udp' or tls_egress):print(f'Egress: egress://{key}@{public}/{typ}:{p}?{query}')
     elif op=='ports':
         for typ,fam,p in entries:print(f'{typ.upper()} {p} (family {fam or "auto"})')
 PY
 }
 
+validate_core_configuration() {
+  local u="$1" version="$2"
+  v3_url validate-core "$u" "$version" >/dev/null
+  if [[ "$MORPH_PRELUDE" == fade ]] && ! version_ge "$version" v3.0.1; then
+    die "$(tr_msg 'TCP fade requires core >=3.0.1' 'TCP fade 需要内核 >=3.0.1')"
+  fi
+  if [[ -n "$MORPH_UDP_PRELUDE" ]] && ! version_ge "$version" v3.3.0; then
+    die "$(tr_msg 'Explicit UDP prelude policy requires core >=3.3.0; clear it before downgrading' '显式 UDP 前导策略需要内核 >=3.3.0；降级前需清除此设置')"
+  fi
+}
+warn_core_upgrade() {
+  local u="$1"
+  if version_ge "$VERSION" v3.2.0 && [[ "$(v3_url get "$u" role)" == portal && "$(v3_url get "$u" morph)" != 0 ]]; then
+    warn "$(tr_msg 'Morph TCP requires authenticated preludes: update native Vector to >=3.1.0 and verify third-party clients before upgrading Portal. TLS Egress needs both peers >=3.3.0.' 'Morph TCP 要求认证前导：升级 Portal 前，原生 Vector 需 >=3.1.0，第三方客户端需确认兼容；TLS Egress 两端均需 >=3.3.0。')"
+  fi
+}
 read_url() { [[ -s "$URL_FILE" ]] || die "$(tr_msg "V3 is not configured" "尚未配置 V3")"; head -n 1 "$URL_FILE"; }
 load_meta() {
   [[ -r "$META_FILE" ]] || return 0
@@ -616,11 +659,13 @@ load_meta() {
       NODE_NAME) NODE_NAME="$v" ;;
       MEMORY_PROFILE) validate_memory_profile "$v"; MEMORY_PROFILE="$v" ;;
       MORPH_PRELUDE) validate_morph_prelude "$v"; MORPH_PRELUDE="$v" ;;
+      MORPH_UDP_PRELUDE) [[ -z "$v" ]] || validate_morph_prelude "$v"; MORPH_UDP_PRELUDE="$v" ;;
     esac
   done <"$META_FILE"
 }
 write_meta() {
   printf 'SCRIPT_CHANNEL=v3\nSCRIPT_VERSION=%s\nCORE_VERSION=%s\nPUBLIC_HOST=%s\nMEMORY_PROFILE=%s\nMORPH_PRELUDE=%s\nLANG=%s\nNODE_NAME=%s\n' "$SCRIPT_VERSION" "$VERSION" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$LANG_CODE" "$NODE_NAME" >"$META_FILE"
+  printf 'MORPH_UDP_PRELUDE=%s\n' "$MORPH_UDP_PRELUDE" >>"$META_FILE"
   chown root:"$RUN_GROUP" "$META_FILE"; chmod 640 "$META_FILE"
 }
 # Save everything needed for service/config/binary recovery before mutation.
@@ -852,7 +897,7 @@ local_pin() {
   else
     [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V3 binary missing" "V3 二进制缺失")"
     link="$(v3_url fingerprint-link "$u")"
-    fp="$(timeout 12 "$BIN_LINK" fingerprint "$link" 2>/dev/null)" || die "$(tr_msg "Cannot inspect the live local certificate" "无法探测本机正在使用的证书")"
+    fp="$(timeout 60 "$BIN_LINK" fingerprint "$link" 2>/dev/null)" || die "$(tr_msg "Cannot inspect the live local certificate" "无法探测本机正在使用的证书")"
     fp="$(normalize_fingerprint "$fp")"
   fi
   [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
@@ -870,7 +915,7 @@ remote_fingerprint() {
   [[ -x "$BIN_LINK" ]] || die "$(tr_msg "V3 binary missing" "V3 二进制缺失")"
   redacted="nowhere://***@${endpoint}"
   info "$(tr_msg "Inspecting the remote certificate over TCP/TLS (link redacted): ${redacted}" "正在通过 TCP/TLS 探测远端证书（链接已打码）：${redacted}")"
-  fp="$(timeout 12 "$BIN_LINK" fingerprint "$url" 2>/dev/null)" || die "$(tr_msg "Remote fingerprint failed: check host/port reachability, a TCP/TLS listener, and that morph matches the Portal" "远端指纹探测失败：请检查地址/端口可达性、TCP/TLS 监听与 morph 是否与 Portal 一致")"
+  fp="$(timeout 60 "$BIN_LINK" fingerprint "$url" 2>/dev/null)" || die "$(tr_msg "Remote fingerprint failed: check host/port reachability, a TCP/TLS listener, and that morph matches the Portal" "远端指纹探测失败：请检查地址/端口可达性、TCP/TLS 监听与 morph 是否与 Portal 一致")"
   fp="$(normalize_fingerprint "$fp")"
   [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "$(tr_msg "Cannot read certificate fingerprint" "指纹读取失败")"
   printf '%s\n' "$fp"
@@ -1206,10 +1251,13 @@ preview_action() {
     old_role="$(v3_url get "$old" role)"
     [[ "$old_role" == "$(v3_url get "$candidate" role)" || "$ALLOW_ROLE_SWITCH" == 1 ]] || die "$(tr_msg 'Preview: role change requires --allow-role-switch' '预览：切换角色需要 --allow-role-switch')"
   fi
+  local preview_version="$VERSION"
+  if [[ -s "$CURRENT_LINK/RELEASE-INFO" ]]; then preview_version="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"; fi
+  validate_core_configuration "$candidate" "$preview_version"
   # Allowlisted comparison: never print raw URLs, shared keys, SOCKS credentials or pins.
-  python3 - "$old" "$candidate" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" <<'PY'
+  python3 - "$old" "$candidate" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$MORPH_UDP_PRELUDE" <<'PY'
 import sys,urllib.parse as U,json
-old,new,public,memory,prelude=sys.argv[1:]
+old,new,public,memory,prelude,udp_prelude=sys.argv[1:]
 def fields(raw):
  if not raw:return {}
  u=U.urlsplit(raw);q=dict(U.parse_qsl(u.query));d={'role':u.scheme,'endpoint':u.netloc.rsplit('@',1)[-1]+u.path}
@@ -1226,7 +1274,7 @@ print('shared_key: '+('changed (hidden)' if a.username!=b.username else 'unchang
 qa=dict(U.parse_qsl(a.query));qb=dict(U.parse_qsl(b.query))
 for k in ('pin','out','in'):
  if qa.get(k)!=qb.get(k):print(k+': changed (sensitive fields hidden)')
-print(json.dumps({'public_host':public,'memory_profile':memory,'morph_prelude':prelude},ensure_ascii=False))
+print(json.dumps({'public_host':public,'memory_profile':memory,'morph_prelude':prelude,'morph_udp_prelude':udp_prelude or 'default'},ensure_ascii=False))
 PY
   info "$(tr_msg 'Preview only. Applying configure will restart the service; supplied PEM files are staged into managed storage.' '仅预览。实际 configure 会重启服务；自备 PEM 文件会复制到托管目录。')"
 }
@@ -1263,7 +1311,9 @@ show_links() {
     # Normal CA/hostname verification survives automated certificate renewal.
     pin=""
   fi
-  v3_url links "$u" "$PUBLIC_HOST" "$pin"
+  local link_core=unknown
+  [[ ! -s "$CURRENT_LINK/RELEASE-INFO" ]] || link_core="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"
+  v3_url links "$u" "$PUBLIC_HOST" "$pin" "$link_core"
   shares="$(v3_url shares "$u" "$PUBLIC_HOST" "$NODE_NAME")"
   printf '%s\n' "$(tr_msg 'Generic share links (Anywhere etc.):' '通用分享链接（Anywhere 等客户端）：')"
   printf '%s\n' "$shares"
@@ -1279,12 +1329,13 @@ rollback_action() {
   local d target=''
   begin_transaction
   while IFS= read -r d; do
-    [[ "$d" == "$OLD_TARGET" || ! -x "$d/nowhere" ]] && continue
+    [[ "$(readlink -f "$d" 2>/dev/null || printf '%s' "$d")" == "$OLD_TARGET" || ! -x "$d/nowhere" ]] && continue
     target="$d"; break
   done < <(ls -1dt "$RELEASES_DIR"/v3.* 2>/dev/null || true)
   [[ -n "$target" ]] || die "$(tr_msg "No previous V3 release is available" "没有可回滚的 V3 版本")"
-  ln -sfn "$target" "$CURRENT_LINK"
   VERSION="$(sed -n 's/^tag: //p' "$target/RELEASE-INFO")"
+  validate_core_configuration "$(read_url)" "$VERSION"
+  ln -sfn "$target" "$CURRENT_LINK"
   [[ "$VERSION" != *-* ]] || ALLOW_PRERELEASE=1
   validate_version_arg "$VERSION"; write_meta; activate
   ok "$(tr_msg "V3 binary rolled back; config is not converted across versions" "V3 二进制已回滚；配置不跨版本转换")"
@@ -1448,10 +1499,13 @@ restore_action() {
     validate_pem_pair "$crt" "$key" || die "$(tr_msg 'Backup certificate/key invalid, expired or unavailable' '备份证书/私钥无效、过期或缺失')"
   fi
   # Never source manager.conf: validate only the settings interpolated into units.
-  local k v
+  local k v backup_tcp="$MORPH_PRELUDE" backup_udp=''
   while IFS='=' read -r k v; do
-    case "$k" in MEMORY_PROFILE) validate_memory_profile "$v" ;; MORPH_PRELUDE) validate_morph_prelude "$v" ;; esac
+    case "$k" in MEMORY_PROFILE) validate_memory_profile "$v" ;; MORPH_PRELUDE) validate_morph_prelude "$v"; backup_tcp="$v" ;; MORPH_UDP_PRELUDE) [[ -z "$v" ]] || validate_morph_prelude "$v"; backup_udp="$v" ;; esac
   done <"$staging/manager.conf"
+  if [[ "$SCRIPT_CHANNEL" == v3 ]]; then
+    ( MORPH_PRELUDE="$backup_tcp"; MORPH_UDP_PRELUDE="$backup_udp"; validate_core_configuration "$u" "$installed" )
+  fi
   if [[ "$DRY_RUN" == 1 ]]; then
     info "$(tr_msg 'Backup valid; restore would replace configuration and restart the installed core. No changes made.' '备份校验通过；恢复将替换配置并重启当前内核。本次未修改。')"; return 0
   fi
@@ -1474,6 +1528,7 @@ PY
     chown -R root:root "$ACME_HOME"; find "$ACME_HOME" -type d -exec chmod 700 {} +; find "$ACME_HOME" -type f -exec chmod 600 {} +
     [[ ! -f "$ACME_HOME/acme.sh" ]] || chmod 700 "$ACME_HOME/acme.sh"
   fi
+  VERSION="$installed"; MORPH_UDP_PRELUDE=''
   load_meta; write_launcher; write_unit
   systemctl restart "$SERVICE_NAME" || die "$(tr_msg 'Restore restart failed; rolling back' '恢复后重启失败，正在回滚')"
   wait_service 12 || die "$(tr_msg 'Restored service unhealthy; rolling back' '恢复后服务未持续运行，正在回滚')"
@@ -1649,7 +1704,7 @@ installation_wizard() {
     if [[ "$ROLE" == vector ]]; then
       carrier="$(prompt_choice "$(tr_msg 'Carrier: 1=tcp 2=udp' '载波：1=tcp 2=udp')" tcp tcp udp)"
       INGRESS="$(prompt_value "$(tr_msg 'Local SOCKS ingress (input hidden)' '本地SOCKS入口（隐藏输入）')" "$INGRESS" 1)"
-    else carrier=udp; fi
+    else carrier="$(prompt_choice "$(tr_msg 'Egress carrier: 1=udp 2=tcp (both peers >=3.3.0)' 'Egress载波：1=udp 2=tcp（两端内核>=3.3.0）')" udp udp tcp)"; fi
     ENDPOINT="$(prompt_value "$(tr_msg 'Portal endpoint' 'Portal端点')" "${ENDPOINT:-$remote/$carrier:$port}")"
     SNI="$(prompt_value SNI "$SNI")"
     PIN="$(prompt_value "$(tr_msg 'Trusted SHA-256 pin; empty uses system CA' '可信SHA-256 pin；空值使用系统CA')" "$PIN" 1)"
@@ -1856,6 +1911,7 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  --pin 64位小写hex --sni DNS --cert PEM --tls-key PEM
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto（前者与后两者互斥）
  --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
+ --morph-udp-prelude default|fade|full8|low7 (>=3.3.0)
  --version v3.x.y|latest-v3|latest-v3-prerelease --allow-prerelease --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en（CLI > NOWHERE_V3_LANG > manager.conf > 中文）
  --yes / -y；--wizard；--allow-role-switch（明确允许角色切换）
@@ -1865,7 +1921,8 @@ help/validate/generate-key/self-update只读或独立操作，不修改服务偏
 高级rate/etar使用--url-file；不接受NW2 socks/next/up/down/mux/log。
 安装/重配或自更新成功后生成快捷命令 nh（打开本菜单；参数透传，如 nh status）。
 向导选项可用编号（1/2/3）选择；确认提示支持 y/n（是/否）。
-Egress使用QUIC；Portal out=egress要求UDP且禁止dial*；Egress自身可使用dial*。
+Egress支持QUIC和TLS（/tcp:PORT，两端>=3.3.0）；HOST:PORT仍默认QUIC。Portal out=egress禁止dial*。
+Morph TCP连接到>=3.2.0 Portal要求客户端支持认证前导；原生Vector需>=3.1.0。
 EOF
   else
     cat <<EOF
@@ -1897,6 +1954,7 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root);
  --pin 64-lowercase-hex --sni DNS --cert PEM --tls-key PEM
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto (dial excludes dial4/dial6)
  --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
+ --morph-udp-prelude default|fade|full8|low7 (>=3.3.0)
  --version v3.x.y|latest-v3|latest-v3-prerelease --allow-prerelease --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en (CLI > NOWHERE_V3_LANG > manager.conf > Chinese)
  --yes / -y; --wizard; --allow-role-switch (explicit role-switch consent)
@@ -1906,7 +1964,8 @@ help/validate/generate-key/self-update do not change service preferences.
 Advanced rate/etar: use --url-file. NW2 socks/next/up/down/mux/log are rejected.
 Install, configure or self-update create the shortcut nh (opens this menu; arguments pass through, e.g. nh status).
 Wizard choices accept numbers (1/2/3); confirmations accept y/n (yes/no).
-Egress uses QUIC. Portal out=egress requires UDP and forbids dial*; Egress itself allows dial*.
+Egress supports QUIC and TLS (/tcp:PORT; both peers >=3.3.0); HOST:PORT still defaults to QUIC. Portal out=egress forbids dial*.
+Morph TCP to Portal >=3.2.0 requires authenticated preludes; native Vector must be >=3.1.0.
 EOF
   fi
 }
@@ -2019,6 +2078,7 @@ main() {
       --dial6) DIAL6="${2:?}"; shift 2 ;;
       --memory-profile) MEMORY_PROFILE="${2:?}"; shift 2 ;;
       --morph-prelude) MORPH_PRELUDE="${2:?}"; shift 2 ;;
+      --morph-udp-prelude) MORPH_UDP_PRELUDE="${2:?}"; [[ "$MORPH_UDP_PRELUDE" != default ]] || MORPH_UDP_PRELUDE=''; shift 2 ;;
       --libc) LIBC="${2:?}"; shift 2 ;;
       --keep-releases) KEEP_RELEASES="${2:?}"; shift 2 ;;
       --lang) LANG_CODE="${2:?}"; LANG_SET=1; shift 2 ;;
@@ -2045,6 +2105,7 @@ main() {
   [[ "$VERSION" != latest-v3-prerelease ]] || ALLOW_PRERELEASE=1
   validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"
   validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
+  [[ -z "$MORPH_UDP_PRELUDE" || "$MORPH_UDP_PRELUDE" == fade || "$MORPH_UDP_PRELUDE" == full8 || "$MORPH_UDP_PRELUDE" == low7 ]] || die "$(tr_msg 'morph-udp-prelude must be default|fade|full8|low7' 'morph-udp-prelude 必须为 default|fade|full8|low7')"
   [[ "$ROLE" == portal || "$ROLE" == vector || "$ROLE" == egress ]] || die "$(tr_msg 'Invalid role' '无效角色')"
   [[ "$PUBLIC_HOST$NODE_NAME" != *$'\n'* && "$PUBLIC_HOST$NODE_NAME" != *$'\r'* ]] || die "$(tr_msg 'Host/name contains a newline' '地址或名称包含换行')"
   if [[ "$DRY_RUN" == 1 ]]; then
@@ -2053,7 +2114,7 @@ main() {
   case "$ACTION" in
     menu) menu ;;
     help) usage ;;
-    validate) [[ -n "$URL_INPUT" ]] || die "$(tr_msg 'Provide --url or --url-file' '需要--url或--url-file')"; v3_url validate "$URL_INPUT" ;;
+    validate) [[ -n "$URL_INPUT" ]] || die "$(tr_msg 'Provide --url or --url-file' '需要--url或--url-file')"; validate_core_configuration "$URL_INPUT" "$VERSION"; v3_url validate "$URL_INPUT" ;;
     generate-key) generate_key ;;
     install)
       if [[ "$ASSUME_YES" != 1 && ! -s "$URL_FILE" && -z "$URL_INPUT" && ( -z "$KEY" || "$WIZARD_REQUESTED" == 1 ) ]]; then installation_wizard; fi

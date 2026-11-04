@@ -64,3 +64,6 @@ jobs:
 
       - name: Core sync regression tests (Python)
         run: python3 tests/test_core_sync.py .
+
+      - name: Core 3.3 regression tests (Python)
+        run: python3 tests/test_330.py .

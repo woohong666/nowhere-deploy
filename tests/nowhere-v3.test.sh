@@ -5,7 +5,7 @@
 # Everything runs inside a temporary sandbox: the manager's path declarations are
 # rewritten before it is sourced, so no test can touch the real /etc/nowhere-v3,
 # /opt/nowhere-v3, or systemd. The suite needs no root and no network; the URL
-# grammar is checked against the official v3.0.0 docs/configuration.md.
+# grammar is checked against the official v3.3.0 docs/configuration.md.
 #
 # Usage:
 #   bash tests/nowhere-v3.test.sh [path/to/nowhere-v3.sh]
@@ -134,7 +134,7 @@ t_ok "plain latest rejected"    1 "$(t_rc validate_version_arg latest)"
 t_ok "prerelease rejected"      1 "$(t_rc validate_version_arg v3.1.0-beta)"
 
 # ---------------------------------------------------------------------------
-t_section "URL matrix (against official v3.0.0 docs/configuration.md)"
+t_section "URL matrix (against official v3.3.0 docs/configuration.md)"
 
 K="$(printf 'a%.0s' $(seq 1 32))"
 P64="$(printf 'c%.0s' $(seq 1 64))"
@@ -158,7 +158,7 @@ t_ok "mux= rejected in v3"          1 "$(vu "portal://$K@*:2083?mux=0")"
 t_ok "log= rejected in v3"          1 "$(vu "portal://$K@*:2083?log=info")"
 t_ok "invalid first morph rejected" 1 "$(vu "portal://$K@*:2083?morph=x&morph=1")"
 t_ok "tls=1 with crt rejected"      1 "$(vu "portal://$K@*:2083?tls=1&crt=/x&key=/y")"
-t_ok "tcp-only + egress rejected"   1 "$(vu "portal://$K@*/tcp:2083?out=egress")"
+t_ok "tcp-only + egress accepts"    0 "$(vu "portal://$K@*/tcp:2083?out=egress")"
 t_ok "egress with dial rejected"    1 "$(vu "portal://$K@*:2083?out=egress&dial=auto")"
 t_ok "rate=nan rejected"            1 "$(vu "portal://$K@*:2083?rate=nan")"
 t_ok "rate=0.5 rejected"            1 "$(vu "portal://$K@*:2083?rate=0.5")"
@@ -169,7 +169,7 @@ t_ok "port 65536 rejected"          1 "$(vu "portal://$K@*:65536")"
 t_ok "vector two carriers rejected" 1 "$(vu "vector://$K@a/tcp:2083/udp:2083?in=127.0.0.1:1083")"
 t_ok "vector socks= rejected"       1 "$(vu "vector://$K@a:2083?socks=127.0.0.1:1083")"
 t_ok "uppercase pin rejected"       1 "$(vu "vector://$K@a:2083?in=127.0.0.1:1083&pin=${P64^^}")"
-t_ok "egress tcp carrier rejected"  1 "$(vu "egress://$K@a/tcp:2083")"
+t_ok "egress tcp carrier accepts"   0 "$(vu "egress://$K@a/tcp:2083")"
 t_ok "authority+path rejected"      1 "$(vu "portal://$K@*:2083/tcp:2083")"
 
 # ---------------------------------------------------------------------------

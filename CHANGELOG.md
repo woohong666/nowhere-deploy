@@ -99,6 +99,28 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.5.1
+
+#### 🔄 Changed
+- **Stable core default is v3.3.0** (published 2026-10-31 as a stable release). `latest-v3` resolves to it; fresh installs and `upgrade` without `--version` use it. v3.2.0 is also stable now but is not the default.
+- **TLS Egress**: an Egress URL with `/tcp:PORT` registers over TLS (both peers need core >= 3.3.0), and a Portal with `out=egress` may listen on TCP only. Cores below 3.3.0 refuse TLS Egress before anything is changed. The Egress wizard asks for the carrier (default QUIC).
+- **UDP Prelude policy**: `--morph-udp-prelude default|fade|full8|low7` (core >= 3.3.0). `default` writes no environment variable, so the core default `fade` applies. Explicit values persist, appear in `preview`, and block downgrades below 3.3.0 until cleared.
+- **Morph TCP upgrade warning**: upgrading a Portal with `morph=1` to >= 3.2.0 prints a compatibility reminder (native Vector >= 3.1.0; third-party clients must explicitly support authenticated preludes).
+- **Fingerprint timeout** (local and remote) is 60 s, up from 12 s, to cover the Shared Key-derived handshake budget (3–30 s).
+
+#### 🐛 Fixed (review of the 1.5.0 package)
+- Prerelease cores such as `v3.3.0-rc.1` no longer pass the TLS Egress gate in `validate-core` or print TCP Egress links in `links`; the ordering now matches the UDP Prelude gate.
+- `links` fails closed when the core version is unknown; it previously assumed v3.3.0.
+- `rollback` compares release directories by canonical path. With a symlinked releases root it reported success without switching versions.
+- `cleanup` compares by canonical path. Under a symlinked releases root it could delete the active release when that release was outside the newest `KEEP_RELEASES` (present since 1.4.x).
+- An invalid `--morph-udp-prelude` value now names the correct option.
+
+#### ✅ Tests / Docs
+- The reviewed package's test changes were integrated, keeping the repository's portability shims (flock/install/`id -u` for non-root runs, the renameat2 skip off Linux, and the V2 fixture fallback). `test_core_sync.py` now uses a valid V3 URL fixture and expects v3.3.0.
+- `tests/test_330.py` (20 offline checks) runs in CI: TLS Egress gating including prerelease cores, fail-closed links, UDP Prelude option errors, transactional rollback and install refusals, the TCP Egress URL round trip, and symlinked-root rollback and cleanup.
+- `tests/smoke_native.py`: six loopback flows (Vector → Portal → direct / Egress TCP / Egress UDP, over TCP and UDP) using the official v3.3.0 binary. Manual, not in CI.
+- README (EN/zh-CN) and the acceptance checklist describe the v3.3.0 default, TLS Egress and the UDP Prelude.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.4.3
 
 #### ✨ Added

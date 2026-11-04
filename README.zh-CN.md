@@ -729,7 +729,7 @@ sudo bash nowhere-v3.sh install --public-host relay.example.com \
   --tls-key /etc/letsencrypt/live/relay.example.com/privkey.pem
 
 # 指定版本 / 端口 / 密钥
-sudo bash nowhere-v3.sh install --version v3.1.0 --endpoint '*:8443' \
+sudo bash nowhere-v3.sh install --version v3.3.0 --endpoint '*:8443' \
   --key "$(openssl rand -hex 16)"
 ```
 
@@ -758,7 +758,9 @@ nh                                 # 或直接用快捷命令回到菜单
 
 - **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
 - **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
-- **跟进 v3.x**：默认固定已核验的 `v3.1.0`；`upgrade --version latest-v3` 跟进最新稳定版；想尝鲜预发布用 `upgrade --version latest-v3-prerelease`（或显式标签 + `--allow-prerelease`），安装前会提示可能不稳定，随时可 `rollback` 回退。预发布可能含破坏性变更（例如 v3.2.0 强制认证 Prelude，未升级的旧 TCP 客户端会被拒；UDP/QUIC 不受影响），建议先在测试实例验证。
+- **跟进 v3.x**：默认固定已核验的稳定版 `v3.3.0`；`upgrade --version latest-v3` 跟进最新稳定版；想尝鲜预发布用 `upgrade --version latest-v3-prerelease`（或显式标签 + `--allow-prerelease`），安装前会提示可能不稳定，随时可 `rollback` 回退。内核 v3.2.0 起强制 Morph TCP 认证前导，旧 TCP 客户端会被拒（原生 Vector 需 >= 3.1.0，第三方客户端须明确支持认证前导）；**升级 Portal 前请先验证所有 TCP 客户端**。UDP/QUIC 不受影响。
+- **TLS Egress**（两端内核均需 >= 3.3.0）：Egress 地址写成 `/tcp:PORT`（如 `egress://KEY@relay.example/tcp:2000?pin=…`）即走 TLS 注册，而非 QUIC。Portal 的 `out=egress` 现可只监听 TCP；旧内核上管理器会在任何改动前拒绝 TLS Egress；`links` 仅在稳定版 >= 3.3.0 时输出 TCP Egress 链接。
+- **UDP 前导**：`--morph-udp-prelude default|fade|full8|low7`（内核 >= 3.3.0）。`default` 沿用内核默认 `fade`；显式设置会被保存，降级到 3.3.0 以下前需先用 `--morph-udp-prelude default` 清除。
 
 ### 13.2 V2 / V3 对照
 
@@ -811,7 +813,7 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 新增 `--name`（分享链接名称）、`--wizard`、`--dial/--dial4/--dial6`；原CLI选项全部保留。
 
 `versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
-默认仍固定v3.1.0（v3.2.0 为预发布，`latest-v3` 与 `versions` 不会选中；显式指定预发布需加 `--allow-prerelease`，或直接用 `latest-v3-prerelease` 尝鲜），跟进新版本必须显式`upgrade --version latest-v3`。
+默认固定稳定版 `v3.3.0`；`latest-v3` 与 `versions` 不会选中预发布（显式指定预发布需加 `--allow-prerelease`，或直接用 `latest-v3-prerelease` 尝鲜）。跟进新的稳定版必须显式`upgrade --version latest-v3`。
 `--morph-prelude` 支持 `fade|full8|low7`（默认 `full8`；`fade` 需内核 ≥ v3.0.1，指定 v3.0.0 会被拒绝；prelude 是发送端策略，无需与对端一致）。
 自更新验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
 不更新服务、配置或内核。来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
@@ -960,7 +962,7 @@ python3 tests/test_core_sync.py .
 `tests/fixtures/acme-3.1.6.tar.gz`；CI 会一并运行。
 `tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
 `tests/test_review.py` 是 1.5.1/1.4.1 评审批次的 16 项专项回归（原子备份回退、元数据规范化、管道执行、ACME 版本参数、证书状态异常）；CI 会运行以上全部。
-`tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）；`tests/smoke_native.py` 需自备官方 v3.0.1/v3.1.0 二进制做回环连通验证（可选，CI 不运行）。
+`tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）。`tests/test_330.py` 覆盖 3.3 相关规则：TLS Egress 门限（含预发布内核）、链接失败即关闭、UDP 前导的保存与旧内核拒绝、事务性回滚、旧版本清理与安装拒绝、符号链接发布目录（20 项，离线）。`tests/smoke_native.py` 使用放在 `upstream/v3.3.0/nowhere` 的官方 v3.3.0 二进制做 6 组回环 TCP/UDP Flow 验证（可选，CI 不运行）。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。

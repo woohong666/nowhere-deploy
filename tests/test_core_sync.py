@@ -2,11 +2,12 @@
 import unittest,pathlib,importlib.util,json
 spec=importlib.util.spec_from_file_location('fixes',pathlib.Path(__file__).with_name('test_fixes.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class CoreSync(unittest.TestCase):
- setUp=m.Fixes.setUp
+ def setUp(self):
+  m.Fixes.setUp(self);(self.d/'etc/url.conf').write_text(f'portal://{"a"*32}@*:2083\n')
  tearDown=m.Fixes.tearDown
  runsh=m.Fixes.runsh
  def test_stable_default_and_preserved_policy(self):
-  r=self.runsh(3,'[[ "$DEFAULT_CORE_VERSION" == v3.1.0 && "$MORPH_PRELUDE" == full8 ]]');self.assertEqual(r.returncode,0)
+  r=self.runsh(3,'[[ "$DEFAULT_CORE_VERSION" == v3.3.0 && "$MORPH_PRELUDE" == full8 ]]');self.assertEqual(r.returncode,0)
  def test_prelude_modes(self):
   r=self.runsh(3,'validate_morph_prelude fade; validate_morph_prelude full8; validate_morph_prelude low7');self.assertEqual(r.returncode,0)
   r=self.runsh(3,'validate_morph_prelude INVALID');self.assertNotEqual(r.returncode,0)
