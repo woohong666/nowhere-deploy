@@ -335,6 +335,11 @@ sudo bash nowhere-v3.sh telemetry    # 只读统计；NW3 没有 TUI
   - Portal 升级到 ≥v3.2.0 且 `morph=1` 时必须显示 Morph TCP 认证前导兼容提示，且输出中不得出现共享密钥。
   - 回滚与清理（发布根目录含符号链接）：`rollback` 必须切换到真正的上一版本（不得空操作却报告成功）；清理不得删除当前正在使用的版本。
   - 升级 Portal 前，先确认所有 TCP 客户端支持认证前导（原生 Vector ≥3.1.0；第三方客户端须明确支持）；UDP/QUIC 客户端不受影响。
+- 自更新与元数据回归（v1.5.2）：
+  - `self-update` 必须先取得管理锁；存在 `cert-timer` 续期副本（`/opt/nowhere-v3/manager/nowhere-v3.sh`）时应同步为 `0700`；副本同步失败必须返回非零、保留原备份并提示重跑 `cert-timer`；未安装定时任务时**不得创建**该副本。相同版本的自更新不刷新副本，手动替换后需执行 `cert-timer`。
+  - 重复 URL 查询键（`morph=1&morph=0`、`morph=1&%6dorph=0`、`out=direct&out=egress`、`tls=0&tls=1`）必须在任何改动前拒绝，且报错不回显参数值。
+  - `manager.conf` 必须在同目录暂存、设置属主与 `0640`、fsync 后原子替换；发布前失败时旧文件保持不变。目录 fsync 失败会报错，但替换可能已完成（已知边界）。
+  - 部署前用新脚本对现有 `url.conf` 执行 `validate --url-file`，确认没有重复参数；三台现有配置应通过。
 
 ### 13.3 自动化验收
 

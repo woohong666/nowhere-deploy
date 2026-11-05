@@ -99,6 +99,20 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 - Removed dead code (`v1.2.3`): `validate_policy` (superseded by `validate_policy_against_endpoint`), `urldecode`, and the unused `CORE_MAJOR` along with its `shellcheck` suppression.
 - Removed dead state (`v1.1.3`): `SWAP_CREATED`, `NEW_TARGET`, and the unused build-lock loop variable. `shellcheck -S warning` is now clean.
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.5.2
+
+#### 🔒 Fixed
+- **Self-update synchronises the managed renewal runner.** `self-update` now takes the management lock and, when `cert-timer` has installed `/opt/nowhere-v3/manager/nowhere-v3.sh`, refreshes it from the downloaded manager with mode `0700`. A runner sync failure returns non-zero, keeps the backup and tells the operator to rerun `cert-timer`; no runner is created when no timer is installed.
+- **Duplicate URL query keys are rejected** after percent-decoding, so `morph=1&morph=0`, `morph=1&%6dorph=0`, `out=direct&out=egress` and `tls=0&tls=1` fail before any change. The error does not echo parameter values. Existing configurations must be checked with `validate --url-file` first; all three deployed configurations pass.
+- **`manager.conf` is published atomically**: staged in the same directory, owned `root:nowhere-v3`, mode `0640`, fsynced, then renamed, with a directory fsync. A failure before the rename leaves the old file intact; a directory-fsync failure reports an error even though the rename may already have completed.
+- `write_meta` no longer truncates the live file in place, and `self_update` no longer replaces the manager with a bare `mv`.
+
+#### ✅ Tests / Docs
+- Added `tests/test_152.py` (7 offline checks: duplicate keys incl. percent-encoded equivalents, atomic metadata failure/success, runner sync success/failure/no-timer, prerelease guard) and wired it into CI.
+- Added a macOS `chmod --reference` shim to the test harness so the self-update tests run locally as well as on Linux.
+- README (EN/zh-CN) and the acceptance checklist document the self-update, duplicate-key and atomic-metadata behaviour.
+- The package was built from the identical v1.5.1 baseline; the patch reproduces the delivered file byte-for-byte, SHA256SUMS pass, and ShellCheck was run during review.
+
 ### Nowhere V3 manager (`nowhere-v3.sh`) — v1.5.1
 
 #### 🔄 Changed

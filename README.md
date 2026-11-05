@@ -821,10 +821,18 @@ means fewer than ten results, never invented tags. The default is the stable
 `v3.3.0`; `latest-v3` and `versions` never select prereleases. An explicit
 prerelease tag requires `--allow-prerelease`, or use `latest-v3-prerelease`
 to opt in;
-`upgrade --version latest-v3` explicitly opts in. Self-update checks Bash syntax,
-V3 channel and numeric version, rejects downgrades and replaces atomically in the
-same directory with a backup. It changes no service, configuration or core binary.
-The source defaults to this repository main and can be overridden with NOWHERE_V3_SELF_URL.
+`upgrade --version latest-v3` explicitly opts in. Self-update takes the management
+lock, checks Bash syntax, V3 channel and numeric version, rejects downgrades and
+publishes atomically in the same directory with a backup. If a managed renewal
+runner exists (`/opt/nowhere-v3/manager/nowhere-v3.sh`, installed by `cert-timer`)
+it is refreshed too, mode `0700`; a runner sync failure is reported as an error
+and keeps the backup. It changes no service, configuration or core binary.
+`manager.conf` is likewise staged in the same directory, permissioned, fsynced
+and renamed into place. The source defaults to this repository main and can be
+overridden with NOWHERE_V3_SELF_URL.
+
+Duplicate URL query keys are rejected after percent-decoding (for example
+`morph=1&morph=0` or `morph=1&%6dorph=0`); the error does not echo the value.
 
 `--morph-prelude` accepts `fade|full8|low7` (default `full8`; `fade` requires core ≥ v3.0.1 and is refused for v3.0.0; the prelude is a sender-side policy and need not match the peer).
 
@@ -975,6 +983,8 @@ python3 tests/test_fixes.py .
 python3 tests/test_features.py .
 python3 tests/test_review.py .
 python3 tests/test_core_sync.py .
+python3 tests/test_330.py .
+python3 tests/test_152.py .
 ```
 
 Before sourcing the manager it rewrites its path declarations into a temporary
@@ -993,6 +1003,9 @@ validation order (12 offline checks). `tests/test_330.py` covers the core 3.3
 rules: TLS Egress gating (including prerelease cores), fail-closed links,
 UDP Prelude persistence and refusal on older cores, transactional rollback,
 cleanup and install refusals, and symlinked release roots (20 offline checks).
+`tests/test_152.py` covers the 1.5.2 fixes: duplicate URL keys (including
+percent-encoded equivalents), atomic `manager.conf` publication, and renewal
+runner sync on self-update (7 offline checks).
 `tests/smoke_native.py` runs six loopback TCP/UDP flows with an official
 v3.3.0 binary placed at `upstream/v3.3.0/nowhere`; it is optional and is not
 run in CI. CI runs all of the others.

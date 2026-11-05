@@ -19,6 +19,20 @@ class Fixes(unittest.TestCase):
    p=self.d/'bin'/'install'
    p.write_text('#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:];out=[];i=0\nwhile i<len(a):\n if a[i] in ("-o","--owner","-g","--group"): i+=2; continue\n out.append(a[i]); i+=1\nos.execv("/usr/bin/install",["/usr/bin/install"]+out)\n')
    p.chmod(0o755)
+  if sys.platform == 'darwin':
+   # BSD chmod lacks --reference; emulate the manager's mode-copy call so the
+   # self-update tests exercise the real code path on macOS too.
+   p=self.d/'bin'/'chmod'
+   p.write_text("""#!/usr/bin/env python3
+import os,sys,stat
+args=sys.argv[1:];ref=None;rest=[]
+for a in args:
+    if a.startswith('--reference='): ref=a.split('=',1)[1]
+    else: rest.append(a)
+if ref is None: os.execv('/bin/chmod',['chmod']+args)
+mode=stat.S_IMODE(os.stat(ref).st_mode)
+for f in rest: os.chmod(f,mode)
+""");p.chmod(0o755)
   for v in (2,3):
    source=ROOT/f'nowhere-v{v}.sh'
    if v==2 and not source.exists():source=ROOT/'tests/fixtures/nowhere-v2.sh'

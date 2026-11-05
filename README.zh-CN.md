@@ -815,8 +815,11 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 `versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
 默认固定稳定版 `v3.3.0`；`latest-v3` 与 `versions` 不会选中预发布（显式指定预发布需加 `--allow-prerelease`，或直接用 `latest-v3-prerelease` 尝鲜）。跟进新的稳定版必须显式`upgrade --version latest-v3`。
 `--morph-prelude` 支持 `fade|full8|low7`（默认 `full8`；`fade` 需内核 ≥ v3.0.1，指定 v3.0.0 会被拒绝；prelude 是发送端策略，无需与对端一致）。
-自更新验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
-不更新服务、配置或内核。来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
+自更新先取得管理锁，再验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
+若存在 `cert-timer` 安装的续期副本（`/opt/nowhere-v3/manager/nowhere-v3.sh`），会一并刷新为 `0700`，同步失败会报错并保留备份。
+不更新服务、配置或内核。`manager.conf` 同样在同目录暂存、设置属主与 `0640`、fsync 后原子替换。
+URL 查询参数在百分号解码后拒绝重复键（如 `morph=1&morph=0`、`morph=1&%6dorph=0`），报错不回显参数值。
+来源默认本仓库main，可通过NOWHERE_V3_SELF_URL覆盖。
 
 `links`输出原生Vector/Egress URL（证书经系统CA验证时**不带pin**，否则带叶证书pin），以及每个carrier对应的
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`。
@@ -953,6 +956,8 @@ python3 tests/test_fixes.py .
 python3 tests/test_features.py .
 python3 tests/test_review.py .
 python3 tests/test_core_sync.py .
+python3 tests/test_330.py .
+python3 tests/test_152.py .
 ```
 
 它在 source 之前会把管理器的路径声明改写到一个临时目录，因此**永远不会碰到真实的
@@ -962,7 +967,7 @@ python3 tests/test_core_sync.py .
 `tests/fixtures/acme-3.1.6.tar.gz`；CI 会一并运行。
 `tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
 `tests/test_review.py` 是 1.5.1/1.4.1 评审批次的 16 项专项回归（原子备份回退、元数据规范化、管道执行、ACME 版本参数、证书状态异常）；CI 会运行以上全部。
-`tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）。`tests/test_330.py` 覆盖 3.3 相关规则：TLS Egress 门限（含预发布内核）、链接失败即关闭、UDP 前导的保存与旧内核拒绝、事务性回滚、旧版本清理与安装拒绝、符号链接发布目录（20 项，离线）。`tests/smoke_native.py` 使用放在 `upstream/v3.3.0/nowhere` 的官方 v3.3.0 二进制做 6 组回环 TCP/UDP Flow 验证（可选，CI 不运行）。
+`tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）。`tests/test_330.py` 覆盖 3.3 相关规则：TLS Egress 门限（含预发布内核）、链接失败即关闭、UDP 前导的保存与旧内核拒绝、事务性回滚、旧版本清理与安装拒绝、符号链接发布目录（20 项，离线）。`tests/test_152.py` 覆盖 1.5.2 的修复：重复 URL 参数（含百分号编码等价写法）、`manager.conf` 原子发布、自更新时续期副本同步（7 项，离线）。`tests/smoke_native.py` 使用放在 `upstream/v3.3.0/nowhere` 的官方 v3.3.0 二进制做 6 组回环 TCP/UDP Flow 验证（可选，CI 不运行）。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。

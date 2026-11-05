@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.5.1
+# Nowhere V3 isolated manager v1.5.2
+# v1.5.2: renewal runner sync on self-update; reject duplicate URL keys;
+#   atomic, fsynced metadata publication.
 # v1.5.1: reviewed fixes to 1.5.0 — prerelease cores (e.g. v3.3.0-rc.1) no longer
 #   pass the TLS Egress gate or print TCP Egress links; links fail closed without a
 #   core version; clearer --morph-udp-prelude errors.
@@ -27,7 +29,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.5.2"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.3.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -453,6 +455,7 @@ v3_url() {
 import sys,re,urllib.parse as U,ipaddress,os
 op=sys.argv[1]
 MESSAGES={'Invalid IPv6': 'IPv6地址无效', 'Invalid host': '主机地址无效', 'Invalid port': '端口无效', 'Invalid carrier path': '载波路径无效', 'Invalid endpoint': '端点无效', 'Duplicate or missing carrier': '载波重复或缺失', 'V3 client must select one carrier': 'V3客户端必须选择单一载波', 'Egress requires QUIC/udp': 'Egress必须使用QUIC/udp', 'Address family conflict': '地址族冲突', 'SOCKS credentials must encode reserved characters': 'SOCKS凭据中的保留字符必须编码', 'Invalid SOCKS credentials': 'SOCKS凭据无效', 'SOCKS requires HOST:PORT': 'SOCKS必须使用HOST:PORT', 'Whitespace/control in URL': 'URL含空白或控制字符', 'Invalid percent encoding': '百分号编码无效', 'Invalid URL': 'URL无效', 'Invalid role URL': '角色URL无效', 'NW3 key must be exactly 32 lowercase hex characters': 'NW3密钥必须为32位小写十六进制', 'Unsupported V3 option; old NW2 and unknown parameters are refused': '不支持的V3参数；拒绝NW2及未知参数', 'Invalid morph': 'Morph无效', 'Rate must be an integer in 0..2147483647': '速率必须为0..2147483647整数', 'Conflicting source bindings': '出站源地址参数冲突', 'Invalid source IP': '出站源IP无效', 'Invalid source family': '出站源地址族无效', 'Invalid TLS mode': 'TLS模式无效', 'PEM paths required': '必须提供PEM路径', 'PEM paths must be absolute': 'PEM路径必须为绝对路径', 'PEM paths require tls=2': 'PEM路径要求tls=2', 'Egress output forbids dial options': 'Portal的egress出口禁止dial参数', 'TLS Egress requires core v3.3.0 or newer on both peers': 'TLS Egress 需要 Portal 与 Egress 两端内核均为 v3.3.0 或更新版本', 'Explicit core version required for compatibility validation': '兼容性校验需要明确的内核版本', 'Pin must be 64 lowercase hex characters': 'pin必须为64位小写十六进制', 'Invalid SNI': 'SNI无效', 'Vector requires in=': 'Vector必须指定in=', 'Links require Portal': '链接操作要求Portal角色', 'Verified local certificate pin required': '必须取得可信的本机证书pin', 'Fingerprint inspection requires a TCP listener or persistent PEM': '指纹探测需要TCP监听或持久PEM证书', 'V3 configuration OK': 'V3配置校验通过'}
+MESSAGES['Duplicate URL option']='URL 参数重复（包括编码后等价的参数名）'
 def msg(m):return MESSAGES.get(m,m) if os.environ.get('NOWHERE_MANAGER_LANG')=='zh' else m
 def fail(m): raise SystemExit(msg(m))
 def semver_key(v):
@@ -517,7 +520,8 @@ def validate(raw):
         k,_,v=pair.partition('=')
         try:k=U.unquote(k,errors='strict')
         except UnicodeError:fail('Invalid percent encoding')
-        rawq.setdefault(k,v)
+        if k in rawq:fail('Duplicate URL option')
+        rawq[k]=v
     try:q={k:U.unquote(v,errors='strict') for k,v in rawq.items()}
     except UnicodeError:fail('Invalid percent encoding')
     common={'morph','rate','etar'}
@@ -663,10 +667,25 @@ load_meta() {
     esac
   done <"$META_FILE"
 }
+# Same-directory rename; sync file contents and directory entry for durability.
+publish_file() {
+  python3 - "$1" "$2" <<'PYATOMIC'
+import os,sys
+src,dst=sys.argv[1:]
+with open(src,'rb') as f:os.fsync(f.fileno())
+os.replace(src,dst)
+fd=os.open(os.path.dirname(dst) or '.',os.O_RDONLY|os.O_DIRECTORY)
+try:os.fsync(fd)
+finally:os.close(fd)
+PYATOMIC
+}
 write_meta() {
-  printf 'SCRIPT_CHANNEL=v3\nSCRIPT_VERSION=%s\nCORE_VERSION=%s\nPUBLIC_HOST=%s\nMEMORY_PROFILE=%s\nMORPH_PRELUDE=%s\nLANG=%s\nNODE_NAME=%s\n' "$SCRIPT_VERSION" "$VERSION" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$LANG_CODE" "$NODE_NAME" >"$META_FILE"
-  printf 'MORPH_UDP_PRELUDE=%s\n' "$MORPH_UDP_PRELUDE" >>"$META_FILE"
-  chown root:"$RUN_GROUP" "$META_FILE"; chmod 640 "$META_FILE"
+  local staged
+  staged="$(mktemp "${META_FILE}.new.XXXXXX")"; CLEANUP_PATHS+=("$staged")
+  printf 'SCRIPT_CHANNEL=v3\nSCRIPT_VERSION=%s\nCORE_VERSION=%s\nPUBLIC_HOST=%s\nMEMORY_PROFILE=%s\nMORPH_PRELUDE=%s\nLANG=%s\nNODE_NAME=%s\n' "$SCRIPT_VERSION" "$VERSION" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$LANG_CODE" "$NODE_NAME" >"$staged"
+  printf 'MORPH_UDP_PRELUDE=%s\n' "$MORPH_UDP_PRELUDE" >>"$staged"
+  chown root:"$RUN_GROUP" "$staged"; chmod 640 "$staged"
+  publish_file "$staged" "$META_FILE"
 }
 # Save everything needed for service/config/binary recovery before mutation.
 begin_transaction() {
@@ -1788,7 +1807,8 @@ select_version_install() {
 self_update() {
   [[ -n "$SELF_UPDATE_URL" ]] || { info "$(tr_msg 'Self-update is disabled (NOWHERE_V3_SELF_URL is empty).' '自更新已禁用（NOWHERE_V3_SELF_URL为空）。')"; return 0; }
   require_command curl; require_command python3
-  local tmp remote_ver remote_channel self staging backup
+  local tmp remote_ver remote_channel self staging backup runner runner_stage=''
+  acquire_build_lock
   tmp="$(mktemp)"; CLEANUP_PATHS+=("$tmp")
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 30 -o "$tmp" "$SELF_UPDATE_URL" 2>/dev/null || die "$(tr_msg 'Manager download failed; local file unchanged' '管理脚本下载失败，本地文件未改变')"
   bash -n "$tmp" 2>/dev/null || die "$(tr_msg 'Downloaded manager has syntax errors' '下载的管理脚本存在语法错误')"
@@ -1804,7 +1824,18 @@ self_update() {
   backup="$(mktemp "${self}.bak.XXXXXX")"
   cp -p -- "$self" "$backup"
   cp -- "$tmp" "$staging"; chmod --reference="$self" "$staging"; chown --reference="$self" "$staging"
-  mv -f -- "$staging" "$self"
+  runner="$INSTALL_ROOT/manager/nowhere-v3.sh"
+  if [[ "$self" != "$runner" && ( -e "$runner" || -L "$runner" ) ]]; then
+    [[ -f "$runner" && ! -L "$runner" ]] || die 'Renewal runner must be a regular file'
+    runner_stage="$(mktemp "${runner}.new.XXXXXX")"; CLEANUP_PATHS+=("$runner_stage")
+    install -m 700 "$tmp" "$runner_stage"; bash -n "$runner_stage"
+  fi
+  publish_file "$staging" "$self"
+  if [[ -n "$runner_stage" ]] && ! publish_file "$runner_stage" "$runner"; then
+    # Keep the backup available; report failure instead of claiming full success.
+    warn "$(tr_msg 'Manager updated but renewal runner sync failed; run cert-timer again. Backup retained.' '管理脚本已更新，但续期副本同步失败；请重新运行 cert-timer。原版备份已保留。')"
+    return 1
+  fi
   ok "$(tr_msg "Manager updated; backup: $backup. Restart the manager to load it." "管理脚本已更新；备份：${backup}。重新启动管理器后生效。")"
   install_shortcut
 }
