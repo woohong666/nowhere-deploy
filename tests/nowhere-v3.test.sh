@@ -327,6 +327,7 @@ t_update() {
       cp "$fixture" "$dst"
     }
     ASSUME_YES=1
+    require_root() { :; }
     self_update
   ' _ "$SANDBOX/self.sh" "$remote" "$mode"
 }
