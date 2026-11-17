@@ -70,3 +70,22 @@ jobs:
 
       - name: Self-update and metadata regression tests (Python)
         run: python3 tests/test_152.py .
+
+  native:
+    name: NW3 TCP and UDP integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify pinned official core
+        run: |
+          set -euo pipefail
+          mkdir -p upstream/v3.3.0
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+            https://github.com/NodePassProject/Nowhere/releases/download/v3.3.0/nowhere-x86_64-unknown-linux-gnu.tar.gz \
+            -o upstream/v3.3.0/core.tar.gz
+          echo '97e17ffa5f710df0f27e81739cf9acb129e1e5656096a654973b39d9be4d59ab  upstream/v3.3.0/core.tar.gz' | sha256sum --check --strict
+          tar -xzf upstream/v3.3.0/core.tar.gz -C upstream/v3.3.0
+          test -x upstream/v3.3.0/nowhere
+      - name: Real SOCKS5 TCP and UDP payload round trips
+        run: python3 tests/smoke_native.py

@@ -404,3 +404,7 @@ V3 core 版本  : （grep '^tag:' /opt/nowhere-v3/current/RELEASE-INFO）
 3. 把上面的环境信息 + 出错阶段编号 + 完整命令与输出记录下来
 
 > 自动化测试覆盖逻辑，本清单覆盖集成。**两者都过了，才能说这个脚本"完善"。**
+
+### Native NW3 traffic regression
+
+CI runs `python3 tests/smoke_native.py` with a SHA-256-verified official v3.3.0 core. Locally pass `--binary /path/to/verified/nowhere`. All traffic uses loopback echo servers. Expect 18 scenarios and 108 TCP/UDP sessions covering both Vector carriers, direct/TLS Egress/QUIC Egress routes, and all three Prelude policies. Assertions check payload integrity, TCP half-close and UDP payloads up to 4096 bytes. This does not certify load limits, multi-Egress scheduling, systemd deployment, ACME or third-party client compatibility.

@@ -57,7 +57,7 @@ The V3 manager combines strict SHA-256 verification of official release binaries
 ### V3 highlights
 
 - **Modern protocol**: NW3 = TLS 1.3 (fixed `nw3` ALPN) with an optional QUIC carrier; authentication bound to the TLS exporter; exactly 32-hex shared keys; Morph on by default and must match on both ends
-- **Three roles**: Portal (listener), Vector (local SOCKS5 ingress), **Egress** (remote exit — dials out over QUIC, so **the exit host needs no inbound ports at all**)
+- **Three roles**: Portal (listener), Vector (local SOCKS5 ingress), **Egress** (remote exit — dials out over QUIC/UDP or TLS/TCP (TLS requires both peers >=3.3.0), so **the exit host needs no inbound ports at all**)
 - **Certificates on autopilot**: one-command Let's Encrypt issuance with **daily auto-renewal** (Cloudflare DNS-01 or HTTP-01); the switch runs inside a transaction and rolls back on failure — see §13.5
 - **Management UX**: the `nh` shortcut menu (23 actions, numbered choices, y/n shorthand), client links + **QR codes**, certificate fingerprints (local and **remote**)
 - **Operations safety**: zero-trust installs (no SHA-256 digest, no install), transactional configuration, `doctor` health checks, config backup / instant rollback, `flock` concurrency guard
@@ -751,13 +751,13 @@ nh                                 # or just reopen the menu with the shortcut
 
 **Step 5 · Firewall (including your cloud security group)**
 
-- Portal: allow **TCP and UDP 2083** (or the custom/split ports you chose)
-- Egress: no inbound ports; it only needs QUIC/UDP outbound to the Portal
+- Portal: allow **TCP and UDP 2083** for the default dual listener. For TCP-only or UDP-only listeners, allow only that carrier; use the configured ports for custom/split endpoints.
+- Egress: no inbound ports; allow outbound to the Portal on the selected carrier and port: QUIC/UDP or TLS/TCP
 
 **Other roles and version tracking**
 
 - **Vector**: save the printed `vector://` URL into a `600` file and run `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url` (SOCKS5 on `127.0.0.1:1083`).
-- **Egress** (a remote exit behind an outbound QUIC connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. A Portal accepts one registered Egress and does not fall back to direct access while it is offline.
+- **Egress** (a remote exit using an outbound QUIC or TLS connection): install the Portal with `--out egress`, move the printed `egress://` URL to the exit host, and `install --url-file` it there. Core v3.3.0 supports multiple Egress registrations across TLS and QUIC through one FIFO registry. If none is available, flows wait within the setup deadline; there is no fallback to direct access or automatic retry after carrier selection.
 - **Tracking v3.x**: the default is pinned to the verified stable `v3.3.0`; `upgrade --version latest-v3` follows the newest stable release; `upgrade --version latest-v3-prerelease` (or an explicit tag plus `--allow-prerelease`) opts in to prereleases, warns before installing, and can be reverted with `rollback`. Core v3.2.0+ requires authenticated Morph TCP Preludes and rejects legacy TCP clients, so verify every TCP client (native Vector >= 3.1.0; third-party clients must explicitly support the Authenticated Prelude) before upgrading a Portal. UDP/QUIC is unaffected.
 - **TLS Egress** (core >= 3.3.0 on both peers): an Egress URL with `/tcp:PORT` (for example `egress://KEY@relay.example/tcp:2000?pin=…`) registers over TLS instead of QUIC. A Portal with `out=egress` may now use TCP-only listeners; the manager refuses TLS Egress on older cores before any change is made, and `links` prints the TCP Egress URL only for a stable core >= 3.3.0.
 - **UDP Prelude**: `--morph-udp-prelude default|fade|full8|low7` (core >= 3.3.0). `default` leaves the core default (`fade`) in place; explicit values are persisted and must be cleared (`--morph-udp-prelude default`) before any downgrade below 3.3.0.
@@ -777,7 +777,7 @@ nh                                 # or just reopen the menu with the shortcut
 | Monitoring | TUI | `status` / `telemetry` |
 | Source build / self-update | yes / yes | no source build / yes self-update |
 
-> V3 v1.1.0 provides complete Chinese and English interaction. Firewall: allow TCP **and** UDP `2083`; an Egress host needs QUIC/UDP outbound to the Portal.
+> V3 v1.1.0 provides complete Chinese and English interaction. Firewall: the default dual listener needs TCP **and** UDP `2083`; an Egress host needs outbound access on the selected QUIC/UDP or TLS/TCP port. Open only the Portal carriers configured: TCP-only needs TCP, UDP-only needs UDP, and dual listeners need both.
 
 > **Client versions (observed):** Anywhere **2.3 and earlier implement only NW2** (cannot reach V3); **2.4 (401) and later implement only NW3** (cannot reach V2 — the NW2 implementation is gone from its binaries). A V2 entry timing out after an app update is expected, not a server failure; prove the V2 Portal with `doctor` / `probe` and an external `-alpn nw2` probe. See [FAQ Q8](#11-troubleshooting-faq).
 
@@ -834,7 +834,7 @@ overridden with NOWHERE_V3_SELF_URL.
 Duplicate URL query keys are rejected after percent-decoding (for example
 `morph=1&morph=0` or `morph=1&%6dorph=0`); the error does not echo the value.
 
-`--morph-prelude` accepts `fade|full8|low7` (default `full8`; `fade` requires core ≥ v3.0.1 and is refused for v3.0.0; the prelude is a sender-side policy and need not match the peer).
+`--morph-prelude` accepts `fade|full8|low7` (manager default `full8`, while the upstream core defaults to `fade`; `fade` requires core ≥ v3.0.1 and is refused for v3.0.0; the prelude is a sender-side policy and need not match the peer).
 
 `links` emits native Vector/Egress URLs (no pin when the certificate is system-CA verified, otherwise a leaf pin) and one share per carrier:
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`.
@@ -1006,12 +1006,9 @@ cleanup and install refusals, and symlinked release roots (20 offline checks).
 `tests/test_152.py` covers the 1.5.2 fixes: duplicate URL keys (including
 percent-encoded equivalents), atomic `manager.conf` publication, and renewal
 runner sync on self-update (7 offline checks).
-`tests/smoke_native.py` runs six loopback TCP/UDP flows with an official
-v3.3.0 binary placed at `upstream/v3.3.0/nowhere`; it is optional and is not
-run in CI. CI runs all of the others.
+`tests/smoke_native.py` verifies actual SOCKS5 TCP and UDP payload round trips in CI using the pinned official v3.3.0 binary, verified against a fixed SHA-256 digest before extraction. It covers 18 scenarios: TLS/QUIC Vector × direct/TLS Egress/QUIC Egress × `fade`/`full8`/`low7`. Each scenario opens three TCP and three UDP sessions (108 total), checks exact payloads, TCP half-close, and UDP payloads up to 4096 bytes. The TLS-only case uses a TCP-only Portal. Repeated flows exercise TLS standby replenishment and QUIC connection reuse; this is not a load or pool-capacity test. Run locally with `python3 tests/smoke_native.py --binary /path/to/verified/nowhere` (Python 3.10+, OpenSSL, and loopback sockets required). All targets are local echo servers; no root or external target is needed.
 
-**Integration is not covered automatically.** The install, upgrade, and systemd
-flows have never been executed by the test suite. Run
+**Deployment integration still requires manual acceptance.** Native traffic is covered automatically; real install, upgrade, and systemd flows are not exercised by the sandbox suite. Run
 [`ACCEPTANCE.md`](ACCEPTANCE.md) on a throwaway VPS before relying on a release.
 
 ---
