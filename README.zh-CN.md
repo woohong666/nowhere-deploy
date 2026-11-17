@@ -57,7 +57,7 @@ V3 管理器融合官方 Release 二进制 SHA-256 强校验、事务化安装 /
 ### V3 的特点与优势
 
 - **协议现代**：NW3 = TLS 1.3（固定 `nw3` ALPN）+ 可选 QUIC 载体；认证绑定 TLS exporter；共享密钥恰好 32 位 hex；Morph 默认开启、两端必须一致
-- **三种角色**：Portal（监听）、Vector（本地 SOCKS5 入口）、**Egress**（远程出口——主动出站 QUIC 回连，**出口机无需开放任何入站端口**）
+- **三种角色**：Portal（监听）、Vector（本地 SOCKS5 入口）、**Egress**（远程出口——主动通过 QUIC/UDP 或 TLS/TCP 回连（TLS 要求两端内核 ≥3.3.0），**出口机无需开放任何入站端口**）
 - **证书全自动**：Let's Encrypt 一键签发 + **每日自动续期**（Cloudflare DNS-01 或 HTTP-01），切换证书走事务、失败自动回滚，见 §13.5
 - **管理体验**：`nh` 快捷菜单（23 项、编号选择、y/n 缩写）、客户端链接 + **二维码**、证书指纹（本机 / **远端**核对）
 - **运维安全**：零信任安装（无 SHA-256 摘要拒装）、事务化配置、`doctor` 体检、配置备份 / 秒级回滚、flock 防并发
@@ -752,12 +752,12 @@ nh                                 # 或直接用快捷命令回到菜单
 **Step 5 · 防火墙（别忘云安全组）**
 
 - Portal：放行 **TCP 和 UDP 2083**（split/自定义端口时对应各自端口）
-- Egress：无需入站，只需能向 Portal 发起 QUIC/UDP 出站
+- Egress：无需入站，只需允许向 Portal 所选载波及端口发起 QUIC/UDP 或 TLS/TCP 出站
 
 **其他角色与版本跟进**
 
 - **Vector**：把输出的 `vector://` URL 保存为权限 600 的文件，执行 `sudo bash nowhere-v3.sh install --url-file /root/vector-v3.url`（SOCKS5 监听 `127.0.0.1:1083`）。
-- **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。一个 Portal 只接受一个已注册 Egress，其离线时不会回退直连。
+- **Egress（远程出口）**：Portal 用 `--out egress` 安装；把输出的 `egress://` URL 传到出口机器并 `install --url-file`。内核 v3.3.0 支持多个 Egress 通过 TLS/QUIC 注册，使用统一 FIFO 注册表。没有可用 Egress 时，Flow 在建立期限内等待；不会回退直连，选定载波后不会自动重试。
 - **跟进 v3.x**：默认固定已核验的稳定版 `v3.3.0`；`upgrade --version latest-v3` 跟进最新稳定版；想尝鲜预发布用 `upgrade --version latest-v3-prerelease`（或显式标签 + `--allow-prerelease`），安装前会提示可能不稳定，随时可 `rollback` 回退。内核 v3.2.0 起强制 Morph TCP 认证前导，旧 TCP 客户端会被拒（原生 Vector 需 >= 3.1.0，第三方客户端须明确支持认证前导）；**升级 Portal 前请先验证所有 TCP 客户端**。UDP/QUIC 不受影响。
 - **TLS Egress**（两端内核均需 >= 3.3.0）：Egress 地址写成 `/tcp:PORT`（如 `egress://KEY@relay.example/tcp:2000?pin=…`）即走 TLS 注册，而非 QUIC。Portal 的 `out=egress` 现可只监听 TCP；旧内核上管理器会在任何改动前拒绝 TLS Egress；`links` 仅在稳定版 >= 3.3.0 时输出 TCP Egress 链接。
 - **UDP 前导**：`--morph-udp-prelude default|fade|full8|low7`（内核 >= 3.3.0）。`default` 沿用内核默认 `fade`；显式设置会被保存，降级到 3.3.0 以下前需先用 `--morph-udp-prelude default` 清除。
@@ -777,7 +777,7 @@ nh                                 # 或直接用快捷命令回到菜单
 | 监控 | TUI | `status` / `telemetry` |
 | 源码编译 / 自更新 | 支持 / 支持 | 不提供源码 / 支持自更新 |
 
-> V3 v1.1.0 支持完整中文/英文交互。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需能向 Portal 发起 QUIC/UDP 出站。
+> V3 v1.1.0 支持完整中文/英文交互。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需允许向 Portal 所选 QUIC/UDP 或 TLS/TCP 端口出站。Portal 仅 TCP 监听时只需 TCP，仅 UDP 监听时只需 UDP，双载波监听时放行两者。
 
 > **客户端版本对应（实测）**：Anywhere **2.3 及以下只有 NW2**（连不了 V3）；**2.4 (401) 起只有 NW3**（连不了 V2——其二进制中 NW2 实现已被移除）。升级 App 后 V2 配置持续超时属预期现象，不是服务器故障；V2 服务可用 `doctor` / `probe` 与外部 `-alpn nw2` 探测自证。详见 [FAQ Q8](#11-常见问题排查faq)。
 
@@ -814,7 +814,7 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 
 `versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
 默认固定稳定版 `v3.3.0`；`latest-v3` 与 `versions` 不会选中预发布（显式指定预发布需加 `--allow-prerelease`，或直接用 `latest-v3-prerelease` 尝鲜）。跟进新的稳定版必须显式`upgrade --version latest-v3`。
-`--morph-prelude` 支持 `fade|full8|low7`（默认 `full8`；`fade` 需内核 ≥ v3.0.1，指定 v3.0.0 会被拒绝；prelude 是发送端策略，无需与对端一致）。
+`--morph-prelude` 支持 `fade|full8|low7`（管理器默认 `full8`，上游内核默认 `fade`；`fade` 需内核 ≥ v3.0.1，指定 v3.0.0 会被拒绝；prelude 是发送端策略，无需与对端一致）。
 自更新先取得管理锁，再验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
 若存在 `cert-timer` 安装的续期副本（`/opt/nowhere-v3/manager/nowhere-v3.sh`），会一并刷新为 `0700`，同步失败会报错并保留备份。
 不更新服务、配置或内核。`manager.conf` 同样在同目录暂存、设置属主与 `0640`、fsync 后原子替换。
@@ -967,7 +967,7 @@ python3 tests/test_152.py .
 `tests/fixtures/acme-3.1.6.tar.gz`；CI 会一并运行。
 `tests/test_fixes.py` 是历次评审批次的专项离线回归（替身 systemd / ACME），CI 一并执行。
 `tests/test_review.py` 是 1.5.1/1.4.1 评审批次的 16 项专项回归（原子备份回退、元数据规范化、管道执行、ACME 版本参数、证书状态异常）；CI 会运行以上全部。
-`tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）。`tests/test_330.py` 覆盖 3.3 相关规则：TLS Egress 门限（含预发布内核）、链接失败即关闭、UDP 前导的保存与旧内核拒绝、事务性回滚、旧版本清理与安装拒绝、符号链接发布目录（20 项，离线）。`tests/test_152.py` 覆盖 1.5.2 的修复：重复 URL 参数（含百分号编码等价写法）、`manager.conf` 原子发布、自更新时续期副本同步（7 项，离线）。`tests/smoke_native.py` 使用放在 `upstream/v3.3.0/nowhere` 的官方 v3.3.0 二进制做 6 组回环 TCP/UDP Flow 验证（可选，CI 不运行）。
+`tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）。`tests/test_330.py` 覆盖 3.3 相关规则：TLS Egress 门限（含预发布内核）、链接失败即关闭、UDP 前导的保存与旧内核拒绝、事务性回滚、旧版本清理与安装拒绝、符号链接发布目录（20 项，离线）。`tests/test_152.py` 覆盖 1.5.2 的修复：重复 URL 参数（含百分号编码等价写法）、`manager.conf` 原子发布、自更新时续期副本同步（7 项，离线）。`tests/smoke_native.py` 已接入 CI，下载固定的官方 v3.3.0 二进制并在解压前核对固定 SHA-256。通过 SOCKS5 验证真实 TCP/UDP 数据往返：TLS/QUIC Vector × 直连/TLS Egress/QUIC Egress × `fade`/`full8`/`low7`，共 18 种场景。每种场景建立 3 个 TCP 和 3 个 UDP 会话（总计 108 个），核对完整载荷、TCP 半关闭以及最大 4096 字节 UDP 数据；纯 TLS 场景使用仅 TCP 监听的 Portal。重复建立 Flow 覆盖 TLS 备用连接补充及 QUIC 连接复用，但不属于负载或连接池容量测试。本地运行：`python3 tests/smoke_native.py --binary /path/to/verified/nowhere`（需要 Python 3.10+、OpenSSL 和回环套接字）；无需 root，目标全部为本机 echo 服务。
 
 **集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。

@@ -16,3 +16,6 @@ Thumbs.db
 # Legacy script backups
 *.backup
 __pycache__/
+
+# Verified native integration test binaries
+/upstream/

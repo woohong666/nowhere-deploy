@@ -8,6 +8,13 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
+### Documentation and native NW3 integration coverage
+
+- Correct Egress transport, multiple-registration and firewall guidance in both READMEs; distinguish the manager TCP Prelude default from the upstream default.
+- Replace TCP-only native probes with 18 real SOCKS5 TCP/UDP scenarios, including all Prelude policies, TCP-only TLS Egress, repeated sessions, payload integrity, UDP reassembly and TCP half-close.
+- Run native integration in a separate bounded CI job with the official v3.3.0 Linux archive verified against a pinned SHA-256 digest.
+- Real systemd installation, certificate issuance and production-client acceptance remain manual checks.
+
 ### Nowhere V2 manager (`nowhere-v2.sh`) — v1.5.1
 
 #### 🐛 Fixed
