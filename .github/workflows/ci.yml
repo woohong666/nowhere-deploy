@@ -68,6 +68,9 @@ jobs:
       - name: Core 3.3 regression tests (Python)
         run: python3 tests/test_330.py .
 
+      - name: Runtime override regression tests (Python)
+        run: python3 tests/test_runtime.py .
+
       - name: Self-update and metadata regression tests (Python)
         run: python3 tests/test_152.py .
 

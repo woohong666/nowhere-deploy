@@ -836,6 +836,29 @@ Duplicate URL query keys are rejected after percent-decoding (for example
 
 `--morph-prelude` accepts `fade|full8|low7` (manager default `full8`, while the upstream core defaults to `fade`; `fade` requires core ≥ v3.0.1 and is refused for v3.0.0; the prelude is a sender-side policy and need not match the peer).
 
+**Runtime limits (manager v1.6.0+)**
+
+Use `preview` first, then `configure -y` to persist settings and restart the service:
+
+```bash
+sudo bash nowhere-v3.sh preview --egress-tls-pool-max 16 --handshake-timeout 10s
+sudo bash nowhere-v3.sh configure -y --egress-tls-pool-max 16 --handshake-timeout 10s
+sudo bash nowhere-v3.sh configure -y --handshake-timeout default
+```
+
+| Option | Core environment variable | Accepted values | Unset core default |
+|---|---|---|---|
+| `--egress-tls-pool-max` | `NOW_EGRESS_TLS_POOL_MAX` | `default` or integer `1..1023` | 128 pending TLS connections per Egress process |
+| `--portal-tls-idle-max` | `NOW_PORTAL_TLS_IDLE_MAX` | `default` or integer `1..1023` | 128 pending TLS Egress connections per Portal |
+| `--handshake-timeout` | `NOW_HANDSHAKE_TIMEOUT` | `default`, `Nms` or `Ns` | Shared Key-derived 3–30 seconds in core v3.3.0 |
+| `--flow-setup-timeout` | `NOW_FLOW_SETUP_TIMEOUT` | `default`, `Nms` or `Ns` | 20 seconds |
+
+Timeouts accept whole positive milliseconds or seconds from 1 ms to 24 hours (for example `250ms`, `10s`, `86400s`); fractional, compound and whitespace-containing values are rejected. These are deliberately narrower manager limits than the core duration parser. The manager caps both pools at 1023; upstream permits a larger Egress pool, while Portal's limit is 1023. Pool limits count pending connections, not active flows, and require core >=3.3.0. Clear both overrides before downgrading below that version. Egress pool tuning affects TLS Egress; it does not change QUIC multiplexing.
+
+Omitted options preserve saved values. `default` removes the corresponding environment override, allowing the core to choose its default. Overrides are stored in `manager.conf`, included in backups and previews, and preserved by upgrades. Restore validates them before changes (including `--dry-run`); restoring an older backup without these fields clears them. Failed activation restores the previous configuration and unit. Pool settings do not need to match across peers. Configure each host for its role; duration settings apply to all roles.
+
+`tests/test_runtime.py` covers boundaries, CLI precedence, persistence, clearing, previews, downgrade rejection, backup restore and activation rollback. Native CI also runs with small explicit pools (Egress 2, Portal 4) and explicit handshake/setup deadlines.
+
 `links` emits native Vector/Egress URLs (no pin when the certificate is system-CA verified, otherwise a leaf pin) and one share per carrier:
 `nowhere://KEY@host:port?net=tcp|udp&morph=0|1#NAME`.
 Shares omit pin. For self-signed certificates, add the fingerprint command result

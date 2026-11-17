@@ -8,6 +8,14 @@ and its own `SCRIPT_VERSION` is stated in each heading.
 
 ## [Unreleased]
 
+### Nowhere V3 manager (`nowhere-v3.sh`) — v1.6.0
+
+- Add persistent TLS Egress/Portal pending-pool limits and handshake/Flow setup timeouts, with CLI overrides, explicit `default` clearing and redacted previews.
+- Validate numeric and duration bounds before unit writes; gate explicit TLS pool limits on core >=3.3.0.
+- Validate restored settings before mutation; old backups clear absent overrides, and failed activation restores prior settings through existing transactions.
+- Add runtime regression tests to CI and exercise small explicit pools in the real TCP/UDP integration matrix.
+- Make self-update regression fixtures independent of the current manager version.
+
 ### Documentation and native NW3 integration coverage
 
 - Correct Egress transport, multiple-registration and firewall guidance in both READMEs; distinguish the manager TCP Prelude default from the upstream default.

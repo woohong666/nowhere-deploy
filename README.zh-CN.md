@@ -815,6 +815,29 @@ help/validate/generate-key/self-update不为语言选项修改服务配置。
 `versions`展示实际全部稳定版本；若官方不足10个，不补造版本。
 默认固定稳定版 `v3.3.0`；`latest-v3` 与 `versions` 不会选中预发布（显式指定预发布需加 `--allow-prerelease`，或直接用 `latest-v3-prerelease` 尝鲜）。跟进新的稳定版必须显式`upgrade --version latest-v3`。
 `--morph-prelude` 支持 `fade|full8|low7`（管理器默认 `full8`，上游内核默认 `fade`；`fade` 需内核 ≥ v3.0.1，指定 v3.0.0 会被拒绝；prelude 是发送端策略，无需与对端一致）。
+**运行参数（管理器 v1.6.0+）**
+
+先预览，再应用并重启服务：
+
+```bash
+sudo bash nowhere-v3.sh preview --egress-tls-pool-max 16 --handshake-timeout 10s
+sudo bash nowhere-v3.sh configure -y --egress-tls-pool-max 16 --handshake-timeout 10s
+sudo bash nowhere-v3.sh configure -y --handshake-timeout default
+```
+
+| 参数 | 内核环境变量 | 可选值 | 未设置时的内核默认值 |
+|---|---|---|---|
+| `--egress-tls-pool-max` | `NOW_EGRESS_TLS_POOL_MAX` | `default` 或整数 `1..1023` | 每个 Egress 进程 128 个 TLS 待用连接 |
+| `--portal-tls-idle-max` | `NOW_PORTAL_TLS_IDLE_MAX` | `default` 或整数 `1..1023` | 每个 Portal 128 个 TLS Egress 待用连接 |
+| `--handshake-timeout` | `NOW_HANDSHAKE_TIMEOUT` | `default`、`Nms` 或 `Ns` | v3.3.0 根据共享密钥派生 3–30 秒 |
+| `--flow-setup-timeout` | `NOW_FLOW_SETUP_TIMEOUT` | `default`、`Nms` 或 `Ns` | 20 秒 |
+
+超时范围为 1 毫秒至 24 小时，仅接受正整数毫秒或秒，例如 `250ms`、`10s`、`86400s`；不接受小数、组合单位或空白。这是管理器主动限定的输入范围，比内核解析器更窄。管理器将两种连接池都限制为 1023；上游 Egress 允许更大值，Portal 上限为 1023。连接池限制的是待用连接，不是活跃 Flow；显式连接池设置要求内核 ≥3.3.0，降级前请用 `default` 清除。Egress 连接池仅影响 TLS，不改变 QUIC 多路复用。
+
+省略参数会保留已有值；`default` 删除对应环境变量覆盖，恢复内核默认行为。参数写入 `manager.conf`，纳入备份、预览和升级保留。恢复备份（含 `--dry-run`）会在修改前校验，旧备份缺少这些字段时会清除当前覆盖值；服务启动失败会回滚配置和 unit。连接池大小无需两端一致，应按主机角色设置；超时适用于全部角色。
+
+`tests/test_runtime.py` 覆盖边界、CLI 优先级、持久化、清除、预览、降级拒绝、备份恢复和启动失败回滚。原生 CI 使用显式小连接池（Egress 2、Portal 4）及握手/Flow 建立超时。
+
 自更新先取得管理锁，再验证Bash语法、V3通道与版本，拒绝降级，同目录原子替换并保留备份；
 若存在 `cert-timer` 安装的续期副本（`/opt/nowhere-v3/manager/nowhere-v3.sh`），会一并刷新为 `0700`，同步失败会报错并保留备份。
 不更新服务、配置或内核。`manager.conf` 同样在同目录暂存、设置属主与 `0640`、fsync 后原子替换。

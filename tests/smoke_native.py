@@ -146,7 +146,8 @@ def run_case(binary, directory, pin, carrier, egress, policy, targets):
     label = f'{carrier} -> {egress or "direct"}, Prelude={policy}'
     env = {k: v for k, v in os.environ.items() if not k.startswith('NOW_')}
     env.update(NOW_MORPH_TCP_PRELUDE=policy, NOW_MORPH_UDP_PRELUDE=policy,
-               NOW_HANDSHAKE_TIMEOUT='3s', NOW_FLOW_SETUP_TIMEOUT='8s', TMPDIR=str(directory))
+               NOW_HANDSHAKE_TIMEOUT='3s', NOW_FLOW_SETUP_TIMEOUT='8s',
+               NOW_EGRESS_TLS_POOL_MAX='2', NOW_PORTAL_TLS_IDLE_MAX='4', TMPDIR=str(directory))
     # A TCP-only topology verifies TLS Egress does not require a UDP listener.
     endpoint = f'/tcp:{portal_port}'
     if carrier == 'udp' or egress == 'udp':
