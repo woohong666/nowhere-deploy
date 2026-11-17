@@ -408,3 +408,7 @@ V3 core 版本  : （grep '^tag:' /opt/nowhere-v3/current/RELEASE-INFO）
 ### Native NW3 traffic regression
 
 CI runs `python3 tests/smoke_native.py` with a SHA-256-verified official v3.3.0 core. Locally pass `--binary /path/to/verified/nowhere`. All traffic uses loopback echo servers. Expect 18 scenarios and 108 TCP/UDP sessions covering both Vector carriers, direct/TLS Egress/QUIC Egress routes, and all three Prelude policies. Assertions check payload integrity, TCP half-close and UDP payloads up to 4096 bytes. This does not certify load limits, multi-Egress scheduling, systemd deployment, ACME or third-party client compatibility.
+
+### Runtime overrides (v1.6.0)
+
+Run `python3 tests/test_runtime.py .`. On a disposable VPS, preview and configure the four runtime options, confirm the corresponding `NOW_*` values with `systemctl show nowhere-v3 -p Environment`, then restart/upgrade and verify persistence. Clear each with `default` and confirm it is absent from the unit. Check backup/restore, invalid values, and pool-override rejection before downgrade below v3.3.0. Native CI uses Egress pool 2, Portal idle pool 4, handshake 3s and Flow setup 8s; it validates traffic with those overrides, not maximum capacity.

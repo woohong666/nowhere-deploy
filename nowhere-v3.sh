@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Nowhere V3 isolated manager v1.5.2
+# Nowhere V3 isolated manager v1.6.0
+# v1.6.0: validated persistent TLS pool limits and operation timeouts.
 # v1.5.2: renewal runner sync on self-update; reject duplicate URL keys;
 #   atomic, fsynced metadata publication.
 # v1.5.1: reviewed fixes to 1.5.0 — prerelease cores (e.g. v3.3.0-rc.1) no longer
@@ -29,7 +30,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -Eeuo pipefail
 umask 077
-readonly SCRIPT_VERSION="1.5.2"
+readonly SCRIPT_VERSION="1.6.0"
 readonly SCRIPT_CHANNEL="v3"
 readonly DEFAULT_CORE_VERSION="v3.3.0"
 readonly UPSTREAM_REPO="NodePassProject/Nowhere"
@@ -61,6 +62,10 @@ OLD_TARGET=''
 MEMORY_PROFILE=throughput
 MORPH_PRELUDE=full8
 MORPH_UDP_PRELUDE=''
+EGRESS_TLS_POOL_MAX=''
+PORTAL_TLS_IDLE_MAX=''
+HANDSHAKE_TIMEOUT=''
+FLOW_SETUP_TIMEOUT=''
 PUBLIC_HOST=''
 ROLE=portal
 KEY=''
@@ -352,6 +357,7 @@ EOF2
 }
 
 write_unit() {
+  validate_runtime_settings
   [[ ! -s "$URL_FILE" ]] || validate_core_configuration "$(read_url)" "$VERSION"
   if [[ "$MORPH_PRELUDE" == fade ]] && ! version_ge "$VERSION" v3.0.1; then
     die "$(tr_msg 'fade prelude requires core v3.0.1 or newer; use full8 or low7 for v3.0.0' 'fade 前导需要 v3.0.1 或更新内核；v3.0.0 请使用 full8 或 low7')"
@@ -375,6 +381,10 @@ Environment=TMPDIR=/run/nowhere-v3
 Environment=NOW_TRANSPORT_MEMORY_PROFILE=${MEMORY_PROFILE}
 Environment=NOW_MORPH_TCP_PRELUDE=${MORPH_PRELUDE}
 ${MORPH_UDP_PRELUDE:+Environment=NOW_MORPH_UDP_PRELUDE=${MORPH_UDP_PRELUDE}}
+${EGRESS_TLS_POOL_MAX:+Environment=NOW_EGRESS_TLS_POOL_MAX=${EGRESS_TLS_POOL_MAX}}
+${PORTAL_TLS_IDLE_MAX:+Environment=NOW_PORTAL_TLS_IDLE_MAX=${PORTAL_TLS_IDLE_MAX}}
+${HANDSHAKE_TIMEOUT:+Environment=NOW_HANDSHAKE_TIMEOUT=${HANDSHAKE_TIMEOUT}}
+${FLOW_SETUP_TIMEOUT:+Environment=NOW_FLOW_SETUP_TIMEOUT=${FLOW_SETUP_TIMEOUT}}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -636,8 +646,37 @@ else:
 PY
 }
 
+# Restrict unit interpolation to a canonical, whitespace-free syntax.
+validate_runtime_setting() {
+  local name="$1" value="$2"
+  [[ -n "$value" ]] || return 0
+  if ! python3 - "$name" "$value" <<'PYRUNTIME'
+import re,sys
+name,value=sys.argv[1:]
+if name in ('EGRESS_TLS_POOL_MAX','PORTAL_TLS_IDLE_MAX'):
+    valid=bool(re.fullmatch(r'[1-9][0-9]{0,3}',value)) and int(value)<=1023
+else:
+    match=re.fullmatch(r'([1-9][0-9]{0,7})(ms|s)',value)
+    valid=bool(match) and int(match[1])*(1 if match[2]=='ms' else 1000)<=86400000
+sys.exit(0 if valid else 1)
+PYRUNTIME
+  then
+    die "$(tr_msg "Invalid ${name}: pools require 1..1023; timeouts require integer ms/s in 1ms..24h (or default)" "${name} 无效：连接池需 1..1023；超时需整数 ms/s，范围 1ms..24h（或 default）")"
+  fi
+}
+validate_runtime_settings() {
+  validate_runtime_setting EGRESS_TLS_POOL_MAX "$EGRESS_TLS_POOL_MAX"
+  validate_runtime_setting PORTAL_TLS_IDLE_MAX "$PORTAL_TLS_IDLE_MAX"
+  validate_runtime_setting HANDSHAKE_TIMEOUT "$HANDSHAKE_TIMEOUT"
+  validate_runtime_setting FLOW_SETUP_TIMEOUT "$FLOW_SETUP_TIMEOUT"
+}
+
 validate_core_configuration() {
   local u="$1" version="$2"
+  validate_runtime_settings
+  if [[ -n "$EGRESS_TLS_POOL_MAX$PORTAL_TLS_IDLE_MAX" ]] && ! version_ge "$version" v3.3.0; then
+    die "$(tr_msg 'TLS pool overrides require core >=3.3.0; clear them with default before downgrading' 'TLS 连接池覆盖需内核 >=3.3.0；降级前请用 default 清除')"
+  fi
   v3_url validate-core "$u" "$version" >/dev/null
   if [[ "$MORPH_PRELUDE" == fade ]] && ! version_ge "$version" v3.0.1; then
     die "$(tr_msg 'TCP fade requires core >=3.0.1' 'TCP fade 需要内核 >=3.0.1')"
@@ -654,10 +693,19 @@ warn_core_upgrade() {
 }
 read_url() { [[ -s "$URL_FILE" ]] || die "$(tr_msg "V3 is not configured" "尚未配置 V3")"; head -n 1 "$URL_FILE"; }
 load_meta() {
-  [[ -r "$META_FILE" ]] || return 0
+  local source="${1:-$META_FILE}"
+  EGRESS_TLS_POOL_MAX=''
+  PORTAL_TLS_IDLE_MAX=''
+  HANDSHAKE_TIMEOUT=''
+  FLOW_SETUP_TIMEOUT=''
+  [[ -r "$source" ]] || return 0
   local k v
   while IFS='=' read -r k v; do
     case "$k" in
+      EGRESS_TLS_POOL_MAX) validate_runtime_setting EGRESS_TLS_POOL_MAX "$v"; EGRESS_TLS_POOL_MAX="$v" ;;
+      PORTAL_TLS_IDLE_MAX) validate_runtime_setting PORTAL_TLS_IDLE_MAX "$v"; PORTAL_TLS_IDLE_MAX="$v" ;;
+      HANDSHAKE_TIMEOUT) validate_runtime_setting HANDSHAKE_TIMEOUT "$v"; HANDSHAKE_TIMEOUT="$v" ;;
+      FLOW_SETUP_TIMEOUT) validate_runtime_setting FLOW_SETUP_TIMEOUT "$v"; FLOW_SETUP_TIMEOUT="$v" ;;
       PUBLIC_HOST) PUBLIC_HOST="$v" ;;
       LANG) [[ "$v" != zh && "$v" != en ]] || LANG_CODE="$v" ;;
       NODE_NAME) NODE_NAME="$v" ;;
@@ -665,7 +713,7 @@ load_meta() {
       MORPH_PRELUDE) validate_morph_prelude "$v"; MORPH_PRELUDE="$v" ;;
       MORPH_UDP_PRELUDE) [[ -z "$v" ]] || validate_morph_prelude "$v"; MORPH_UDP_PRELUDE="$v" ;;
     esac
-  done <"$META_FILE"
+  done <"$source"
 }
 # Same-directory rename; sync file contents and directory entry for durability.
 publish_file() {
@@ -680,10 +728,15 @@ finally:os.close(fd)
 PYATOMIC
 }
 write_meta() {
+  validate_runtime_settings
   local staged
   staged="$(mktemp "${META_FILE}.new.XXXXXX")"; CLEANUP_PATHS+=("$staged")
   printf 'SCRIPT_CHANNEL=v3\nSCRIPT_VERSION=%s\nCORE_VERSION=%s\nPUBLIC_HOST=%s\nMEMORY_PROFILE=%s\nMORPH_PRELUDE=%s\nLANG=%s\nNODE_NAME=%s\n' "$SCRIPT_VERSION" "$VERSION" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$LANG_CODE" "$NODE_NAME" >"$staged"
   printf 'MORPH_UDP_PRELUDE=%s\n' "$MORPH_UDP_PRELUDE" >>"$staged"
+  printf 'EGRESS_TLS_POOL_MAX=%s\n' "$EGRESS_TLS_POOL_MAX" >>"$staged"
+  printf 'PORTAL_TLS_IDLE_MAX=%s\n' "$PORTAL_TLS_IDLE_MAX" >>"$staged"
+  printf 'HANDSHAKE_TIMEOUT=%s\n' "$HANDSHAKE_TIMEOUT" >>"$staged"
+  printf 'FLOW_SETUP_TIMEOUT=%s\n' "$FLOW_SETUP_TIMEOUT" >>"$staged"
   chown root:"$RUN_GROUP" "$staged"; chmod 640 "$staged"
   publish_file "$staged" "$META_FILE"
 }
@@ -1274,9 +1327,10 @@ preview_action() {
   if [[ -s "$CURRENT_LINK/RELEASE-INFO" ]]; then preview_version="$(sed -n 's/^tag: //p' "$CURRENT_LINK/RELEASE-INFO")"; fi
   validate_core_configuration "$candidate" "$preview_version"
   # Allowlisted comparison: never print raw URLs, shared keys, SOCKS credentials or pins.
-  python3 - "$old" "$candidate" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$MORPH_UDP_PRELUDE" <<'PY'
+  python3 - "$old" "$candidate" "$PUBLIC_HOST" "$MEMORY_PROFILE" "$MORPH_PRELUDE" "$MORPH_UDP_PRELUDE" "$EGRESS_TLS_POOL_MAX" "$PORTAL_TLS_IDLE_MAX" "$HANDSHAKE_TIMEOUT" "$FLOW_SETUP_TIMEOUT" <<'PY'
 import sys,urllib.parse as U,json
-old,new,public,memory,prelude,udp_prelude=sys.argv[1:]
+old,new,public,memory,prelude,udp_prelude=sys.argv[1:7]
+runtime=dict(zip(("egress_tls_pool_max","portal_tls_idle_max","handshake_timeout","flow_setup_timeout"),(v or "default" for v in sys.argv[7:])))
 def fields(raw):
  if not raw:return {}
  u=U.urlsplit(raw);q=dict(U.parse_qsl(u.query));d={'role':u.scheme,'endpoint':u.netloc.rsplit('@',1)[-1]+u.path}
@@ -1293,7 +1347,7 @@ print('shared_key: '+('changed (hidden)' if a.username!=b.username else 'unchang
 qa=dict(U.parse_qsl(a.query));qb=dict(U.parse_qsl(b.query))
 for k in ('pin','out','in'):
  if qa.get(k)!=qb.get(k):print(k+': changed (sensitive fields hidden)')
-print(json.dumps({'public_host':public,'memory_profile':memory,'morph_prelude':prelude,'morph_udp_prelude':udp_prelude or 'default'},ensure_ascii=False))
+print(json.dumps({'public_host':public,'memory_profile':memory,'morph_prelude':prelude,'morph_udp_prelude':udp_prelude or 'default',**runtime},ensure_ascii=False))
 PY
   info "$(tr_msg 'Preview only. Applying configure will restart the service; supplied PEM files are staged into managed storage.' '仅预览。实际 configure 会重启服务；自备 PEM 文件会复制到托管目录。')"
 }
@@ -1523,7 +1577,7 @@ restore_action() {
     case "$k" in MEMORY_PROFILE) validate_memory_profile "$v" ;; MORPH_PRELUDE) validate_morph_prelude "$v"; backup_tcp="$v" ;; MORPH_UDP_PRELUDE) [[ -z "$v" ]] || validate_morph_prelude "$v"; backup_udp="$v" ;; esac
   done <"$staging/manager.conf"
   if [[ "$SCRIPT_CHANNEL" == v3 ]]; then
-    ( MORPH_PRELUDE="$backup_tcp"; MORPH_UDP_PRELUDE="$backup_udp"; validate_core_configuration "$u" "$installed" )
+    ( load_meta "$staging/manager.conf"; MORPH_PRELUDE="$backup_tcp"; MORPH_UDP_PRELUDE="$backup_udp"; validate_core_configuration "$u" "$installed" )
   fi
   if [[ "$DRY_RUN" == 1 ]]; then
     info "$(tr_msg 'Backup valid; restore would replace configuration and restart the installed core. No changes made.' '备份校验通过；恢复将替换配置并重启当前内核。本次未修改。')"; return 0
@@ -1943,6 +1997,8 @@ Nowhere V3 管理器 ${SCRIPT_VERSION}（通道 ${SCRIPT_CHANNEL}；Linux + syst
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto（前者与后两者互斥）
  --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
  --morph-udp-prelude default|fade|full8|low7 (>=3.3.0)
+ --egress-tls-pool-max / --portal-tls-idle-max default|1..1023 (>=3.3.0)
+ --handshake-timeout / --flow-setup-timeout default|Nms|Ns (1ms..24h)
  --version v3.x.y|latest-v3|latest-v3-prerelease --allow-prerelease --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en（CLI > NOWHERE_V3_LANG > manager.conf > 中文）
  --yes / -y；--wizard；--allow-role-switch（明确允许角色切换）
@@ -1986,6 +2042,8 @@ Usage: sudo bash nowhere-v3.sh [ACTION] [options] (omit sudo when already root);
  --dial IP|auto --dial4 IP|auto --dial6 IP|auto (dial excludes dial4/dial6)
  --memory-profile memory|balanced|throughput --morph-prelude fade|full8|low7
  --morph-udp-prelude default|fade|full8|low7 (>=3.3.0)
+ --egress-tls-pool-max / --portal-tls-idle-max default|1..1023 (>=3.3.0)
+ --handshake-timeout / --flow-setup-timeout default|Nms|Ns (1ms..24h)
  --version v3.x.y|latest-v3|latest-v3-prerelease --allow-prerelease --libc auto|gnu|musl --keep-releases 0..20
  --lang zh|en (CLI > NOWHERE_V3_LANG > manager.conf > Chinese)
  --yes / -y; --wizard; --allow-role-switch (explicit role-switch consent)
@@ -2109,6 +2167,10 @@ main() {
       --dial6) DIAL6="${2:?}"; shift 2 ;;
       --memory-profile) MEMORY_PROFILE="${2:?}"; shift 2 ;;
       --morph-prelude) MORPH_PRELUDE="${2:?}"; shift 2 ;;
+      --egress-tls-pool-max) EGRESS_TLS_POOL_MAX="${2:?}"; [[ "$EGRESS_TLS_POOL_MAX" != default ]] || EGRESS_TLS_POOL_MAX=''; shift 2 ;;
+      --portal-tls-idle-max) PORTAL_TLS_IDLE_MAX="${2:?}"; [[ "$PORTAL_TLS_IDLE_MAX" != default ]] || PORTAL_TLS_IDLE_MAX=''; shift 2 ;;
+      --handshake-timeout) HANDSHAKE_TIMEOUT="${2:?}"; [[ "$HANDSHAKE_TIMEOUT" != default ]] || HANDSHAKE_TIMEOUT=''; shift 2 ;;
+      --flow-setup-timeout) FLOW_SETUP_TIMEOUT="${2:?}"; [[ "$FLOW_SETUP_TIMEOUT" != default ]] || FLOW_SETUP_TIMEOUT=''; shift 2 ;;
       --morph-udp-prelude) MORPH_UDP_PRELUDE="${2:?}"; [[ "$MORPH_UDP_PRELUDE" != default ]] || MORPH_UDP_PRELUDE=''; shift 2 ;;
       --libc) LIBC="${2:?}"; shift 2 ;;
       --keep-releases) KEEP_RELEASES="${2:?}"; shift 2 ;;
@@ -2134,6 +2196,7 @@ main() {
   done
   [[ "$LANG_CODE" == zh || "$LANG_CODE" == en ]] || die 'LANG: zh|en'
   [[ "$VERSION" != latest-v3-prerelease ]] || ALLOW_PRERELEASE=1
+  validate_runtime_settings
   validate_version_arg "$VERSION"; validate_keep_releases "$KEEP_RELEASES"
   validate_memory_profile "$MEMORY_PROFILE"; validate_morph_prelude "$MORPH_PRELUDE"
   [[ -z "$MORPH_UDP_PRELUDE" || "$MORPH_UDP_PRELUDE" == fade || "$MORPH_UDP_PRELUDE" == full8 || "$MORPH_UDP_PRELUDE" == low7 ]] || die "$(tr_msg 'morph-udp-prelude must be default|fade|full8|low7' 'morph-udp-prelude 必须为 default|fade|full8|low7')"

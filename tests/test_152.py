@@ -12,11 +12,11 @@ class Fix152(unittest.TestCase):
   r=self.runsh(3,'publish_file() { return 1; }; write_meta');self.assertNotEqual(r.returncode,0);self.assertEqual(f.read_text(),'original\n')
  def test_meta_success(self):
   r=self.runsh(3,'write_meta');self.assertEqual(r.returncode,0,r.stderr)
-  f=self.d/'etc/manager.conf';self.assertIn('SCRIPT_VERSION=1.5.2',f.read_text());self.assertEqual(f.stat().st_mode&0o777,0o640)
+  f=self.d/'etc/manager.conf';self.assertRegex(f.read_text(),r'SCRIPT_VERSION=\d+\.\d+\.\d+');self.assertEqual(f.stat().st_mode&0o777,0o640)
  def update(self,fail=False,runner=True):
   d=self.d/'opt/manager';d.mkdir();f=d/'nowhere-v3.sh'
   if runner:f.write_text('old-runner')
-  src=self.d/'v3.sh';(self.d/'remote').write_text(src.read_text().replace('readonly SCRIPT_VERSION="1.5.2"','readonly SCRIPT_VERSION="1.5.3"'))
+  src=self.d/'v3.sh';(self.d/'remote').write_text(src.read_text().replace(next(line for line in src.read_text().splitlines() if line.startswith('readonly SCRIPT_VERSION=')), 'readonly SCRIPT_VERSION="99.0.0"'))
   self.env['NOWHERE_V3_SELF_URL']='https://example.test/script'
   body='''ASSUME_YES=1
 curl() { local out; while (($#)); do if [[ "$1" == -o ]]; then out="$2"; shift 2; else shift; fi; done; cp "$SB/remote" "$out"; }
