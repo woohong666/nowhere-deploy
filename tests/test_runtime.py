@@ -52,6 +52,15 @@ class RuntimeSettings(unittest.TestCase):
         for line in ('EGRESS_TLS_POOL_MAX=16', 'PORTAL_TLS_IDLE_MAX=32', 'HANDSHAKE_TIMEOUT=2s', 'FLOW_SETUP_TIMEOUT=12s'):
             self.assertIn('Environment=NOW_' + line, unit)
 
+    def test_configure_applies_and_preserves_saved_overrides(self):
+        setup = 'ensure_user() { :; }; wait_service() { return 0; }; install_shortcut() { :; }; '
+        self.success(setup + 'main configure -y --handshake-timeout 2s --egress-tls-pool-max 16')
+        self.success(setup + 'main configure -y --flow-setup-timeout 9s')
+        unit = (self.d / 'unit.service').read_text()
+        for setting in ('HANDSHAKE_TIMEOUT=2s', 'EGRESS_TLS_POOL_MAX=16', 'FLOW_SETUP_TIMEOUT=9s'):
+            self.assertIn('Environment=NOW_' + setting, unit)
+        self.assertIn('HANDSHAKE_TIMEOUT=2s', (self.d / 'etc/manager.conf').read_text())
+
     def test_clear_all_with_default(self):
         self.success('EGRESS_TLS_POOL_MAX=16; PORTAL_TLS_IDLE_MAX=32; HANDSHAKE_TIMEOUT=2s; FLOW_SETUP_TIMEOUT=12s; write_meta')
         flags = ' '.join('--' + k.lower().replace('_', '-') + ' default' for k in KEYS)
