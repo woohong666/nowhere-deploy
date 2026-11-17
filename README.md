@@ -751,7 +751,7 @@ nh                                 # or just reopen the menu with the shortcut
 
 **Step 5 · Firewall (including your cloud security group)**
 
-- Portal: allow **TCP and UDP 2083** (or the custom/split ports you chose)
+- Portal: allow **TCP and UDP 2083** for the default dual listener. For TCP-only or UDP-only listeners, allow only that carrier; use the configured ports for custom/split endpoints.
 - Egress: no inbound ports; allow outbound to the Portal on the selected carrier and port: QUIC/UDP or TLS/TCP
 
 **Other roles and version tracking**
@@ -777,7 +777,7 @@ nh                                 # or just reopen the menu with the shortcut
 | Monitoring | TUI | `status` / `telemetry` |
 | Source build / self-update | yes / yes | no source build / yes self-update |
 
-> V3 v1.1.0 provides complete Chinese and English interaction. Firewall: allow TCP **and** UDP `2083`; an Egress host needs outbound access on the selected QUIC/UDP or TLS/TCP port. Open only the Portal carriers configured: TCP-only needs TCP, UDP-only needs UDP, and dual listeners need both.
+> V3 v1.1.0 provides complete Chinese and English interaction. Firewall: the default dual listener needs TCP **and** UDP `2083`; an Egress host needs outbound access on the selected QUIC/UDP or TLS/TCP port. Open only the Portal carriers configured: TCP-only needs TCP, UDP-only needs UDP, and dual listeners need both.
 
 > **Client versions (observed):** Anywhere **2.3 and earlier implement only NW2** (cannot reach V3); **2.4 (401) and later implement only NW3** (cannot reach V2 — the NW2 implementation is gone from its binaries). A V2 entry timing out after an app update is expected, not a server failure; prove the V2 Portal with `doctor` / `probe` and an external `-alpn nw2` probe. See [FAQ Q8](#11-troubleshooting-faq).
 

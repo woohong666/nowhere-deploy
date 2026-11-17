@@ -751,7 +751,7 @@ nh                                 # 或直接用快捷命令回到菜单
 
 **Step 5 · 防火墙（别忘云安全组）**
 
-- Portal：放行 **TCP 和 UDP 2083**（split/自定义端口时对应各自端口）
+- Portal：默认双载波监听放行 **TCP 和 UDP 2083**；仅 TCP 或仅 UDP 监听时只放行对应协议；split/自定义端口使用实际配置的端口。
 - Egress：无需入站，只需允许向 Portal 所选载波及端口发起 QUIC/UDP 或 TLS/TCP 出站
 
 **其他角色与版本跟进**
@@ -777,7 +777,7 @@ nh                                 # 或直接用快捷命令回到菜单
 | 监控 | TUI | `status` / `telemetry` |
 | 源码编译 / 自更新 | 支持 / 支持 | 不提供源码 / 支持自更新 |
 
-> V3 v1.1.0 支持完整中文/英文交互。防火墙：放行 TCP **和** UDP `2083`；Egress 机器需允许向 Portal 所选 QUIC/UDP 或 TLS/TCP 端口出站。Portal 仅 TCP 监听时只需 TCP，仅 UDP 监听时只需 UDP，双载波监听时放行两者。
+> V3 v1.1.0 支持完整中文/英文交互。防火墙：默认双载波监听放行 TCP **和** UDP `2083`；Egress 机器需允许向 Portal 所选 QUIC/UDP 或 TLS/TCP 端口出站。Portal 仅 TCP 监听时只需 TCP，仅 UDP 监听时只需 UDP，双载波监听时放行两者。
 
 > **客户端版本对应（实测）**：Anywhere **2.3 及以下只有 NW2**（连不了 V3）；**2.4 (401) 起只有 NW3**（连不了 V2——其二进制中 NW2 实现已被移除）。升级 App 后 V2 配置持续超时属预期现象，不是服务器故障；V2 服务可用 `doctor` / `probe` 与外部 `-alpn nw2` 探测自证。详见 [FAQ Q8](#11-常见问题排查faq)。
 
@@ -969,7 +969,7 @@ python3 tests/test_152.py .
 `tests/test_review.py` 是 1.5.1/1.4.1 评审批次的 16 项专项回归（原子备份回退、元数据规范化、管道执行、ACME 版本参数、证书状态异常）；CI 会运行以上全部。
 `tests/test_core_sync.py` 校验内核默认版本、预发布策略、预发布可选安装与 `fade` 校验顺序（12 项，离线）。`tests/test_330.py` 覆盖 3.3 相关规则：TLS Egress 门限（含预发布内核）、链接失败即关闭、UDP 前导的保存与旧内核拒绝、事务性回滚、旧版本清理与安装拒绝、符号链接发布目录（20 项，离线）。`tests/test_152.py` 覆盖 1.5.2 的修复：重复 URL 参数（含百分号编码等价写法）、`manager.conf` 原子发布、自更新时续期副本同步（7 项，离线）。`tests/smoke_native.py` 已接入 CI，下载固定的官方 v3.3.0 二进制并在解压前核对固定 SHA-256。通过 SOCKS5 验证真实 TCP/UDP 数据往返：TLS/QUIC Vector × 直连/TLS Egress/QUIC Egress × `fade`/`full8`/`low7`，共 18 种场景。每种场景建立 3 个 TCP 和 3 个 UDP 会话（总计 108 个），核对完整载荷、TCP 半关闭以及最大 4096 字节 UDP 数据；纯 TLS 场景使用仅 TCP 监听的 Portal。重复建立 Flow 覆盖 TLS 备用连接补充及 QUIC 连接复用，但不属于负载或连接池容量测试。本地运行：`python3 tests/smoke_native.py --binary /path/to/verified/nowhere`（需要 Python 3.10+、OpenSSL 和回环套接字）；无需 root，目标全部为本机 echo 服务。
 
-**集成部分没有自动化覆盖。** 安装、升级、systemd 这些流程**从未被测试套件执行过**。
+**部署集成仍需手动验收。** 原生流量已自动化覆盖；真实安装、升级和 systemd 流程未由沙箱测试执行。
 在依赖某个版本之前，请在一台一次性 VPS 上跑一遍 [`ACCEPTANCE.md`](ACCEPTANCE.md)。
 
 ---
